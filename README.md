@@ -6,6 +6,8 @@ Google search → SQLite queue → Firecrawl scraping → ChatGPT eligibility as
 
 The CLI fetches and reviews listings. Cron schedules fetching, a systemd worker reviews new listings automatically, and a local web UI displays saved jobs.
 
+![Job Hunter web UI](screenshot.png)
+
 ## Setup
 
 Requires Node.js 22.16+, pnpm, Docker Compose, an [Autom.dev](https://autom.dev) API key, and a ChatGPT plan. No OpenCode or Codex CLI installation is needed.
