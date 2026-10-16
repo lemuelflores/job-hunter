@@ -1,0 +1,12 @@
+node_modules/
+.opencode/
+dist/
+.env
+.auth.json
+.auth.json.*.tmp
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+.run-lock/
+*.log

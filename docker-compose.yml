@@ -1,0 +1,97 @@
+name: firecrawl
+
+x-service: &service
+  restart: unless-stopped
+  networks: [backend]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  api:
+    <<: *service
+    image: ghcr.io/firecrawl/firecrawl:2.11.528
+    command: node dist/src/harness.js --start-docker
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3002
+      EXTRACT_WORKER_PORT: 3004
+      WORKER_PORT: 3005
+      ENV: local
+      USE_DB_AUTHENTICATION: "false"
+      REDIS_URL: redis://redis:6379
+      REDIS_RATE_LIMIT_URL: redis://redis:6379
+      PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+      POSTGRES_HOST: nuq-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    ports:
+      - "127.0.0.1:3002:3002"
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3002/v0/health/liveness').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    depends_on:
+      redis:
+        condition: service_started
+      playwright-service:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      nuq-postgres:
+        condition: service_started
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    cpus: 4.0
+    mem_limit: 8G
+    memswap_limit: 8G
+
+  playwright-service:
+    <<: *service
+    image: ghcr.io/firecrawl/playwright-service:latest
+    environment:
+      PORT: 3000
+      MAX_CONCURRENT_PAGES: 10
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cpus: 2.0
+    mem_limit: 4G
+    memswap_limit: 4G
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=1g
+
+  redis:
+    <<: *service
+    image: redis:8.10.2-alpine
+    command: redis-server --bind 0.0.0.0
+
+  rabbitmq:
+    <<: *service
+    image: rabbitmq:3.13.7-management
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, check_running]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  nuq-postgres:
+    <<: *service
+    image: ghcr.io/firecrawl/nuq-postgres:latest
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+
+networks:
+  backend:
+    driver: bridge

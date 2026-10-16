@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Jobs to review</title>
+    <style>
+    :root {
+      color-scheme: light;
+      --ink: #21332f;
+      --muted: #596b65;
+      --line: #dce5df;
+      --paper: #f2f6f2;
+      --card: #fffefa;
+      --accent: #176b52;
+      --accent-soft: #e6f1eb;
+      --danger: #9f3e3e;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font:
+        15px / 1.65 system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+    }
+    main {
+      width: min(100% - 40px, 820px);
+      margin: 0 auto;
+      padding: 56px 0 80px;
+    }
+    h1 {
+      margin: 0 0 20px;
+      font-size: 24px;
+    }
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    nav {
+      display: flex;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 10px;
+      background: #e5ece5;
+    }
+    a,
+    button {
+      -webkit-tap-highlight-color: transparent;
+    }
+    nav button {
+      border: 0;
+      border-radius: 7px;
+      padding: 8px 11px;
+      color: var(--muted);
+      background: transparent;
+      font: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    nav button:hover {
+      color: var(--ink);
+    }
+    nav button[aria-pressed="true"] {
+      background: var(--card);
+      color: var(--ink);
+      box-shadow: 0 1px 3px #1d242114;
+    }
+    .filter {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    select {
+      max-width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 28px 9px 10px;
+      background: var(--card);
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+    }
+    #notice {
+      min-height: 24px;
+      margin: 16px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    #notice.error {
+      color: var(--danger);
+    }
+    .job-list {
+      display: grid;
+      gap: 24px;
+    }
+    .job {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 28px 30px 20px;
+      background: var(--card);
+      box-shadow: 0 4px 18px #27352c04;
+    }
+    .job-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 16px;
+    }
+    .job h2 {
+      margin: 0;
+      text-wrap: pretty;
+      font-size: 23px;
+      font-weight: 650;
+      line-height: 1.3;
+      letter-spacing: -0.025em;
+    }
+    .company {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 16px;
+      margin: 16px 0 22px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .meta span {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .score {
+      flex: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: #edf0ed;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: capitalize;
+    }
+    .score[data-eligibility="eligible"] {
+      border-color: #c4dfd0;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .score[data-eligibility="unclear"] {
+      border-color: #eadcb6;
+      background: #fcf4df;
+      color: #795a19;
+    }
+    .score[data-eligibility="ineligible"] {
+      background: #f4ece8;
+      color: #855141;
+    }
+    .score.error {
+      background: #fce8e8;
+      color: var(--danger);
+    }
+    .job h3 {
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .assessment p {
+      margin: 0;
+      max-width: 68ch;
+    }
+    .evidence {
+      margin-top: 18px;
+      padding: 14px 18px;
+      border-left: 2px solid #b5cfc0;
+      border-radius: 0 8px 8px 0;
+      background: #f3f6f0;
+    }
+    blockquote {
+      margin: 0;
+      color: #43594f;
+      font:
+        17px / 1.65 Georgia,
+        "Times New Roman",
+        serif;
+      white-space: pre-line;
+    }
+    .actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-top: 24px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }
+    .actions-right {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
+    .view {
+      color: var(--accent);
+      font-size: 14px;
+      font-weight: 650;
+      text-underline-offset: 4px;
+    }
+    .button {
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 13px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .button:hover {
+      border-color: #aab9b0;
+      background: #f7faf7;
+    }
+    .button.reject {
+      color: var(--danger);
+    }
+    .button:focus-visible,
+    nav button:focus-visible,
+    select:focus-visible,
+    a:focus-visible {
+      outline: 3px solid #8fc6ae;
+      outline-offset: 3px;
+    }
+    .button:disabled {
+      cursor: wait;
+      opacity: 0.55;
+    }
+    .empty {
+      padding: 45px 20px;
+      border: 1px dashed #cbd4cc;
+      border-radius: 12px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .empty strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+      font-family: Georgia, serif;
+      font-size: 19px;
+    }
+    @media (max-width: 600px) {
+      main {
+        width: calc(100% - 24px);
+        padding-top: 28px;
+      }
+      .toolbar {
+        align-items: stretch;
+        flex-direction: column;
+        gap: 12px;
+      }
+      nav {
+        width: fit-content;
+        max-width: 100%;
+        overflow: auto;
+      }
+      .filter {
+        justify-content: space-between;
+      }
+      .job {
+        padding: 20px 18px 16px;
+      }
+      .job-top {
+        flex-direction: column;
+        gap: 10px;
+      }
+      .job h2 {
+        font-size: 21px;
+      }
+      .job-list {
+        gap: 16px;
+      }
+      .evidence {
+        padding: 12px 14px;
+      }
+      .actions {
+        flex-wrap: wrap;
+      }
+    }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Job listings</h1>
+      <div class="toolbar">
+        <nav aria-label="Job status">
+          <button type="button" data-status="active" aria-pressed="true">
+            Active
+          </button>
+          <button type="button" data-status="hidden" aria-pressed="false">
+            Hidden
+          </button>
+          <button type="button" data-status="rejected" aria-pressed="false">
+            Rejected
+          </button>
+        </nav>
+        <label class="filter"
+          >Location eligibility
+          <select id="eligibility">
+            <option value="all">All</option>
+            <option value="eligible">Eligible</option>
+            <option value="pending">Pending</option>
+            <option value="unclear">Unclear</option>
+            <option value="ineligible">Ineligible</option>
+            <option value="error">Error</option>
+          </select></label
+        >
+      </div>
+      <div id="notice" role="status" aria-live="polite"></div>
+      <section
+        id="jobs"
+        class="job-list"
+        aria-live="polite"
+        aria-busy="false"
+      ></section>
+    </main>
+    <script>
+    (() => {
+      const jobsEl = document.getElementById('jobs');
+      const noticeEl = document.getElementById('notice');
+      const tabs = [...document.querySelectorAll('[data-status]')];
+      const eligibilityFilter = document.getElementById('eligibility');
+      let currentStatus = 'active';
+      let request = null;
+      let listingGeneration = 0;
+      let listingState = 'loading';
+      let persistentError = '';
+      const pending = new Map();
+      const localStatus = new Map();
+      const knownJobs = new Map();
+      const cache = new Map();
+
+      const setNotice = (message, error = false) => {
+        noticeEl.textContent = message;
+        noticeEl.className = error ? 'error' : '';
+      };
+      const setError = (message) => {
+        persistentError = message;
+        setNotice(message, true);
+      };
+      const safeUrl = (value) => {
+        try {
+          const url = new URL(String(value));
+          return url.protocol === 'http:' || url.protocol === 'https:'
+            ? url.href
+            : null;
+        } catch (_) {
+          return null;
+        }
+      };
+      const addText = (parent, tag, text, className) => {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        node.textContent = text == null ? '' : String(text);
+        parent.append(node);
+        return node;
+      };
+      const formatDate = (value) => {
+        if (!value) return null;
+        const date = new Date(value);
+        return Number.isNaN(date.getTime())
+          ? null
+          : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(
+              date,
+            );
+      };
+      const displayCompany = (job) => {
+        const company =
+          typeof job.company === 'string' ? job.company.trim() : '';
+        if (company) return company;
+        const board = typeof job.board === 'string' ? job.board.trim() : '';
+        return board || null;
+      };
+      const jobBusy = (job) => pending.has(String(job.reviewKey));
+      const renderJob = (job, isPending = false) => {
+        const card = document.createElement('article');
+        card.className = 'job';
+        card.dataset.reviewKey = String(job.reviewKey || '');
+        card.dataset.pending = String(isPending);
+        const top = document.createElement('div');
+        top.className = 'job-top';
+        card.append(top);
+        const heading = document.createElement('div');
+        top.append(heading);
+        addText(heading, 'h2', job.title || 'Untitled role');
+        const company = displayCompany(job);
+        if (company) addText(heading, 'p', company, 'company');
+        if (job.eligibility) {
+          const badge = addText(
+            top,
+            'span',
+            job.eligibility,
+            job.eligibility === 'error' ? 'score error' : 'score',
+          );
+          badge.dataset.eligibility = job.eligibility;
+        }
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        card.append(meta);
+        if (job.location) addText(meta, 'span', `⌖ ${job.location}`);
+        if (job.isRemote) addText(meta, 'span', 'Remote');
+        if (job.ats && job.ats !== 'generic')
+          addText(meta, 'span', String(job.ats));
+        const published = formatDate(job.publishedAt);
+        if (published) addText(meta, 'span', `Posted ${published}`);
+        if (job.reason) {
+          const assessment = document.createElement('div');
+          assessment.className = 'assessment';
+          card.append(assessment);
+          addText(
+            assessment,
+            'h3',
+            job.eligibility === 'error'
+              ? 'Listing unavailable'
+              : 'Location assessment',
+          );
+          addText(assessment, 'p', job.reason);
+        }
+        if (job.evidence) {
+          const evidence = document.createElement('div');
+          evidence.className = 'evidence';
+          card.append(evidence);
+          addText(evidence, 'h3', 'From the listing');
+          addText(evidence, 'blockquote', job.evidence);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        card.append(actions);
+        const externalUrl = safeUrl(job.url);
+        if (externalUrl) {
+          const link = document.createElement('a');
+          link.className = 'view';
+          link.href = externalUrl;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = 'View job ↗';
+          actions.append(link);
+        }
+        const right = document.createElement('div');
+        right.className = 'actions-right';
+        actions.append(right);
+        if (currentStatus === 'active') {
+          const disabled = isPending || jobBusy(job);
+          const hide = actionButton('Hide', 'hidden', 'button', disabled);
+          const reject = actionButton(
+            'Reject',
+            'rejected',
+            'button reject',
+            disabled,
+          );
+          right.append(hide, reject);
+        } else {
+          right.append(
+            actionButton(
+              'Restore',
+              'active',
+              'button',
+              isPending || jobBusy(job),
+            ),
+          );
+        }
+        return card;
+      };
+      const actionButton = (label, status, className, disabled = false) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = className;
+        button.textContent = label;
+        button.disabled = disabled;
+        button.addEventListener('click', () => updateStatus(button, status));
+        return button;
+      };
+      const jobsForStatus = (status, serverJobs = []) => {
+        const jobs = new Map();
+        serverJobs.forEach((job) => {
+          if (job?.reviewKey) {
+            const key = String(job.reviewKey);
+            knownJobs.set(key, job);
+            if (!localStatus.has(key) || localStatus.get(key) === status)
+              jobs.set(key, job);
+          }
+        });
+        knownJobs.forEach((job, key) => {
+          if (localStatus.get(key) === status) jobs.set(key, job);
+        });
+        return [...jobs.values()]
+          .filter(
+            (job) =>
+              !eligibilityFilter ||
+              eligibilityFilter.value === 'all' ||
+              job.eligibility === eligibilityFilter.value,
+          )
+          .map((job) => [job, jobBusy(job)]);
+      };
+      const renderList = (status, serverJobs, announce = true) => {
+        if (
+          status === currentStatus &&
+          (listingState === 'loading' || listingState === 'error') &&
+          !announce
+        )
+          return;
+        const jobs = jobsForStatus(status, serverJobs);
+        const existing = new Map(
+          [...jobsEl.children]
+            .filter((node) => node.className === 'job')
+            .map((node) => [node.dataset.reviewKey, node]),
+        );
+        const desiredKeys = new Set(jobs.map(([job]) => String(job.reviewKey)));
+        existing.forEach((card, key) => {
+          if (!desiredKeys.has(key)) {
+            if (card.contains(document.activeElement))
+              tabs.find((tab) => tab.dataset.status === currentStatus)?.focus();
+            card.remove();
+          }
+        });
+        jobs.forEach(([job, isPending]) => {
+          const key = String(job.reviewKey);
+          const card = existing.get(key);
+          if (card) {
+            const disabled = isPending || jobBusy(job);
+            card.dataset.pending = String(disabled);
+            card.querySelectorAll('button').forEach((button) => {
+              button.disabled = disabled;
+            });
+          } else jobsEl.append(renderJob(job, isPending));
+        });
+        if (!jobs.length && !jobsEl.querySelector('.empty, .list-control')) {
+          const empty = document.createElement('div');
+          empty.className = 'empty';
+          addText(
+            empty,
+            'strong',
+            status === 'active' ? 'Nothing here yet' : `No ${status} jobs`,
+          );
+          addText(
+            empty,
+            'span',
+            status === 'active'
+              ? 'Jobs will appear after your next run or reload.'
+              : 'Jobs you move here will stay available for review.',
+          );
+          jobsEl.append(empty);
+        }
+        if (jobs.length)
+          jobsEl.querySelector('.empty, .list-control')?.remove();
+        const count = jobs.length
+          ? jobs.length + (jobs.length === 1 ? ' job' : ' jobs')
+          : '';
+        if (!persistentError) setNotice(count);
+      };
+      const load = async () => {
+        if (request) request.abort();
+        request = new AbortController();
+        const signal = request.signal;
+        const generation = ++listingGeneration;
+        const loadStatus = currentStatus;
+        listingState = 'loading';
+        jobsEl.replaceChildren();
+        jobsEl.setAttribute('aria-busy', 'true');
+        persistentError = '';
+        setNotice('Loading…');
+        try {
+          const response = await fetch(
+            `/api/jobs?status=${encodeURIComponent(loadStatus)}`,
+            { signal },
+          );
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok)
+            throw new Error(body.error || 'Could not load jobs.');
+          if (
+            signal.aborted ||
+            generation !== listingGeneration ||
+            currentStatus !== loadStatus
+          )
+            return;
+          const jobs = Array.isArray(body.jobs) ? body.jobs : [];
+          cache.set(loadStatus, jobs);
+          if (
+            generation === listingGeneration &&
+            currentStatus === loadStatus
+          ) {
+            listingState = 'ready';
+            renderList(loadStatus, jobs, true);
+          }
+        } catch (error) {
+          if (error.name !== 'AbortError' && generation === listingGeneration) {
+            listingState = 'error';
+            jobsEl.replaceChildren();
+            setError(error.message || 'Could not load jobs.');
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'list-control button';
+            retry.textContent = 'Retry';
+            retry.addEventListener('click', load);
+            jobsEl.append(retry);
+          }
+        } finally {
+          if (!signal.aborted && generation === listingGeneration)
+            jobsEl.setAttribute('aria-busy', 'false');
+        }
+      };
+      const updateStatus = async (button, status) => {
+        const card = button.closest('.job');
+        const reviewKey = card?.dataset.reviewKey;
+        if (!reviewKey || pending.has(reviewKey)) return;
+        const job = knownJobs.get(reviewKey);
+        if (!job) return;
+        const from = currentStatus;
+        const previousStatus = localStatus.get(reviewKey) || from;
+        pending.set(reviewKey, { from, to: status });
+        localStatus.set(reviewKey, status);
+        renderList(currentStatus, cache.get(currentStatus) || [], false);
+        try {
+          const response = await fetch('/api/jobs/status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reviewKey, status }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok)
+            throw new Error(body.error || 'Could not save that change.');
+          pending.delete(reviewKey);
+          renderList(currentStatus, cache.get(currentStatus) || [], false);
+        } catch (error) {
+          pending.delete(reviewKey);
+          localStatus.set(reviewKey, previousStatus);
+          const sourceJobs = cache.get(from) || [];
+          if (!sourceJobs.some((item) => String(item.reviewKey) === reviewKey))
+            cache.set(from, [...sourceJobs, job]);
+          renderList(currentStatus, cache.get(currentStatus) || [], false);
+          setError(
+            `${error.message || 'Could not save that change.'} Try again.`,
+          );
+        }
+      };
+      tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+          if (tab.dataset.status !== currentStatus) {
+            currentStatus = tab.dataset.status;
+            tabs.forEach((item) => {
+              item.setAttribute('aria-pressed', String(item === tab));
+            });
+            load();
+          }
+        });
+      });
+      eligibilityFilter?.addEventListener('change', load);
+      load();
+    })();
+    </script>
+  </body>
+</html>

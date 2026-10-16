@@ -1,0 +1,26 @@
+{
+  "name": "job-hunter",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "bin": {
+    "job-hunter": "dist/cli.js"
+  },
+  "scripts": {
+    "check": "biome check .",
+    "fix": "biome check --write .",
+    "build": "tsc -p tsconfig.json && cp src/ui.html dist/ui.html",
+    "test": "pnpm build && node --test test/*.test.mjs",
+    "job-hunter": "node dist/cli.js"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "^22.20.1",
+    "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
+  }
+}

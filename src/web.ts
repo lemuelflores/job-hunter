@@ -1,0 +1,194 @@
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from 'node:http';
+import type { SqliteStore } from './persistence.js';
+import { UI_HTML } from './ui.js';
+import {
+  REVIEW_STATUSES,
+  type ReviewStatus,
+  type UpdateCompanyStatusRequest,
+  type UpdateJobStatusRequest,
+} from './web-types.js';
+
+const MAX_BODY_BYTES = 16 * 1024;
+
+function json(response: ServerResponse, status: number, body: unknown): void {
+  response.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  response.end(JSON.stringify(body));
+}
+
+function validStatus(value: unknown): value is ReviewStatus {
+  return (
+    typeof value === 'string' &&
+    (REVIEW_STATUSES as readonly string[]).includes(value)
+  );
+}
+
+async function readJson(request: IncomingMessage): Promise<unknown> {
+  let size = 0;
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > MAX_BODY_BYTES) throw new Error('Request body is too large');
+    chunks.push(buffer);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    throw new Error('Invalid JSON body');
+  }
+}
+
+function sameOrigin(request: IncomingMessage): boolean {
+  const origin = request.headers.origin;
+  if (!origin) return true;
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === 'http:' && parsed.host === request.headers.host;
+  } catch {
+    return false;
+  }
+}
+
+function validLocalHost(request: IncomingMessage): boolean {
+  const host = request.headers.host;
+  const address = request.socket.address();
+  if (!host || typeof address === 'string' || !('port' in address))
+    return false;
+  try {
+    const parsed = new URL(`http://${host}`);
+    return (
+      (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') &&
+      parsed.port === String(address.port)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function createReviewServer(store: SqliteStore): Server {
+  return createServer(async (request, response) => {
+    try {
+      if (!validLocalHost(request))
+        return json(response, 403, { error: 'Host is not allowed' });
+      const url = new URL(
+        request.url ?? '/',
+        `http://${request.headers.host ?? '127.0.0.1'}`,
+      );
+      if (request.method === 'GET' && url.pathname === '/') {
+        response.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        response.end(UI_HTML);
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/api/jobs') {
+        const rawStatus = url.searchParams.get('status') ?? 'active';
+        if (!validStatus(rawStatus))
+          return json(response, 400, { error: 'Invalid status' });
+        return json(response, 200, { jobs: store.listReviewJobs(rawStatus) });
+      }
+      if (request.method === 'POST' && url.pathname === '/api/jobs/status') {
+        if (!sameOrigin(request))
+          return json(response, 403, { error: 'Origin is not allowed' });
+        const contentType = request.headers['content-type']
+          ?.split(';', 1)[0]
+          .trim()
+          .toLowerCase();
+        if (contentType !== 'application/json')
+          return json(response, 400, {
+            error: 'Content-Type must be application/json',
+          });
+        const body = (await readJson(
+          request,
+        )) as Partial<UpdateJobStatusRequest> | null;
+        if (
+          !body ||
+          typeof body !== 'object' ||
+          typeof body.reviewKey !== 'string' ||
+          !body.reviewKey.trim() ||
+          !validStatus(body.status)
+        ) {
+          return json(response, 400, { error: 'Invalid request payload' });
+        }
+        if (!store.setReviewStatus(body.reviewKey, body.status))
+          return json(response, 404, { error: 'Job not found' });
+        return json(response, 200, { ok: true });
+      }
+      if (
+        request.method === 'POST' &&
+        url.pathname === '/api/jobs/company-status'
+      ) {
+        if (!sameOrigin(request))
+          return json(response, 403, { error: 'Origin is not allowed' });
+        const contentType = request.headers['content-type']
+          ?.split(';', 1)[0]
+          .trim()
+          .toLowerCase();
+        if (contentType !== 'application/json')
+          return json(response, 400, {
+            error: 'Content-Type must be application/json',
+          });
+        const body = (await readJson(
+          request,
+        )) as Partial<UpdateCompanyStatusRequest> | null;
+        if (
+          !body ||
+          typeof body !== 'object' ||
+          typeof body.companyKey !== 'string' ||
+          !body.companyKey.trim() ||
+          (body.status !== 'hidden' && body.status !== 'rejected')
+        ) {
+          return json(response, 400, { error: 'Invalid request payload' });
+        }
+        const reviewKeys = store.setActiveCompanyStatus(
+          body.companyKey,
+          body.status,
+        );
+        if (!reviewKeys.length)
+          return json(response, 404, {
+            error: 'No active matching company jobs found',
+          });
+        return json(response, 200, {
+          ok: true,
+          updated: reviewKeys.length,
+          reviewKeys,
+        });
+      }
+      json(response, 404, { error: 'Not found' });
+    } catch (error) {
+      json(
+        response,
+        error instanceof Error && error.message.includes('too large')
+          ? 413
+          : 400,
+        {
+          error: error instanceof Error ? error.message : 'Invalid request',
+        },
+      );
+    }
+  });
+}
+
+export async function listenReviewServer(
+  store: SqliteStore,
+  port = 3000,
+): Promise<Server> {
+  const server = createReviewServer(store);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+  return server;
+}
