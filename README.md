@@ -57,7 +57,7 @@ export default {
 - `title`: a string or nested AND/OR expression. Every leaf is quoted and scoped to the indexed page title. AND groups need not be adjacent: `Senior Fullstack Software Engineer` matches the supplied profile. Multiword leaves such as `full stack` remain phrases. No profession is injected by the query builder; for example, `or('nurse', 'accountant')` works too.
 - `skills`: a flat array combined into one OR group. A listing only needs one alternative to match; additional terms do not generate extra searches.
 
-Each fetch executes **one search only**, combining all ATS sites, the title expression, all skills and the profile's location/work-arrangement alternatives. Adding terms does not multiply requests. No remote condition is hardcoded into discovery.
+Each fetch uses **one combined query**, combining all ATS sites, the title expression, all skills and the profile's location/work-arrangement alternatives. It follows Autom's next pages sequentially until 100 unique results or no more results. Empty or duplicate-only pages also stop pagination. Each page costs one Autom credit; adding query terms does not multiply queries. No remote condition is hardcoded into discovery.
 
 For example, with Vue/Nuxt/Laravel skills and APAC/Asia/SEA/Philippines locations, the single query is:
 

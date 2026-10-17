@@ -20,7 +20,7 @@ export async function fetchJobs(
     buildQueryMatrix(profile ?? (await loadProfile())).map(
       (spec) => spec.query,
     ),
-    { concurrency: 5, num: 20 },
+    { concurrency: 5, num: 100 },
   );
   return {
     added: store.saveResults(searched.results),

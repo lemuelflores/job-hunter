@@ -11,6 +11,7 @@ interface AutomOrganicResult {
 interface AutomGoogleSearchResponse {
   organic_results?: AutomOrganicResult[];
   error?: string;
+  pagination?: { next?: number; has_next_page?: boolean };
 }
 
 function getAutomApiKey(): string {
@@ -46,46 +47,61 @@ export async function googleSearch(
 
   console.error(`[google] search: ${query}`);
 
-  const response = await fetch(url, {
-    method: 'GET',
-    signal: AbortSignal.timeout(30_000),
-    headers: {
-      'x-api-key': apiKey,
-      Accept: 'application/json',
-    },
-  });
+  const limit = Math.min(100, Math.max(1, options.num ?? 100));
+  const results: SearchResult[] = [];
+  const seen = new Set<string>();
+  let page = 1;
+  while (results.length < limit) {
+    url.searchParams.set('page', String(page));
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: AbortSignal.timeout(30_000),
+      headers: {
+        'x-api-key': apiKey,
+        Accept: 'application/json',
+      },
+    });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Autom.dev Google search failed: ${response.status} ${body}`,
-    );
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(
+        `Autom.dev Google search failed: ${response.status} ${body}`,
+      );
+    }
+
+    const data = (await response.json()) as AutomGoogleSearchResponse;
+
+    if (data.error) {
+      throw new Error(`Autom.dev Google search failed: ${data.error}`);
+    }
+
+    const pageResults = (data.organic_results ?? [])
+      .filter(
+        (item): item is AutomOrganicResult & { link: string; title: string } =>
+          typeof item.link === 'string' &&
+          Boolean(item.link.trim()) &&
+          typeof item.title === 'string' &&
+          Boolean(item.title.trim()),
+      )
+      .map((item) => ({
+        title: item.title,
+        url: item.link,
+        snippet: item.snippet ?? undefined,
+        position: item.position,
+        query,
+      }));
+    const before = results.length;
+    for (const result of pageResults) {
+      if (seen.has(result.url)) continue;
+      seen.add(result.url);
+      results.push(result);
+      if (results.length >= limit) break;
+    }
+    if (results.length === before || !data.pagination?.has_next_page) break;
+    const next = data.pagination.next ?? page + 1;
+    if (!Number.isSafeInteger(next) || next <= page) break;
+    page = next;
   }
-
-  const data = (await response.json()) as AutomGoogleSearchResponse;
-
-  if (data.error) {
-    throw new Error(`Autom.dev Google search failed: ${data.error}`);
-  }
-
-  const limit = Math.max(1, options.num ?? 20);
-
-  const results = (data.organic_results ?? [])
-    .filter(
-      (item): item is AutomOrganicResult & { link: string; title: string } =>
-        typeof item.link === 'string' &&
-        Boolean(item.link.trim()) &&
-        typeof item.title === 'string' &&
-        Boolean(item.title.trim()),
-    )
-    .slice(0, limit)
-    .map((item) => ({
-      title: item.title,
-      url: item.link,
-      snippet: item.snippet ?? undefined,
-      position: item.position,
-      query,
-    }));
 
   const preview = results
     .slice(0, 3)
