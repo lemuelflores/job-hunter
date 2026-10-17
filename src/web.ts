@@ -181,11 +181,12 @@ export function createReviewServer(store: SqliteStore): Server {
 export async function listenReviewServer(
   store: SqliteStore,
   port = 3000,
+  host = '127.0.0.1',
 ): Promise<Server> {
   const server = createReviewServer(store);
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => {
+    server.listen(port, host, () => {
       server.off('error', reject);
       resolve();
     });

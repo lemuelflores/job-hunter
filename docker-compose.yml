@@ -9,7 +9,41 @@ x-service: &service
       max-size: "10m"
       max-file: "3"
 
+x-app: &app
+  <<: *service
+  image: node:22-bookworm-slim
+  working_dir: /app
+  entrypoint: [node, dist/cli.js]
+  init: true
+  env_file: .env
+  volumes:
+    - .:/app
+  stop_grace_period: 2m
+
 services:
+  web:
+    <<: *app
+    command: [serve]
+    environment:
+      JOB_HUNTER_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  review-worker:
+    <<: *app
+    command: [worker]
+    environment:
+      FIRECRAWL_URL: http://api:3002
+    depends_on:
+      api:
+        condition: service_healthy
+
+  fetch-worker:
+    <<: *app
+    command: [fetch-worker]
+    environment:
+      FETCH_CRON: ${FETCH_CRON:-0 * * * *}
+
   api:
     <<: *service
     image: ghcr.io/firecrawl/firecrawl:2.11.528

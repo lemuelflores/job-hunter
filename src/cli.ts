@@ -14,6 +14,7 @@ fetch             Search Google and save new job URLs (no analysis)
 auth              Sign in with your ChatGPT subscription in a browser
 review [--limit N] Scrape pending jobs with Firecrawl, then analyze through ChatGPT OAuth
 worker            Continuously review new jobs with persistent retries
+fetch-worker      Schedule fetching with FETCH_CRON (default: hourly, UTC)
 serve [--port 3000]  Open the local review UI (127.0.0.1 only)
 jobs              Print saved active jobs as JSON
 
@@ -52,7 +53,15 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
     if (
       parsed.positionals.length !== 1 ||
-      !['auth', 'fetch', 'serve', 'jobs', 'review', 'worker'].includes(command)
+      ![
+        'auth',
+        'fetch',
+        'fetch-worker',
+        'serve',
+        'jobs',
+        'review',
+        'worker',
+      ].includes(command)
     )
       throw new Error(HELP);
     const allowed =
@@ -80,7 +89,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       }
       return 0;
     }
-    const profile = ['fetch', 'review', 'worker'].includes(command)
+    const profile = ['fetch', 'fetch-worker', 'review', 'worker'].includes(
+      command,
+    )
       ? await loadProfile()
       : undefined;
     const { llm } = await import('./llm/index.js');
@@ -89,7 +100,17 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     store = new SqliteStore(resolve(ROOT, 'jobs.sqlite'));
     if (command === 'jobs')
       console.log(JSON.stringify(store.listReviewJobs('active'), null, 2));
-    else if (command === 'worker') {
+    else if (command === 'fetch-worker') {
+      const { workFetch } = await import('./fetch-worker.js');
+      const { fetchJobs } = await import('./runner.js');
+      const fetchStore = store;
+      await workFetch(async () => {
+        const outcome = await fetchJobs(fetchStore, undefined, profile);
+        console.log(JSON.stringify(outcome));
+        if (outcome.failures.length)
+          throw new Error(outcome.failures.join('; '));
+      });
+    } else if (command === 'worker') {
       const { workJobs } = await import('./runner.js');
       await workJobs(ROOT, store, review);
     } else if (command === 'fetch' || command === 'review') {
@@ -114,6 +135,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const server = await listenReviewServer(
         store,
         integer(v.port, 3000, 65535),
+        process.env.JOB_HUNTER_HOST || '127.0.0.1',
       );
       console.log(
         `Review UI: http://127.0.0.1:${(server.address() as { port: number }).port}`,

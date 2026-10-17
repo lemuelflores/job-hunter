@@ -38,7 +38,7 @@ test('HTTP UI lists eligibility, persists reversible statuses and board-level co
     'United States',
   );
   store.finishBatch(batch);
-  const server = await listenReviewServer(store, 0);
+  const server = await listenReviewServer(store, 0, '0.0.0.0');
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   const get = (path) => fetch(base + path);

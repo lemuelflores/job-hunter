@@ -4,7 +4,7 @@ Find remote job listings for your roles and skills, then assess hiring eligibili
 
 Google search → Firecrawl scraping → ChatGPT eligibility assessment.
 
-The CLI fetches and reviews listings. Cron schedules fetching, a systemd worker reviews new listings automatically, and a local web UI displays saved jobs.
+The CLI fetches and reviews listings. Docker Compose runs a local web UI, a review worker, and a long-lived Node.js fetch worker scheduled by node-cron, alongside Firecrawl.
 
 ![Job Hunter web UI](screenshot.png)
 
@@ -24,6 +24,21 @@ docker compose up -d
 Open the URL printed by `auth` to sign in. The browser returns to `http://127.0.0.1:1455/auth/callback`, so port 1455 must be free. Over SSH, forward that port to the machine running Job Hunter first.
 
 Credentials are saved in the Git-ignored `.auth.json` with owner-only permissions. It contains plaintext tokens: never commit or share it. Tokens refresh automatically; run `auth` again if access is revoked or refresh fails.
+
+### Compose application services
+
+- `web`: <http://127.0.0.1:3000>, published only on host loopback.
+- `review-worker`: continuously reviews pending jobs using the private Firecrawl service.
+- `fetch-worker`: stays running and uses node-cron to fetch on `FETCH_CRON` (default `0 * * * *`, hourly in UTC). No fetch runs at startup; overlapping scheduled runs are skipped. Failed runs are logged and the next scheduled run proceeds normally. Each fetch can consume multiple Autom credits through pagination.
+
+All three use the stock `node:22-bookworm-slim` image: no Dockerfile or image build. They mount this checkout read-write at `/app`, including host-installed `node_modules/`, compiled `dist/`, `jobs.sqlite`, `.review-lock.sqlite`, and `.auth.json`. Host commands and containers use the same files; no data migration is needed. Run `pnpm install` and `pnpm build` on the host before starting. After code changes, rebuild on the host and restart the app services; profile changes only need worker restarts. Recreate services after `.env` changes:
+
+```sh
+docker compose up -d
+docker compose logs -f web review-worker fetch-worker
+```
+
+Stop host cron entries and systemd workers before switching to Compose. Stop the review container before host-side manual reviewing. Containers run as root by default, so newly created files (including refreshed credentials) may require matching host permissions. Treat `.auth.json` as a plaintext secret. Do not remove a legacy `.run-lock` without confirming its owner stopped.
 
 ## Search profile
 
@@ -92,7 +107,7 @@ pnpm job-hunter jobs
 - `serve` opens the web UI at <http://127.0.0.1:3000>. Filter assessments and hide, reject, or restore listings without deleting them.
 - `jobs` prints saved jobs, including retry details.
 
-Configuration, credentials, and `jobs.sqlite` live in the application root, regardless of your working directory. `review` and `worker` cannot run together; they share `.review-lock.sqlite`, which must not be deleted. Ctrl+C stops requests without losing saved assessments.
+Configuration, credentials, `jobs.sqlite`, and the review lock live in the application root, regardless of your working directory. `review` and `worker` cannot run together; they share `.review-lock.sqlite`, which must not be deleted. Ctrl+C stops review requests without losing saved assessments; the fetch worker waits for an active fetch to finish, within Compose's two-minute shutdown grace period.
 
 ## Self-hosted Firecrawl
 
@@ -109,6 +124,8 @@ Start Firecrawl before reviewing jobs. Its unauthenticated API is private at `ht
 
 ## Scheduled fetching
 
+Compose uses the long-lived `fetch-worker` instead of host cron. Set `FETCH_CRON="0 * * * *"` in `.env` to change its UTC schedule, then recreate the service. The following host-cron alternative must not run alongside it.
+
 Add a cron entry using absolute paths to your Node executable and checkout, for example hourly. Replace `/path/to/node` and `/path/to/job-hunter` before installing:
 
 ```cron
@@ -118,6 +135,8 @@ Add a cron entry using absolute paths to your Node executable and checkout, for 
 The application does not install cron entries. Schedule `fetch`, not `review`, when the worker is running.
 
 ## systemd review worker
+
+This is an alternative to Compose's `review-worker`; do not enable both.
 
 Copy the service template, then replace `/path/to/job-hunter` and `/path/to/node` in the installed copy. Use a stable absolute Node.js 22.18+ path, not an interactive shell version-manager path.
 
