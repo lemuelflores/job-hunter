@@ -2,7 +2,7 @@
 
 Find remote job listings for your roles and skills, then assess hiring eligibility from your location.
 
-Google search → SQLite queue → Firecrawl scraping → ChatGPT eligibility assessment.
+Google search → Firecrawl scraping → ChatGPT eligibility assessment.
 
 The CLI fetches and reviews listings. Cron schedules fetching, a systemd worker reviews new listings automatically, and a local web UI displays saved jobs.
 
