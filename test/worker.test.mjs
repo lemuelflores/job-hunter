@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { cp, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -368,9 +368,15 @@ test('worker CLI pauses on missing credentials and exits cleanly on real SIGTERM
   await cp(new URL('../dist/', import.meta.url), join(root, 'dist'), {
     recursive: true,
   });
+  await cp(new URL('../profile.ts', import.meta.url), join(root, 'profile.ts'));
+  await mkdir(join(root, 'src'));
   await cp(
-    new URL('../profile.jsonc', import.meta.url),
-    join(root, 'profile.jsonc'),
+    new URL('../src/title.ts', import.meta.url),
+    join(root, 'src/title.ts'),
+  );
+  await cp(
+    new URL('../package.json', import.meta.url),
+    join(root, 'package.json'),
   );
   await symlink(
     new URL('../node_modules', import.meta.url).pathname,

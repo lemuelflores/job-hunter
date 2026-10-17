@@ -62,7 +62,7 @@ export async function reviewJob(
   url: string,
   options: ReviewOptions = {},
 ): Promise<Decision> {
-  const location = options.location ?? loadProfile().location;
+  const location = options.location ?? (await loadProfile()).location;
   const auth = await getCredentials(options);
   const effort = options.effort ?? process.env.JOB_HUNTER_EFFORT ?? 'medium';
   if (!['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort))

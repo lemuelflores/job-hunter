@@ -10,7 +10,7 @@ The CLI fetches and reviews listings. Cron schedules fetching, a systemd worker 
 
 ## Setup
 
-Requires Node.js 22.16+, pnpm, Docker Compose, an [Autom.dev](https://autom.dev) API key, and a ChatGPT plan. No OpenCode or Codex CLI installation is needed.
+Requires Node.js 22.18+, pnpm, Docker Compose, an [Autom.dev](https://autom.dev) API key, and a ChatGPT plan. No OpenCode or Codex CLI installation is needed.
 
 ```sh
 pnpm install
@@ -27,16 +27,51 @@ Credentials are saved in the Git-ignored `.auth.json` with owner-only permission
 
 ## Search profile
 
-Edit `profile.jsonc` in the project root before fetching or reviewing.
+Edit `profile.ts` in the project root before fetching or reviewing. It default-exports a typed object and imports the variadic `and(...terms)` / `or(...terms)` helpers from `./src/title.ts`:
+
+```ts
+import type { Profile } from './src/profile.ts';
+import { and, or } from './src/title.ts';
+
+export default {
+  location: 'Philippines',
+  title: and(
+    or('fullstack', 'full stack', 'full-stack', 'backend', 'back end', 'back-end', 'frontend', 'front end', 'front-end', 'web'),
+    or('developer', 'engineer'),
+  ),
+  searchLocation: [
+    'remote', 'remote-first', 'fully remote', 'global',
+    'anywhere in the world', 'work from home',
+    'APAC', 'Asia', 'SEA', 'Philippines',
+  ],
+  skills: [
+    'Laravel', 'PHP', 'Vue', 'Vue.js', 'VueJS',
+    'Nuxt', 'Nuxt.js', 'NuxtJS', 'Node.js', 'NodeJS', 'Node',
+    'JavaScript', 'TypeScript',
+  ],
+} satisfies Profile;
+```
 
 - `location`: where you live, used to assess remote hiring eligibility.
-- `searchLocations`: groups of geographic alternatives, such as Philippines/Manila, APAC/Asia, or worldwide/anywhere. Every search includes one group.
-- `roleGroups`: role alternatives, combined across all groups into one OR clause. Searches also require `(developer OR engineer)`, so this tool targets software development roles.
-- `skillGroups`: each group generates separate searches. Terms within a group use OR: a Laravel/Vue group matches either skill, not both.
+- `searchLocation`: a flat array of location and work-arrangement alternatives combined into one OR group. Remote keywords are supplied by the profile, not injected by the query builder; a profile can instead specify a city or on-site terms.
+- `title`: a string or nested AND/OR expression. Every leaf is quoted and scoped to the indexed page title. AND groups need not be adjacent: `Senior Fullstack Software Engineer` matches the supplied profile. Multiword leaves such as `full stack` remain phrases. No profession is injected by the query builder; for example, `or('nurse', 'accountant')` works too.
+- `skills`: a flat array combined into one OR group. A listing only needs one alternative to match; additional terms do not generate extra searches.
 
-Search count is **3 ATS platforms × skill groups × location groups** (45 with the supplied five skill groups and three location groups). More groups increase search requests and potentially review usage.
+Each fetch executes **one search only**, combining all ATS sites, the title expression, all skills and the profile's location/work-arrangement alternatives. Adding terms does not multiply requests. No remote condition is hardcoded into discovery.
 
-Invalid profiles stop processing. Restart the worker after edits; changes affect future searches and pending reviews, not saved assessments. Reviews assess location eligibility, not skill fit.
+For example, with Vue/Nuxt/Laravel skills and APAC/Asia/SEA/Philippines locations, the single query is:
+
+```text
+(site:jobs.ashbyhq.com OR site:jobs.lever.co OR site:jobs.eu.lever.co OR site:job-boards.greenhouse.io OR site:boards.greenhouse.io) (intitle:"fullstack" OR intitle:"full stack" OR intitle:"full-stack" OR intitle:"backend" OR intitle:"back end" OR intitle:"back-end" OR intitle:"frontend" OR intitle:"front end" OR intitle:"front-end" OR intitle:"web") (intitle:"developer" OR intitle:"engineer") ("Vue" OR "Nuxt" OR "Laravel") ("remote" OR "remote-first" OR "fully remote" OR "global" OR "anywhere in the world" OR "work from home" OR "APAC" OR "Asia" OR "SEA" OR "Philippines")
+```
+
+AND/OR describe matching, not request splitting. This grouped-token strategy has not been benchmarked for relevance; no search-quality improvement is claimed.
+
+Node loads the root TypeScript module directly using native type stripping, without extra invocation flags or a transpiler. Profile edits need no build; `pnpm build` type-checks the profile as well as the application. Deploy the root `profile.ts` and `src/title.ts` alongside `dist/` and `package.json` (the type-only `Profile` import is erased at runtime). Keep configuration to erasable TypeScript supported by Node.
+
+The profile is **trusted executable local code**, not a sandbox. Runtime validation checks its default export, known fields, nonempty groups and expressions, and terms up to 200 characters with no double quotes, backslashes or newlines. Syntax/import errors and invalid profiles stop fetch/review/worker before network work. Auth/help do not load the profile.
+
+Each invocation loads/validates once; native module imports are cached. Restart the worker after edits; changes affect future searches and pending reviews, not saved assessments. Reviews assess location eligibility using only `location`, not title/skills/search geography.
 
 ## Commands
 
@@ -84,7 +119,7 @@ The application does not install cron entries. Schedule `fetch`, not `review`, w
 
 ## systemd review worker
 
-Copy the service template, then replace `/path/to/job-hunter` and `/path/to/node` in the installed copy. Use a stable absolute Node.js 22.16+ path, not an interactive shell version-manager path.
+Copy the service template, then replace `/path/to/job-hunter` and `/path/to/node` in the installed copy. Use a stable absolute Node.js 22.18+ path, not an interactive shell version-manager path.
 
 ```sh
 pnpm build

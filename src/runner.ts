@@ -9,15 +9,17 @@ import { PageError } from './firecrawl.js';
 import { AuthenticationError, llm, RateLimitError } from './llm/index.js';
 import type { LlmProvider } from './llm/types.js';
 import type { Listing, SqliteStore } from './persistence.js';
-import { loadProfile } from './profile.js';
+import { loadProfile, type Profile } from './profile.js';
 
 export async function fetchJobs(
   store: SqliteStore,
   search = runParallelGoogleSearchesDetailed,
-  profile = loadProfile(),
+  profile?: Profile,
 ) {
   const searched = await search(
-    buildQueryMatrix(profile).map((spec) => spec.query),
+    buildQueryMatrix(profile ?? (await loadProfile())).map(
+      (spec) => spec.query,
+    ),
     { concurrency: 5, num: 20 },
   );
   return {

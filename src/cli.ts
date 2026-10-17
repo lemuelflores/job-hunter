@@ -17,7 +17,7 @@ worker            Continuously review new jobs with persistent retries
 serve [--port 3000]  Open the local review UI (127.0.0.1 only)
 jobs              Print saved active jobs as JSON
 
-Database, .env and profile.jsonc resolve from the application directory, not the shell's cwd.
+Database, .env and profile.ts resolve from the application directory, not the shell's cwd.
 Google needs AUTOM_API_KEY. Review needs Firecrawl and a saved ChatGPT OAuth login.
 `;
 
@@ -81,7 +81,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return 0;
     }
     const profile = ['fetch', 'review', 'worker'].includes(command)
-      ? loadProfile()
+      ? await loadProfile()
       : undefined;
     const { llm } = await import('./llm/index.js');
     const review: typeof llm.reviewJob = (url, options) =>

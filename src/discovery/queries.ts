@@ -1,4 +1,5 @@
 import type { Profile } from '../profile.js';
+import { or, type TitleExpression } from '../title.js';
 
 export const ATS_DOMAINS = {
   ashby: ['jobs.ashbyhq.com'],
@@ -6,25 +7,34 @@ export const ATS_DOMAINS = {
   greenhouse: ['job-boards.greenhouse.io', 'boards.greenhouse.io'],
 } as const;
 
-function alternatives(terms: string[]): string {
-  return `(${[...new Set(terms.map((term) => term.trim()))]
-    .map((term) => `"${term}"`)
-    .join(' OR ')})`;
+export function renderExpression(
+  expression: TitleExpression,
+  prefix = '',
+): string {
+  if (typeof expression === 'string') return `${prefix}"${expression.trim()}"`;
+  const terms = [
+    ...new Set(expression.terms.map((term) => renderExpression(term, prefix))),
+  ];
+  return `(${terms.join(expression.op === 'or' ? ' OR ' : ' ')})`;
+}
+
+export function renderTitle(expression: TitleExpression): string {
+  return renderExpression(expression, 'intitle:');
 }
 
 export function buildQueryMatrix(profile: Profile) {
-  const roles = alternatives(profile.roleGroups.flat());
-  const result: { ats: string; query: string }[] = [];
-  for (const [ats, domains] of Object.entries(ATS_DOMAINS)) {
-    const sites = `(${domains.map((domain) => `site:${domain}`).join(' OR ')})`;
-    for (const skills of profile.skillGroups) {
-      for (const locations of profile.searchLocations) {
-        result.push({
-          ats,
-          query: `${sites} ${roles} (developer OR engineer) ${alternatives(skills)} (remote OR "fully remote" OR "work from home") ${alternatives(locations)}`,
-        });
-      }
-    }
-  }
-  return result;
+  const title =
+    typeof profile.title !== 'string' && profile.title.op === 'and'
+      ? profile.title.terms.map(renderTitle).join(' ')
+      : renderTitle(profile.title);
+  const sites = `(${Object.values(ATS_DOMAINS)
+    .flat()
+    .map((domain) => `site:${domain}`)
+    .join(' OR ')})`;
+  return [
+    {
+      ats: 'all',
+      query: `${sites} ${title} ${renderExpression(or(...profile.skills))} ${renderExpression(or(...profile.searchLocation))}`,
+    },
+  ];
 }

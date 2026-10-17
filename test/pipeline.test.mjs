@@ -32,7 +32,7 @@ async function fixture(t) {
 test('fetch saves and deduplicates profile-based Google queries without reviewing', async (t) => {
   const { store } = await fixture(t);
   const search = async (queries) => {
-    assert.equal(queries.length, 45);
+    assert.equal(queries.length, 1);
     return {
       results: [result(1), result(1), result(2)],
       failures: [{ query: 'failed', error: 'timeout' }],

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { get as httpGet } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -133,7 +133,9 @@ test('CLI reads app-local database from another cwd and validates arguments', as
   // A temporary package marker preserves ES module semantics outside this project.
   await cp(resolve('package.json'), join(root, 'package.json'));
   await symlink(resolve('node_modules'), join(root, 'node_modules'), 'dir');
-  await cp(resolve('profile.jsonc'), join(root, 'profile.jsonc'));
+  await cp(resolve('profile.ts'), join(root, 'profile.ts'));
+  await mkdir(join(root, 'src'));
+  await cp(resolve('src/title.ts'), join(root, 'src/title.ts'));
   const cli = (...args) =>
     spawnSync(process.execPath, [join(root, 'dist/cli.js'), ...args], {
       cwd: tmpdir(),
@@ -148,17 +150,19 @@ test('CLI reads app-local database from another cwd and validates arguments', as
   assert.equal(cli('review', '--db', '/tmp/arbitrary.sqlite').status, 1);
   assert.equal(cli('review', '--status', 'rejected').status, 1);
   assert.equal(cli('review', '--limit', '0').status, 1);
+  assert.match(cli('review', '--limit', '0').stderr, /Expected an integer/);
   assert.equal(cli('fetch', '--limit', '1').status, 1);
   assert.equal(cli('--help').status, 0);
-  await writeFile(join(root, 'profile.jsonc'), '{broken');
+  await writeFile(join(root, 'profile.ts'), 'export default {broken');
   for (const command of ['fetch', 'review', 'worker']) {
     const invalid = cli(command);
     assert.equal(invalid.status, 1);
-    assert.match(invalid.stderr, /Invalid profile.jsonc/);
+    assert.match(invalid.stderr, /Cannot load profile.ts/);
   }
   assert.equal(cli('jobs').status, 0);
-  await rm(join(root, 'profile.jsonc'));
+  assert.equal(cli('--help').status, 0);
+  await rm(join(root, 'profile.ts'));
   const missing = cli('fetch');
   assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /ENOENT.*profile.jsonc/);
+  assert.match(missing.stderr, /Cannot load profile.ts.*profile.ts/);
 });
