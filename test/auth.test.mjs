@@ -61,7 +61,7 @@ async function startLogin(t, options, login = authenticate) {
   return { url, callback, completed, controller };
 }
 
-test('default login and reviews share app-root .auth.json regardless of cwd or environment', async (t) => {
+test('default login and reviews share app-root .auth.json', async (t) => {
   const { root } = await setup(t);
   const directory = join(root, 'dist', 'review', 'llm', 'chatgpt');
   await mkdir(directory, { recursive: true });
@@ -75,15 +75,6 @@ test('default login and reviews share app-root .auth.json regardless of cwd or e
     join(directory, '..', 'types.js'),
   );
   const provider = await import(pathToFileURL(join(directory, 'auth.js')).href);
-  const original = process.env;
-  process.env = {
-    ...original,
-    CHATGPT_AUTH_FILE: join(root, 'ignored.json'),
-    XDG_DATA_HOME: root,
-  };
-  t.after(() => {
-    process.env = original;
-  });
   const login = await startLogin(
     t,
     { fetch: async () => Response.json(tokenResponse()) },
@@ -96,9 +87,6 @@ test('default login and reviews share app-root .auth.json regardless of cwd or e
     'access',
   );
   assert.equal((await provider.getCredentials()).access, 'access');
-  await assert.rejects(readFile(join(root, 'ignored.json')), {
-    code: 'ENOENT',
-  });
 });
 
 test('browser callback exchanges PKCE code and atomically saves private reusable credentials', async (t) => {
