@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "bullmq": "6.3.17",
+    "citty": "^0.2.2",
     "node-cron": "^4.6.0",
     "redis": "6.3.0"
   }

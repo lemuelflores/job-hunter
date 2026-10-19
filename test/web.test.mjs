@@ -7,7 +7,11 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { SqliteStore } from '../dist/sqlite.js';
-import { listenReviewServer, UI_HTML } from '../dist/web/server.js';
+import {
+  listenReviewServer,
+  serveReviewServer,
+  UI_HTML,
+} from '../dist/web/server.js';
 
 // Only the DOM operations used by the inline UI; no browser dependency needed.
 async function uiFixture(jobs) {
@@ -424,6 +428,34 @@ test('HTTP UI lists eligibility, persists reversible statuses and board-level co
   );
 });
 
+test('serve lifecycle closes the listener and removes signal handlers', {
+  timeout: 5000,
+}, async (t) => {
+  const { store } = await fixture(t);
+  const before = ['SIGINT', 'SIGTERM'].map((signal) =>
+    process.listenerCount(signal),
+  );
+  const ready = Promise.withResolvers();
+  t.mock.method(console, 'log', (message) => ready.resolve(message));
+  const serving = serveReviewServer(store, 0);
+  const message = await Promise.race([ready.promise, serving]);
+  try {
+    assert.match(message, /^Review UI: http:\/\/127\.0\.0\.1:\d+$/);
+    assert.equal(
+      (await fetch(message.slice('Review UI: '.length))).status,
+      200,
+    );
+  } finally {
+    process.emit('SIGTERM');
+    process.emit('SIGTERM');
+    await serving;
+  }
+  assert.deepEqual(
+    ['SIGINT', 'SIGTERM'].map((signal) => process.listenerCount(signal)),
+    before,
+  );
+});
+
 test('CLI reads app-local database from another cwd and validates arguments', async (t) => {
   const { root, store } = await fixture(t);
   await cp(resolve('dist'), join(root, 'dist'), { recursive: true });
@@ -442,13 +474,35 @@ test('CLI reads app-local database from another cwd and validates arguments', as
     JSON.parse(saved.stdout).length,
     store.listReviewJobs('active').length,
   );
+  const withoutModel = spawnSync(
+    process.execPath,
+    [join(root, 'dist/cli.js'), 'jobs'],
+    {
+      cwd: tmpdir(),
+      encoding: 'utf8',
+      env: { ...process.env, MODEL_PROVIDER: 'unsupported' },
+    },
+  );
+  assert.equal(withoutModel.status, 0, withoutModel.stderr);
+  assert.deepEqual(JSON.parse(withoutModel.stdout), JSON.parse(saved.stdout));
   assert.equal(cli('review', '--db', '/tmp/arbitrary.sqlite').status, 1);
   assert.equal(cli('review', '--status', 'rejected').status, 1);
   assert.equal(cli('review', '--limit', '0').status, 1);
   assert.match(cli('review', '--limit', '0').stderr, /Expected an integer/);
   assert.equal(cli('fetch', '--limit', '1').status, 1);
   for (const args of [
+    ['unknown'],
+    ['worker'],
+    ['toString'],
+    ['jobs', 'extra'],
+    ['jobs', '--unexpected'],
+    ['review', '--limit'],
+    ['review', '--limit', '1.5'],
+    ['review', '--limit', '9007199254740992'],
+    ['serve', '--port', '65536'],
+    ['serve', '--port', '0'],
     ['retry'],
+    ['retry', '--id', '1'],
     ['retry', '--stage', 'stack'],
     ['retry', '--stage', 'stack', '--id', '0'],
     ['repair', '--stage', 'invalid'],
@@ -456,8 +510,22 @@ test('CLI reads app-local database from another cwd and validates arguments', as
   ])
     assert.equal(cli(...args).status, 1);
   assert.equal(cli('--help').status, 0);
+  assert.equal(cli().status, 0);
+  for (const command of [
+    'review',
+    'review-worker',
+    'fetch-worker',
+    'retry',
+    'serve',
+  ]) {
+    const help = cli(command, '--help');
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, new RegExp(`job-hunter ${command}`));
+  }
+  assert.match(cli('retry', '--help').stdout, /--stage/);
+  assert.match(cli('retry', '-h').stdout, /--id/);
   await writeFile(join(root, 'profile.ts'), 'export default {broken');
-  for (const command of ['fetch', 'worker']) {
+  for (const command of ['fetch', 'review-worker']) {
     const invalid = cli(command);
     assert.equal(invalid.status, 1);
     assert.match(invalid.stderr, /Cannot load profile.ts/);
@@ -468,4 +536,11 @@ test('CLI reads app-local database from another cwd and validates arguments', as
   const missing = cli('fetch');
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /Cannot load profile.ts.*profile.ts/);
+  await rm(join(root, 'dist/sqlite.js'));
+  for (const args of [[], ['--help'], ['review', '--help'], ['retry', '-h']]) {
+    const help = cli(...args);
+    assert.equal(help.status, 0, help.stderr);
+    assert.equal(help.stderr, '');
+    assert.match(help.stdout, /USAGE/);
+  }
 });

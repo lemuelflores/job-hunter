@@ -1,10 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { SearchResult } from './discovery/google.js';
 import type { StackDecision } from './review/llm/types.js';
+import { STAGES, type Stage } from './review/stages.js';
 import type { ReviewStatus } from './web/types.js';
 
-export const STAGES = ['crawl', 'location', 'stack'] as const;
-export type Stage = (typeof STAGES)[number];
+export { STAGES, type Stage } from './review/stages.js';
 export interface StageState {
   stage: Stage;
   state: 'pending' | 'complete' | 'failed' | 'terminal' | 'blocked';

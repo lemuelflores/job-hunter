@@ -206,3 +206,28 @@ export async function listenReviewServer(
   });
   return server;
 }
+
+export async function serveReviewServer(store: SqliteStore, port: number) {
+  const server = await listenReviewServer(
+    store,
+    port,
+    process.env.JOB_HUNTER_HOST || '127.0.0.1',
+  );
+  console.log(
+    `Review UI: http://127.0.0.1:${(server.address() as { port: number }).port}`,
+  );
+  await new Promise<void>((done) => {
+    let closing = false;
+    const stop = () => {
+      if (closing) return;
+      closing = true;
+      server.close(() => {
+        process.off('SIGINT', stop);
+        process.off('SIGTERM', stop);
+        done();
+      });
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  });
+}

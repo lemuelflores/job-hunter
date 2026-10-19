@@ -9,13 +9,16 @@ Job Hunter is a local, single-user application that discovers jobs, assesses rem
 ```text
 job-hunter/
 ├── src/
-│   ├── cli.ts                 # Commands, dependency construction, review waiting, shutdown
+│   ├── cli.ts                 # Commands, dependency construction, shutdown
 │   ├── discovery/
 │   │   ├── worker.ts          # UTC scheduled discovery
 │   │   ├── discover-jobs.ts   # Search, save listings, enqueue reviews
 │   │   └── google.ts          # Query construction, search types, Autom.dev requests
 │   ├── review/
+│   │   ├── auth.ts            # Provider sign-in and cancellation lifecycle
 │   │   ├── worker.ts          # Crawl/location/stack consumers and stage dispatch
+│   │   ├── review-jobs.ts     # Enqueue unfinished listings and wait for outcomes
+│   │   ├── stages.ts          # Shared processing-stage names and type
 │   │   ├── crawl.ts           # Extract and save listing text, enqueue assessments
 │   │   ├── location-check.ts  # Run and save location eligibility assessment
 │   │   ├── tech-check.ts      # Run and save technology-fit assessment
@@ -102,7 +105,7 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 **Name:** Command entry point and fetch worker.
 
-**Description:** `src/cli.ts` loads root-relative configuration, constructs dependencies, dispatches commands, and manages shutdown. Commands include `auth`, `fetch`, `fetch-worker`, `review`, `worker`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`.
+**Description:** `src/cli.ts` loads root-relative configuration, constructs dependencies only for commands that need them, dispatches commands, and closes shared resources. Commands include `auth`, `fetch`, `fetch-worker`, `review`, `review-worker`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`. Feature modules own workflow lifecycles: `src/review/auth.ts` handles sign-in cancellation, `src/review/review-jobs.ts` owns review enqueueing and outcome waiting, and `src/web/server.ts` owns server startup and graceful shutdown.
 
 `src/discovery/google.ts` builds one combined Google query across Ashby, Lever, and Greenhouse. All title, skill, and search-location terms come from the root profile: array groups are ANDed; canonical names and aliases within a group are ORed. Titles use `intitle:` and skills match page-wide. The builder adds neither a profession nor a remote clause. `searchLocation` controls discovery alternatives; `location` is the candidate's residence for assessment.
 
@@ -118,7 +121,7 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 **Name:** Independent crawl, location, and stack consumers.
 
-**Description:** `src/review/worker.ts` constructs consumers and dispatches stages to `crawl.ts`, `location-check.ts`, and `tech-check.ts` in the same directory; `src/bullmq.ts` owns shared queue delivery and recovery. One `worker` process hosts three consumers. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
+**Description:** `src/review/worker.ts` constructs consumers and dispatches stages to `crawl.ts`, `location-check.ts`, and `tech-check.ts` in the same directory; `src/bullmq.ts` owns shared queue delivery and recovery. One `review-worker` process hosts three consumers. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
 
 Queues use prefix `job-hunter`, names `crawl`, `location`, and `stack`, payload `{ id }`, and stable per-queue IDs `listing-N`. Crawling saves Markdown once and schedules both assessments. Processors consult SQLite before work; completed stages cannot overwrite saved results. Redelivered crawl tasks can enqueue missing assessments without scraping again.
 
@@ -135,7 +138,7 @@ Workers drain active tasks during graceful shutdown. BullMQ recovers stalled del
 
 **Technologies:** BullMQ 6.3.17, redis 6.3.0 via BullMQ's node-redis adapter, Node built-in SQLite, Firecrawl, ChatGPT.
 
-**Deployment:** Compose `review-worker` or host `worker` command.
+**Deployment:** Compose `review-worker` or host `review-worker` command.
 
 #### 3.2.3. Local HTTP API
 

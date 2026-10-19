@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { JobQueues } from '../dist/bullmq.js';
-import { reviewJobs } from '../dist/cli.js';
+import { reviewJobs } from '../dist/review/review-jobs.js';
 import { startWorkers, workJobs } from '../dist/review/worker.js';
 import { SqliteStore } from '../dist/sqlite.js';
 

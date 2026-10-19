@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { reviewJobs } from '../dist/cli.js';
 import { fetchJobs } from '../dist/discovery/discover-jobs.js';
+import { reviewJobs } from '../dist/review/review-jobs.js';
 import { processStage } from '../dist/review/worker.js';
 import { jobUrl, SqliteStore } from '../dist/sqlite.js';
 

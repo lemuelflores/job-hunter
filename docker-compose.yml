@@ -33,7 +33,7 @@ services:
 
   review-worker:
     <<: *app
-    command: [worker]
+    command: [review-worker]
     stop_grace_period: 3m
     environment:
       FIRECRAWL_URL: http://firecrawl:3002

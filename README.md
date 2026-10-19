@@ -93,12 +93,12 @@ docker compose down                              # Stop everything
 pnpm job-hunter fetch                            # Search now
 pnpm job-hunter jobs                             # List saved jobs
 pnpm job-hunter stack-backfill                   # Queue missing stack checks
-pnpm job-hunter review --limit 10                # Enqueue and wait; worker must be running
+pnpm job-hunter review --limit 10                # Enqueue and wait; review-worker must be running
 pnpm job-hunter repair                          # Restore missing unfinished tasks
 pnpm job-hunter retry --stage stack --id 42      # Retry one exhausted stage
 ```
 
-After updating the code, run `pnpm install && pnpm build`, then `docker compose restart web fetch-worker review-worker`.
+After updating the code, run `pnpm install && pnpm build`, then `docker compose up -d --force-recreate web fetch-worker review-worker`.
 
 Keep the worker running when using `review`. If a check fails, its stage and reason appear in the UI. Use `retry` to try that stage again, or `repair` to pick up unfinished work missing from the queue. `stack-backfill` adds missing stack checks, regardless of location eligibility.
 
