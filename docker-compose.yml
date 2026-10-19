@@ -36,10 +36,10 @@ services:
     command: [worker]
     stop_grace_period: 3m
     environment:
-      FIRECRAWL_URL: http://api:3002
+      FIRECRAWL_URL: http://firecrawl:3002
       REDIS_URL: redis://redis:6379
     depends_on:
-      api:
+      firecrawl:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -54,26 +54,19 @@ services:
       redis:
         condition: service_healthy
 
-  api:
+  firecrawl:
     <<: *service
     image: ghcr.io/firecrawl/firecrawl:2.11.528
-    command: node dist/src/harness.js --start-docker
+    # Single-page scraping runs in the API; no crawl/batch workers are needed.
+    command: node dist/src/index.js
     environment:
       HOST: 0.0.0.0
       PORT: 3002
-      EXTRACT_WORKER_PORT: 3004
-      WORKER_PORT: 3005
       ENV: local
       USE_DB_AUTHENTICATION: "false"
       REDIS_URL: redis://redis:6379
       REDIS_RATE_LIMIT_URL: redis://redis:6379
-      PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
-      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
-      POSTGRES_HOST: nuq-postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      PLAYWRIGHT_MICROSERVICE_URL: http://playwright:3000/scrape
     ports:
       - "127.0.0.1:3002:3002"
     healthcheck:
@@ -85,11 +78,7 @@ services:
     depends_on:
       redis:
         condition: service_started
-      playwright-service:
-        condition: service_started
-      rabbitmq:
-        condition: service_healthy
-      nuq-postgres:
+      playwright:
         condition: service_started
     ulimits:
       nofile:
@@ -99,7 +88,7 @@ services:
     mem_limit: 8G
     memswap_limit: 8G
 
-  playwright-service:
+  playwright:
     <<: *service
     image: ghcr.io/firecrawl/playwright-service:latest
     environment:
@@ -126,24 +115,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
-
-  rabbitmq:
-    <<: *service
-    image: rabbitmq:3.13.7-management
-    healthcheck:
-      test: [CMD, rabbitmq-diagnostics, -q, check_running]
-      interval: 5s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-
-  nuq-postgres:
-    <<: *service
-    image: ghcr.io/firecrawl/nuq-postgres:latest
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-postgres}
 
 networks:
   backend:

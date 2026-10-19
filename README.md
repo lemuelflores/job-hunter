@@ -21,7 +21,7 @@ pnpm install
 cp .env.example .env
 ```
 
-1. In `.env`, set `AUTOM_API_KEY` and choose a private `POSTGRES_PASSWORD`.
+1. In `.env`, set `AUTOM_API_KEY`.
 2. Edit [`profile.ts`](profile.ts) with your location, job titles, skills, and search locations.
 3. Build, sign in with ChatGPT using the URL printed by `auth`, and start everything:
 

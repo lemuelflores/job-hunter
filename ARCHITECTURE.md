@@ -77,7 +77,7 @@ review-worker --> Firecrawl --> listing Markdown --> SQLite
 
 User <--> Browser UI <--> Local HTTP server <--> SQLite
 
-Firecrawl API <--> Playwright / Redis / RabbitMQ / PostgreSQL
+Firecrawl API <--> Playwright / Redis
 ```
 
 SQLite is authoritative for job data and processing state. Redis coordinates work and carries listing IDs, not copies of listing text or assessment results. Both assessments consume the same saved Markdown and run independently; location rejection does not prevent stack assessment. The browser reads results and changes user review status; it does not run the processing pipeline.
@@ -190,11 +190,10 @@ Legacy job columns remain to preserve historical values and existing database ob
 
 **Purpose:** BullMQ task delivery, attempts, stalled-task recovery, and retained failures; also used by Firecrawl. Compose configures the `redis-data` volume, append-only persistence with `appendfsync everysec`, and `noeviction`. These settings do not replace SQLite or provide exactly-once processing.
 
-### 4.3. Credentials and Firecrawl-Owned Storage
+### 4.3. Credentials
 
 - `.auth.json`: plaintext OAuth access/refresh credentials, written atomically with restrictive file permissions; automatic refreshes are coalesced within a process.
 - `.env`: local service configuration and secrets.
-- Firecrawl's PostgreSQL and RabbitMQ services support scraping infrastructure, not Job Hunter's domain data. Compose declares no explicit named storage volumes for these two services; do not assume the Redis durability configuration applies to them.
 
 ## 5. External Integrations / APIs
 
@@ -212,13 +211,13 @@ Legacy job columns remain to preserve historical values and existing database ob
 
 **Cloud provider:** None required; intended for a local machine or self-managed host.
 
-**Key services:** Docker Compose runs `web`, `fetch-worker`, `review-worker`, Firecrawl `api`, `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres` on a bridge network. Application services share a read-write checkout bind mount at `/app`, including the database and credentials. There is no application Dockerfile or image build: install dependencies and compile on the host first.
+**Key services:** Docker Compose runs `web`, `fetch-worker`, `review-worker`, `firecrawl`, `playwright`, and `redis` on a bridge network. Firecrawl starts directly with `node dist/src/index.js` for single-page `/v2/scrape` requests, which run in the API without its NuQ workers, RabbitMQ, or PostgreSQL. Full crawl, batch, and extract workflows are not provisioned. Application services share a read-write checkout bind mount at `/app`, including the database and credentials. There is no application Dockerfile or image build: install dependencies and compile on the host first.
 
 Web, Firecrawl API, and Redis host ports are published on `127.0.0.1` only. Compose uses dependency health checks for relevant worker dependencies, restart policies, bounded JSON-file logs, and shutdown grace periods (two minutes for app services, three for review workers). The scraper services have resource limits.
 
 **CI/CD pipeline:** No checked-in `.github` workflow directory; build, checks, tests, and deployment are invoked manually through package scripts and Compose.
 
-**Monitoring and logging:** Console lifecycle/error output and Docker logs; Compose health checks cover Firecrawl API, Redis, and RabbitMQ. No dedicated metrics, tracing, or alerting stack is configured.
+**Monitoring and logging:** Console lifecycle/error output and Docker logs; Compose health checks cover Firecrawl API and Redis. No dedicated metrics, tracing, or alerting stack is configured.
 
 ## 7. Security Considerations
 
@@ -262,7 +261,7 @@ No committed feature roadmap is asserted here. Existing architectural limits to 
 - SQLite saves and Redis enqueue operations are not atomic together; retain explicit repair and idempotent stage handling. External calls can repeat after crashes.
 - OAuth refresh coordination is process-local. Adding more assessment processes requires considering shared credential writes and refresh-token rotation.
 - The unauthenticated, shared-filesystem design is for one trusted local user. Remote access or multi-user deployment requires revisiting authentication, transport security, and storage isolation.
-- Only Redis has explicitly configured named-volume persistence in Compose. A broader backup/recovery policy must account separately for SQLite, credentials, and Firecrawl-owned storage.
+- Redis has explicitly configured named-volume persistence in Compose. A broader backup/recovery policy must account separately for SQLite and credentials.
 
 ## 10. Project Identification
 
