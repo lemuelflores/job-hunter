@@ -370,6 +370,34 @@
         aria-busy="false"
       ></section>
     </main>
+    <script id="assessment-logic">
+    const stackLabel = (job) => {
+      const status = job.stack_status || 'not_checked';
+      if (status !== 'not_checked') return status.replaceAll('_', ' ');
+      if (['ineligible', 'error'].includes(job.eligibility)) return 'Skipped';
+      return 'Not checked';
+    };
+    const matchesLocation = (job, eligibility) => {
+      if (eligibility === 'all') return true;
+      if (job.eligibility === eligibility) return true;
+      if (eligibility !== 'error') return false;
+      return (job.stages || []).some(
+        (stage) =>
+          ['crawl', 'location'].includes(stage.stage) &&
+          ['failed', 'terminal'].includes(stage.state),
+      );
+    };
+    const matchesStack = (job, stack) => {
+      if (stack === 'all') return true;
+      if ((job.stack_status || 'not_checked') === stack) return true;
+      if (stack !== 'error') return false;
+      return (job.stages || []).some(
+        (stage) => stage.stage === 'stack' && stage.state === 'failed',
+      );
+    };
+    const matchesAssessments = (job, eligibility, stack) =>
+      matchesLocation(job, eligibility) && matchesStack(job, stack);
+    </script>
     <script>
     (() => {
       const jobsEl = document.getElementById('jobs');
@@ -455,16 +483,10 @@
           badge.dataset.eligibility = job.eligibility;
         }
         const stackStatus = job.stack_status || 'not_checked';
-        const stackLabel =
-          stackStatus === 'not_checked'
-            ? ['ineligible', 'error'].includes(job.eligibility)
-              ? 'Skipped'
-              : 'Not checked'
-            : stackStatus.replaceAll('_', ' ');
         const stackBadge = addText(
           badges,
           'span',
-          `Stack: ${stackLabel}`,
+          `Stack: ${stackLabel(job)}`,
           stackStatus === 'error' ? 'score error' : 'score',
         );
         stackBadge.dataset.stackStatus = stackStatus;
@@ -604,27 +626,12 @@
           if (localStatus.get(key) === status) jobs.set(key, job);
         });
         return [...jobs.values()]
-          .filter(
-            (job) =>
-              !eligibilityFilter ||
-              eligibilityFilter.value === 'all' ||
-              job.eligibility === eligibilityFilter.value ||
-              (eligibilityFilter.value === 'error' &&
-                (job.stages || []).some(
-                  (stage) =>
-                    ['crawl', 'location'].includes(stage.stage) &&
-                    ['failed', 'terminal'].includes(stage.state),
-                )),
-          )
-          .filter(
-            (job) =>
-              stackFilter.value === 'all' ||
-              (job.stack_status || 'not_checked') === stackFilter.value ||
-              (stackFilter.value === 'error' &&
-                (job.stages || []).some(
-                  (stage) =>
-                    stage.stage === 'stack' && stage.state === 'failed',
-                )),
+          .filter((job) =>
+            matchesAssessments(
+              job,
+              eligibilityFilter?.value || 'all',
+              stackFilter.value,
+            ),
           )
           .map((job) => [job, jobBusy(job)]);
       };
