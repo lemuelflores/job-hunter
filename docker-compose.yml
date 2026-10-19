@@ -1,4 +1,4 @@
-name: firecrawl
+name: job-hunter
 
 x-service: &service
   restart: unless-stopped
