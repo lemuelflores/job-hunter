@@ -16,6 +16,8 @@ x-app: &app
   entrypoint: [node, dist/cli.js]
   init: true
   env_file: .env
+  environment:
+    REDIS_URL: redis://redis:6379
   volumes:
     - .:/app
   stop_grace_period: 2m
@@ -32,10 +34,14 @@ services:
   review-worker:
     <<: *app
     command: [worker]
+    stop_grace_period: 3m
     environment:
       FIRECRAWL_URL: http://api:3002
+      REDIS_URL: redis://redis:6379
     depends_on:
       api:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   fetch-worker:
@@ -43,6 +49,10 @@ services:
     command: [fetch-worker]
     environment:
       FETCH_CRON: ${FETCH_CRON:-0 * * * *}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
 
   api:
     <<: *service
@@ -106,7 +116,16 @@ services:
   redis:
     <<: *service
     image: redis:8.10.2-alpine
-    command: redis-server --bind 0.0.0.0
+    command: redis-server --bind 0.0.0.0 --appendonly yes --appendfsync everysec --maxmemory-policy noeviction
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   rabbitmq:
     <<: *service
@@ -129,3 +148,6 @@ services:
 networks:
   backend:
     driver: bridge
+
+volumes:
+  redis-data:

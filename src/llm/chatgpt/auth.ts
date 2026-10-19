@@ -128,7 +128,24 @@ async function exchange(
   };
 }
 
+const credentialRequests = new Map<string, Promise<Credentials>>();
+
 export async function getCredentials(
+  options: AuthOptions = {},
+): Promise<Credentials> {
+  const path = options.authPath ?? AUTH_PATH;
+  const pending = credentialRequests.get(path);
+  if (pending) return pending;
+  const request = loadCredentials(options);
+  credentialRequests.set(path, request);
+  try {
+    return await request;
+  } finally {
+    credentialRequests.delete(path);
+  }
+}
+
+async function loadCredentials(
   options: AuthOptions = {},
 ): Promise<Credentials> {
   const path = options.authPath ?? AUTH_PATH;

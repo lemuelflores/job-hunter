@@ -264,7 +264,7 @@ test('refresh persists rotated tokens while preserving unrelated credentials and
     }),
   );
   let calls = 0;
-  const refreshed = await getCredentials({
+  const options = {
     authPath,
     fetch: async (url, init) => {
       calls++;
@@ -279,7 +279,12 @@ test('refresh persists rotated tokens while preserving unrelated credentials and
         refresh_token: 'rotated',
       });
     },
-  });
+  };
+  const [refreshed, concurrent] = await Promise.all([
+    getCredentials(options),
+    getCredentials(options),
+  ]);
+  assert.deepEqual(concurrent, refreshed);
   assert.equal(calls, 1);
   assert.equal(refreshed.refresh, 'rotated');
   assert.equal(refreshed.accountId, 'account');

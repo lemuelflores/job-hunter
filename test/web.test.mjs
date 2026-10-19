@@ -10,8 +10,6 @@ import { SqliteStore } from '../dist/persistence.js';
 import { UI_HTML } from '../dist/ui.js';
 import { listenReviewServer } from '../dist/web.js';
 
-const batch = 'a'.repeat(32);
-
 // Only the DOM operations used by the inline UI; no browser dependency needed.
 async function uiFixture(jobs) {
   class Element {
@@ -269,6 +267,44 @@ test('UI updates same-key assessments and preserves hide, reject and restore act
   );
 });
 
+test('UI displays stage failures as text and includes them in the independent Error filters', async () => {
+  const hostile = '<script>untrusted()</script>';
+  const ui = await uiFixture([
+    {
+      reviewKey: '1',
+      eligibility: 'pending',
+      stack_status: 'match',
+      stages: [{ stage: 'location', state: 'failed', error: hostile }],
+    },
+    {
+      reviewKey: '2',
+      eligibility: 'ineligible',
+      stack_status: 'pending',
+      stages: [{ stage: 'stack', state: 'failed', error: 'Model offline' }],
+    },
+    {
+      reviewKey: '3',
+      eligibility: 'pending',
+      stack_status: 'pending',
+      stages: [{ stage: 'crawl', state: 'failed', error: 'Scraper offline' }],
+    },
+  ]);
+  assert.match(ui.cards()[0].textContent, /location: failed/);
+  assert.ok(ui.cards()[0].textContent.includes(hostile));
+  assert.equal(ui.cards()[0].querySelector('script'), undefined);
+  await ui.filter('eligibility', 'error');
+  assert.deepEqual(
+    ui.cards().map((card) => card.dataset.reviewKey),
+    ['1', '3'],
+  );
+  await ui.filter('eligibility', 'all');
+  await ui.filter('stack', 'error');
+  assert.deepEqual(
+    ui.cards().map((card) => card.dataset.reviewKey),
+    ['2'],
+  );
+});
+
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'job-hunter-web-'));
   const store = new SqliteStore(join(root, 'jobs.sqlite'));
@@ -288,15 +324,9 @@ async function fixture(t) {
 
 test('HTTP UI lists eligibility, persists reversible statuses and board-level company actions', async (t) => {
   const { store } = await fixture(t);
-  const [job] = store.claimBatch(batch, 1);
-  store.review(
-    job.id,
-    batch,
-    'ineligible',
-    'US residents only',
-    'United States',
-  );
-  store.finishBatch(batch);
+  const job = store.getJob(1);
+  store.review(job.id, 'ineligible', 'US residents only', 'United States');
+  store.failStage(2, 'stack', 'Model unavailable', true);
   const server = await listenReviewServer(store, 0, '0.0.0.0');
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -314,6 +344,15 @@ test('HTTP UI lists eligibility, persists reversible statuses and board-level co
   assert.match(UI_HTML, /Location eligibility/);
   const jobs = (await (await get('/api/jobs')).json()).jobs;
   assert.equal(jobs.length, 2);
+  assert.ok(
+    jobs
+      .find((row) => row.id === 2)
+      .stages.some(
+        (stage) =>
+          stage.stage === 'stack' && stage.error === 'Model unavailable',
+      ),
+  );
+  assert.equal('listing_text' in jobs[0], false);
   assert.equal(jobs.find((row) => row.id === job.id).eligibility, 'ineligible');
   assert.equal(
     jobs.find((row) => row.id === job.id).reason,
@@ -409,9 +448,17 @@ test('CLI reads app-local database from another cwd and validates arguments', as
   assert.equal(cli('review', '--limit', '0').status, 1);
   assert.match(cli('review', '--limit', '0').stderr, /Expected an integer/);
   assert.equal(cli('fetch', '--limit', '1').status, 1);
+  for (const args of [
+    ['retry'],
+    ['retry', '--stage', 'stack'],
+    ['retry', '--stage', 'stack', '--id', '0'],
+    ['repair', '--stage', 'invalid'],
+    ['repair', '--id', '1'],
+  ])
+    assert.equal(cli(...args).status, 1);
   assert.equal(cli('--help').status, 0);
   await writeFile(join(root, 'profile.ts'), 'export default {broken');
-  for (const command of ['fetch', 'review', 'worker']) {
+  for (const command of ['fetch', 'worker']) {
     const invalid = cli(command);
     assert.equal(invalid.status, 1);
     assert.match(invalid.stderr, /Cannot load profile.ts/);

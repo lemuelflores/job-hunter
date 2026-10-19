@@ -1,404 +1,220 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { PageError } from '../dist/firecrawl.js';
-import { AuthenticationError, RateLimitError } from '../dist/llm/index.js';
 import { SqliteStore } from '../dist/persistence.js';
-import { reviewJobs, workJobs } from '../dist/runner.js';
+import { processStage } from '../dist/runner.js';
 
-const result = (id) => ({
-  url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
-  title: 'Developer',
-  query: 'remote',
-});
-const location = {
-  eligibility: 'eligible',
-  reason: 'Worldwide',
-  evidence: 'Worldwide',
+const decision = {
+  eligibility: 'ineligible',
+  reason: 'US only',
+  evidence: 'US residents',
   company: 'Example',
-  title: 'Developer',
-  location: 'Remote',
+  location: 'US',
+  title: 'Engineer',
 };
-const stack = {
-  status: 'partial_match',
-  reason: 'Laravel and React are required',
-  evidence: 'Laravel + React',
-};
-const text = 'Worldwide. Laravel + React';
-const services = (overrides = {}) => ({
-  scrapeListing: async () => text,
-  reviewJob: async () => location,
+const stack = { status: 'match', reason: 'Laravel', evidence: 'Laravel' };
+const services = {
+  scrapeListing: async () => 'US Laravel role',
+  reviewJob: async () => decision,
   reviewStack: async () => stack,
-  ...overrides,
-});
-async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'stack-pipeline-'));
-  const path = join(root, 'jobs.sqlite');
-  const store = new SqliteStore(path);
-  t.after(async () => {
-    store.close();
-    await rm(root, { recursive: true, force: true });
-  });
-  store.saveResults([result(1)]);
-  return { root, path, store };
+};
+const enqueue = async () => {};
+function fixture(t) {
+  const store = new SqliteStore(':memory:');
+  store.saveResults(
+    [1, 2].map((id) => ({
+      url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
+      title: 'Engineer',
+      query: 'remote',
+    })),
+  );
+  t.after(() => store.close());
+  return store;
 }
 
-test('both reviews share one persisted scrape and expose independent results without the snapshot', async (t) => {
-  const { root, path, store } = await fixture(t);
-  const calls = [];
-  const outcome = await reviewJobs(
-    root,
-    store,
-    {},
-    services({
-      scrapeListing: async () => {
-        calls.push('scrape');
-        return text;
+test('location rejection does not block stack; either evaluation can fail while the other succeeds', async (t) => {
+  for (const failing of ['location', 'stack']) {
+    const store = fixture(t);
+    await processStage(store, 'crawl', 1, enqueue, services);
+    const fake = {
+      ...services,
+      [failing === 'location' ? 'reviewJob' : 'reviewStack']: async () => {
+        throw new Error('temporary');
       },
-      reviewJob: async (_url, options) => {
-        calls.push('location');
-        assert.equal(options.listingText, text);
-        return location;
-      },
-      reviewStack: async (_url, options) => {
-        calls.push('stack');
-        assert.equal(options.listingText, text);
-        assert.equal(options.eligibility, undefined);
-        return stack;
-      },
-    }),
-  );
-  assert.deepEqual(calls, ['scrape', 'location', 'stack']);
-  assert.deepEqual(outcome, { reviewed: 1, pending: 0, failures: [] });
-  const [row] = store.listReviewJobs('active');
-  assert.equal(row.eligibility, 'eligible');
-  assert.equal(row.reason, location.reason);
-  assert.equal(row.stack_status, 'partial_match');
-  assert.equal(row.stack_evidence, stack.evidence);
-  assert.equal('listing_text' in row, false);
-  const db = new DatabaseSync(path);
-  try {
+    };
+    await assert.rejects(
+      processStage(store, failing, 1, enqueue, fake),
+      /temporary/,
+    );
+    store.failStage(1, failing, 'temporary', true);
+    const other = failing === 'location' ? 'stack' : 'location';
+    await processStage(store, other, 1, enqueue, fake);
     assert.equal(
-      db.prepare('SELECT listing_text FROM jobs').get().listing_text,
-      text,
+      store.stages(1).find((s) => s.stage === other).state,
+      'complete',
     );
-  } finally {
-    db.close();
+    const before = store.getJob(1);
+    store.resetStage(1, failing);
+    await processStage(store, failing, 1, enqueue, services);
+    const after = store.getJob(1);
+    for (const key of other === 'location'
+      ? ['eligibility', 'reason', 'evidence', 'company', 'location', 'title']
+      : ['stack_status', 'stack_reason', 'stack_evidence'])
+      assert.equal(after[key], before[key]);
+    assert.equal(after.eligibility, 'ineligible');
+    assert.equal(after.stack_status, 'match');
   }
 });
 
-test('location rejection skips stack, while unclear locations still get a stack assessment', async (t) => {
-  for (const eligibility of ['ineligible', 'unclear']) {
-    const { root, store } = await fixture(t);
-    let stackCalls = 0;
-    await reviewJobs(
-      root,
-      store,
-      {},
-      services({
-        reviewJob: async () => ({ ...location, eligibility }),
-        reviewStack: async () => {
-          stackCalls++;
-          return stack;
-        },
-      }),
-    );
-    const [row] = store.listReviewJobs('active');
-    assert.equal(stackCalls, eligibility === 'unclear' ? 1 : 0);
-    assert.equal(
-      row.stack_status,
-      eligibility === 'unclear' ? 'partial_match' : 'not_checked',
-    );
-    assert.equal(store.pendingCount(), 0);
-  }
-});
-
-test('stack failure survives reopening and resumes only the incomplete stage', async (t) => {
-  const { root, path, store } = await fixture(t);
-  const first = await reviewJobs(
-    root,
-    store,
-    {},
-    services({
-      reviewStack: async () => {
-        throw new Error('model unavailable');
-      },
-    }),
-  );
-  assert.equal(first.reviewed, 0);
-  assert.equal(first.pending, 1);
-  const [row] = store.listReviewJobs('active');
-  assert.equal(row.eligibility, 'eligible');
-  assert.equal(row.stack_status, 'pending');
-  const reopened = new SqliteStore(path);
-  try {
-    const resumed = await reviewJobs(
-      root,
-      reopened,
-      {},
-      services({
-        scrapeListing: async () => assert.fail('must reuse snapshot'),
-        reviewJob: async () => assert.fail('must preserve location'),
-      }),
-    );
-    assert.equal(resumed.reviewed, 1);
-    assert.equal(resumed.pending, 0);
-  } finally {
-    reopened.close();
-  }
-});
-
-test('interruption between stages preserves the completed location decision', async (t) => {
-  const { root, store } = await fixture(t);
-  const outcome = await reviewJobs(
-    root,
-    store,
-    {},
-    services({
-      reviewStack: async (_url, { signal }) => {
-        process.emit('SIGTERM');
-        signal.throwIfAborted();
-        return stack;
-      },
-    }),
-  );
-  assert.equal(outcome.pending, 1);
-  assert.equal(store.listReviewJobs('active')[0].eligibility, 'eligible');
-  assert.equal(store.listReviewJobs('active')[0].attempts, 0);
-  assert.equal(
-    (
-      await reviewJobs(
-        root,
-        store,
-        {},
-        services({
-          reviewJob: async () => assert.fail('location already complete'),
-        }),
-      )
-    ).reviewed,
-    1,
-  );
-});
-
-test('worker stage transition resets the retry budget; stack failures retain the location checkpoint', {
-  timeout: 5000,
-}, async (t) => {
-  const { root, path, store } = await fixture(t);
-  const batch = 'b'.repeat(32);
-  store.claimBatch(batch);
-  for (let i = 0; i < 4; i++)
-    store.failReview(1, batch, 'old location failure', 0);
-  store.finishBatch(batch);
-  await workJobs(
-    root,
-    store,
-    services({
-      reviewStack: async () => {
-        setImmediate(() => process.emit('SIGTERM'));
-        throw new Error('stack failure');
-      },
-    }),
-  );
-  const [row] = store.listReviewJobs('active');
-  assert.equal(row.eligibility, 'eligible');
-  assert.equal(row.stack_status, 'pending');
-  assert.equal(row.attempts, 1);
-  assert.equal(row.last_error, 'stack failure');
-  const db = new DatabaseSync(path);
-  try {
-    db.exec('UPDATE jobs SET next_retry_at=0');
-  } finally {
-    db.close();
-  }
-  await workJobs(
-    root,
-    store,
-    services({
-      scrapeListing: async () => assert.fail('snapshot exists'),
-      reviewJob: async () => assert.fail('location complete'),
-      reviewStack: async () => {
-        setImmediate(() => process.emit('SIGTERM'));
-        return stack;
-      },
-    }),
-  );
-  assert.equal(store.pendingCount(), 0);
-});
-
-test('stack authentication and rate limits preserve location and follow existing retry semantics', {
-  timeout: 5000,
-}, async (t) => {
-  for (const error of [
-    new AuthenticationError('expired'),
-    new RateLimitError('429'),
-  ]) {
-    const { root, store } = await fixture(t);
-    await workJobs(
-      root,
-      store,
-      services({
-        reviewStack: async () => {
-          setImmediate(() => process.emit('SIGTERM'));
-          throw error;
-        },
-      }),
-    );
-    const [row] = store.listReviewJobs('active');
-    assert.equal(row.eligibility, 'eligible');
-    assert.equal(row.stack_status, 'pending');
-    assert.equal(row.attempts, error instanceof AuthenticationError ? 0 : 1);
-  }
-});
-
-test('migration leaves saved decisions untouched; explicit backfill only queues active eligible/unclear jobs', async (t) => {
-  const { root, path, store } = await fixture(t);
-  store.saveResults([result(2), result(3), result(4)]);
-  const batch = 'c'.repeat(32);
-  store.claimBatch(batch);
-  for (const [id, eligibility] of [
-    [1, 'eligible'],
-    [2, 'unclear'],
-    [3, 'ineligible'],
-    [4, 'eligible'],
-  ])
-    store.review(
-      id,
-      batch,
-      eligibility,
-      'Saved location decision',
-      'Saved evidence',
-    );
-  store.finishBatch(batch);
-  store.setReviewStatus('4', 'hidden');
-  const db = new DatabaseSync(path);
-  try {
-    for (const column of [
-      'stack_status',
-      'stack_reason',
-      'stack_evidence',
-      'listing_text',
-    ])
-      db.exec(`ALTER TABLE jobs DROP COLUMN ${column}`);
-    db.exec("UPDATE jobs SET batch='abandoned-batch' WHERE id=1");
-    db.exec(
-      'CREATE INDEX test_title ON jobs(title); CREATE TABLE audit (id INTEGER); CREATE TRIGGER audit_job AFTER UPDATE ON jobs BEGIN INSERT INTO audit VALUES (new.id); END;',
-    );
-  } finally {
-    db.close();
-  }
-  const migrated = new SqliteStore(path);
-  try {
-    assert.equal(migrated.pendingCount(), 0);
-    assert.ok(
-      migrated
-        .listReviewJobs('active')
-        .every((row) => row.stack_status === 'not_checked'),
-    );
-    assert.equal(migrated.queueStackBackfill(), 2);
-    assert.equal(migrated.queueStackBackfill(), 0);
-    assert.equal(migrated.pendingCount(), 2);
-    const outcome = await reviewJobs(
-      root,
-      migrated,
-      {},
-      services({
-        reviewJob: async () => assert.fail('preserve historical location'),
-        scrapeListing: async (url) => {
-          if (url === result(1).url)
-            throw new PageError(404, 'Listing removed');
-          return text;
-        },
-      }),
-    );
-    assert.equal(outcome.reviewed, 2);
-    const rows = migrated.listReviewJobs('active');
-    assert.equal(rows.find((row) => row.id === 1).stack_status, 'error');
-    assert.match(
-      rows.find((row) => row.id === 1).stack_reason,
-      /Listing removed/,
-    );
-    assert.ok(
-      rows.every(
-        (row) =>
-          row.reason === 'Saved location decision' &&
-          row.evidence === 'Saved evidence',
-      ),
-    );
-    assert.equal(
-      migrated.listReviewJobs('hidden')[0].stack_status,
-      'not_checked',
-    );
-    const check = new DatabaseSync(path);
-    try {
-      assert.ok(
-        check
-          .prepare("SELECT name FROM sqlite_master WHERE name='test_title'")
-          .get(),
-      );
-      assert.ok(check.prepare('SELECT count(*) AS n FROM audit').get().n > 0);
-    } finally {
-      check.close();
-    }
-  } finally {
-    migrated.close();
-  }
-});
-
-test('stack persistence rejects invalid and out-of-batch decisions and cannot overwrite results', async (t) => {
-  const { store } = await fixture(t);
-  const batch = 'd'.repeat(32);
-  store.claimBatch(batch);
-  assert.throws(() => store.reviewStack(1, batch, stack), /not pending/);
-  store.review(1, batch, 'eligible', 'Worldwide');
-  assert.throws(
-    () => store.reviewStack(1, 'e'.repeat(32), stack),
-    /not pending/,
-  );
-  for (const decision of [
-    { ...stack, status: 'mismatch' },
-    { ...stack, reason: '' },
-    { ...stack, evidence: 'x'.repeat(5001) },
-  ])
-    assert.throws(
-      () => store.reviewStack(1, batch, decision),
-      /Invalid stack review/,
-    );
-  store.reviewStack(1, batch, stack);
-  assert.throws(() => store.reviewStack(1, batch, stack), /not pending/);
-});
-
-test('stack-backfill CLI queues app-root historical jobs without profile, scraping or model calls', async (t) => {
-  const { root, path, store } = await fixture(t);
-  const batch = 'f'.repeat(32);
-  store.claimBatch(batch);
-  store.review(1, batch, 'eligible', 'Historical location');
-  store.finishBatch(batch);
-  const db = new DatabaseSync(path);
-  try {
-    db.exec("UPDATE jobs SET stack_status='not_checked'");
-  } finally {
-    db.close();
-  }
-  await cp(new URL('../dist/', import.meta.url), join(root, 'dist'), {
-    recursive: true,
+test('an unfinished location request does not block stack or crawling the next listing', async (t) => {
+  const store = fixture(t);
+  let release;
+  const blocked = new Promise((resolve) => {
+    release = resolve;
   });
-  await cp(
-    new URL('../package.json', import.meta.url),
-    join(root, 'package.json'),
+  await processStage(store, 'crawl', 1, enqueue, services);
+  const location = processStage(store, 'location', 1, enqueue, {
+    ...services,
+    reviewJob: async () => {
+      await blocked;
+      return decision;
+    },
+  });
+  await processStage(store, 'stack', 1, enqueue, services);
+  await processStage(store, 'crawl', 2, enqueue, services);
+  assert.equal(store.getJob(1).eligibility, 'pending');
+  assert.equal(store.getJob(1).stack_status, 'match');
+  assert.ok(store.getJob(2).listing_text);
+  release();
+  await location;
+});
+
+test('migration preserves historical decisions, indexes and triggers without implicit backfill', async (t) => {
+  const root = await mkdtemp('/tmp/opencode/job-migration-');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'jobs.sqlite');
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE jobs (
+    id INTEGER PRIMARY KEY,url TEXT NOT NULL UNIQUE,title TEXT NOT NULL,snippet TEXT NOT NULL DEFAULT '',query TEXT NOT NULL,
+    first_seen TEXT NOT NULL,last_seen TEXT NOT NULL,
+    eligibility TEXT NOT NULL DEFAULT 'pending' CHECK(eligibility IN ('pending','eligible','ineligible','unclear')),
+    reason TEXT NOT NULL DEFAULT '',evidence TEXT NOT NULL DEFAULT '',company TEXT NOT NULL DEFAULT '',location TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',reviewed_at TEXT,last_attempt TEXT,batch TEXT);
+    CREATE INDEX jobs_title ON jobs(title);
+    CREATE TABLE audit(id INTEGER);
+    CREATE TRIGGER audit_job AFTER UPDATE ON jobs BEGIN INSERT INTO audit VALUES(new.id); END;`);
+  for (const [id, eligibility, status] of [
+    [1, 'ineligible', 'active'],
+    [2, 'eligible', 'active'],
+    [3, 'unclear', 'hidden'],
+    [4, 'pending', 'active'],
+  ]) {
+    db.prepare(`INSERT INTO jobs(id,url,title,query,first_seen,last_seen,eligibility,reason,evidence,status,batch)
+      VALUES (?,?,'Engineer','remote','then','then',?,'Saved reason','Saved evidence',?,'abandoned')`).run(
+      id,
+      `https://job-boards.greenhouse.io/example/jobs/${id}`,
+      eligibility,
+      status,
+    );
+  }
+  const before = db.prepare('SELECT * FROM jobs ORDER BY id').all();
+  db.close();
+  const store = new SqliteStore(path);
+  try {
+    assert.equal(store.pendingCount(), 1);
+    const check = new DatabaseSync(path);
+    for (const original of before) {
+      const row = check
+        .prepare('SELECT * FROM jobs WHERE id=?')
+        .get(original.id);
+      for (const key of Object.keys(original))
+        assert.equal(row[key], original[key]);
+    }
+    assert.ok(
+      check
+        .prepare("SELECT name FROM sqlite_master WHERE name='jobs_title'")
+        .get(),
+    );
+    assert.ok(
+      check
+        .prepare("SELECT name FROM sqlite_master WHERE name='audit_job'")
+        .get(),
+    );
+    assert.equal(store.queueStackBackfill(), 2);
+    assert.equal(store.queueStackBackfill(), 0);
+    assert.equal(
+      store.stages(1).find((s) => s.stage === 'location').state,
+      'complete',
+    );
+    await processStage(store, 'crawl', 1, enqueue, {
+      ...services,
+      scrapeListing: async () => {
+        const { PageError } = await import('../dist/firecrawl.js');
+        throw new PageError(404, 'Gone');
+      },
+    });
+    assert.equal(store.getJob(1).reason, 'Saved reason');
+    assert.equal(store.getJob(1).evidence, 'Saved evidence');
+    assert.equal(store.getJob(1).eligibility, 'ineligible');
+    assert.equal(
+      store.stages(1).find((s) => s.stage === 'stack').state,
+      'blocked',
+    );
+    assert.equal(store.listReviewJobs('hidden')[0].stack_status, 'not_checked');
+    assert.ok(check.prepare('SELECT count(*) AS n FROM audit').get().n > 0);
+    check.close();
+    const reopened = new SqliteStore(path);
+    assert.deepEqual(reopened.stages(1), store.stages(1));
+    reopened.close();
+  } finally {
+    store.close();
+  }
+});
+
+test('existing stack results and listing snapshots survive migration without re-evaluation', async (t) => {
+  const root = await mkdtemp('/tmp/opencode/job-snapshots-');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'jobs.sqlite');
+  let store = new SqliteStore(path);
+  store.saveResults(
+    [1, 2, 3].map((id) => ({
+      url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
+      title: 'Engineer',
+      query: 'remote',
+    })),
   );
-  const command = spawnSync(
-    process.execPath,
-    [join(root, 'dist/cli.js'), 'stack-backfill'],
-    { cwd: tmpdir(), encoding: 'utf8' },
+  store.saveListingText(1, 'Saved snapshot');
+  store.review(1, 'eligible', 'Historical eligible');
+  store.reviewStack(1, stack);
+  store.review(2, 'ineligible', 'Historical rejected');
+  store.saveListingText(3, 'Stack retry snapshot');
+  store.review(3, 'unclear', 'Historical unclear');
+  store.close();
+  const db = new DatabaseSync(path);
+  db.exec(
+    "DROP TABLE job_stages; UPDATE jobs SET stack_status='not_checked' WHERE id=2",
   );
-  assert.equal(command.status, 0, command.stderr);
-  assert.deepEqual(JSON.parse(command.stdout), { queued: 1 });
-  const [row] = store.listReviewJobs('active');
-  assert.equal(row.eligibility, 'eligible');
-  assert.equal(row.reason, 'Historical location');
-  assert.equal(row.stack_status, 'pending');
+  const before = db.prepare('SELECT * FROM jobs ORDER BY id').all();
+  db.close();
+  store = new SqliteStore(path);
+  try {
+    for (const row of before) assert.deepEqual(store.getJob(row.id), row);
+    assert.deepEqual(
+      store.unfinished().map((row) => row.id),
+      [3],
+    );
+    await processStage(store, 'stack', 3, enqueue, {
+      ...services,
+      reviewJob: async () => assert.fail('location must stay saved'),
+      scrapeListing: async () => assert.fail('snapshot must be reused'),
+    });
+    assert.equal(store.getJob(3).reason, 'Historical unclear');
+    assert.equal(store.getJob(3).listing_text, 'Stack retry snapshot');
+    assert.deepEqual(store.getJob(1), before[0]);
+    assert.deepEqual(store.getJob(2), before[1]);
+  } finally {
+    store.close();
+  }
 });

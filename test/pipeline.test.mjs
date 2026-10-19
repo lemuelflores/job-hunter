@@ -1,23 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
 import { jobUrl, SqliteStore } from '../dist/persistence.js';
-import { fetchJobs, reviewJobs as runReviewJobs } from '../dist/runner.js';
-
-const stackDecision = {
-  status: 'match',
-  reason: 'Laravel role',
-  evidence: 'Laravel',
-};
-const services = (reviewJob) => ({
-  reviewJob,
-  reviewStack: async () => stackDecision,
-  scrapeListing: async () => 'Worldwide Laravel role',
-});
-const reviewJobs = (root, store, options, reviewJob = async () => decision) =>
-  runReviewJobs(root, store, options, services(reviewJob));
+import { fetchJobs, processStage, reviewJobs } from '../dist/runner.js';
 
 const result = (id) => ({
   url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
@@ -27,108 +11,86 @@ const result = (id) => ({
 const decision = {
   eligibility: 'eligible',
   reason: 'Worldwide',
-  evidence: 'Work anywhere',
+  evidence: 'Anywhere',
   company: 'Example',
   location: 'Remote',
   title: 'Engineer',
 };
-async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'job-hunter-'));
-  const store = new SqliteStore(join(root, 'jobs.sqlite'));
-  t.after(async () => {
-    store.close();
-    await rm(root, { recursive: true, force: true });
-  });
-  return { root, store };
+const stack = { status: 'match', reason: 'Laravel role', evidence: 'Laravel' };
+const services = {
+  scrapeListing: async () => 'Worldwide Laravel',
+  reviewJob: async () => decision,
+  reviewStack: async () => stack,
+};
+
+function fixture(t) {
+  const store = new SqliteStore(':memory:');
+  t.after(() => store.close());
+  store.saveResults([result(1), result(2), result(3)]);
+  return store;
 }
 
-test('fetch saves and deduplicates profile-based Google queries without reviewing', async (t) => {
-  const { store } = await fixture(t);
-  const search = async (queries, options) => {
-    assert.equal(queries.length, 1);
-    assert.equal(options.num, 100);
-    return {
-      results: [result(1), result(1), result(2)],
-      failures: [{ query: 'failed', error: 'timeout' }],
-    };
+test('fetch deduplicates one profile query and schedules only discovered unfinished listings', async (t) => {
+  const store = fixture(t);
+  store.saveResults([result(4)]);
+  const scheduled = [];
+  const outcome = await fetchJobs(
+    store,
+    async (queries, options) => {
+      assert.equal(queries.length, 1);
+      assert.equal(options.num, 100);
+      return {
+        results: [result(1), result(1), result(5)],
+        failures: [{ query: 'bad', error: 'timeout' }],
+      };
+    },
+    undefined,
+    async (ids) => scheduled.push(...ids),
+  );
+  assert.deepEqual(outcome, {
+    added: 1,
+    pending: 5,
+    failures: ['bad: timeout'],
+  });
+  assert.deepEqual(scheduled, [1, 5]);
+});
+
+test('crawl checkpoints text before fan-out; redelivery and duplicate assessments preserve saved data', async (t) => {
+  const store = fixture(t);
+  let scrapes = 0;
+  const enqueued = [];
+  const enqueue = async (stage, id) => {
+    assert.equal(store.getJob(id).listing_text, 'Worldwide Laravel');
+    enqueued.push(stage);
   };
-  assert.deepEqual(await fetchJobs(store, search), {
-    added: 2,
-    pending: 2,
-    failures: ['failed: timeout'],
-  });
-  assert.equal((await fetchJobs(store, search)).added, 0);
+  const fake = {
+    ...services,
+    scrapeListing: async () => {
+      scrapes++;
+      return 'Worldwide Laravel';
+    },
+  };
+  await processStage(store, 'crawl', 1, enqueue, fake);
+  assert.deepEqual(enqueued, ['location', 'stack']);
+  await processStage(store, 'crawl', 1, enqueue, fake);
+  assert.equal(scrapes, 1);
+  await processStage(store, 'stack', 1, enqueue, fake);
+  assert.equal(store.getJob(1).eligibility, 'pending');
+  await processStage(store, 'location', 1, enqueue, fake);
+  const saved = JSON.stringify(store.getJob(1));
+  const forbidden = {
+    scrapeListing: async () => assert.fail('rescrape'),
+    reviewJob: async () => assert.fail('location overwrite'),
+    reviewStack: async () => assert.fail('stack overwrite'),
+  };
+  for (const stage of ['crawl', 'location', 'stack'])
+    await processStage(store, stage, 1, enqueue, forbidden);
+  assert.equal(JSON.stringify(store.getJob(1)), saved);
+  assert.equal('listing_text' in store.listReviewJobs('active')[0], false);
 });
 
-test('review saves each job immediately and resumes only pending jobs after failure', async (t) => {
-  const { root, store } = await fixture(t);
-  store.saveResults([result(1), result(2), result(3)]);
-  let calls = 0;
-  const first = await reviewJobs(root, store, {}, async () => {
-    if (++calls === 2) throw new Error('Quota exceeded');
-    return decision;
-  });
-  assert.equal(first.reviewed, 1);
-  assert.equal(first.pending, 2);
-  assert.match(first.failures.join(' '), /Quota exceeded/);
-  const submitted = [];
-  const second = await reviewJobs(root, store, {}, async (url) => {
-    submitted.push(url);
-    return decision;
-  });
-  assert.equal(second.reviewed, 2);
-  assert.equal(second.pending, 0);
-  assert.ok(!submitted.includes(result(1).url));
-  assert.equal(
-    (
-      await reviewJobs(root, store, {}, async () => {
-        throw new Error('must not run');
-      })
-    ).reviewed,
-    0,
-  );
-  const reopened = new SqliteStore(join(root, 'jobs.sqlite'));
-  try {
-    assert.equal(reopened.pendingCount(), 0);
-  } finally {
-    reopened.close();
-  }
-});
-
-test('limit is total jobs; hidden jobs and completed decisions are preserved', async (t) => {
-  const { root, store } = await fixture(t);
-  store.saveResults([result(1), result(2), result(3)]);
-  store.setReviewStatus('1', 'hidden');
-  assert.equal(
-    (await reviewJobs(root, store, { limit: 1 }, async () => decision))
-      .reviewed,
-    1,
-  );
-  assert.equal(store.pendingCount(), 1);
-  assert.equal(store.listReviewJobs('hidden')[0].eligibility, 'pending');
-  await assert.rejects(reviewJobs(root, store, { limit: -1 }), /Invalid batch/);
-});
-
-test('lock prevents overlap and releases after invalid decisions', async (t) => {
-  const { root, store } = await fixture(t);
-  await mkdir(join(root, '.run-lock'));
-  await assert.rejects(reviewJobs(root, store), /Another run/);
-  await rm(join(root, '.run-lock'), { recursive: true });
-  store.saveResults([result(1)]);
-  const failed = await reviewJobs(root, store, {}, async () => ({
-    ...decision,
-    eligibility: 'deleted',
-  }));
-  assert.equal(failed.pending, 1);
-  assert.match(failed.failures.join(' '), /Invalid review/);
-  assert.equal(
-    (await reviewJobs(root, store, {}, async () => decision)).reviewed,
-    1,
-  );
-});
-
-test('URL validation and batch-scoped writes reject unsafe inputs and overwrites', async (t) => {
-  const { store } = await fixture(t);
+test('URL validation, invalid results and completed-stage guards reject unsafe writes', (t) => {
+  const store = fixture(t);
   assert.equal(
     jobUrl('https://boards.greenhouse.io/example/jobs/1?tracking=x'),
     result(1).url,
@@ -139,32 +101,68 @@ test('URL validation and batch-scoped writes reject unsafe inputs and overwrites
     'https://u:p@job-boards.greenhouse.io/example/jobs/1',
   ])
     assert.equal(jobUrl(url), null);
-  store.saveResults([result(1)]);
-  const batch = 'a'.repeat(32);
-  store.claimBatch(batch);
+  assert.throws(() => store.review(1, 'deleted', 'invalid'), /Invalid review/);
+  assert.throws(() => store.review(1, 'eligible', ''), /Invalid review/);
+  assert.throws(() => store.saveListingText(1, ''), /Invalid listing/);
+  store.saveListingText(1, 'text');
+  store.review(1, 'eligible', 'Worldwide');
   assert.throws(
-    () => store.review(1, 'b'.repeat(32), 'eligible', 'ok'),
+    () => store.review(1, 'ineligible', 'overwrite'),
     /not pending/,
   );
-  store.review(1, batch, 'eligible', 'Worldwide');
-  assert.throws(
-    () => store.review(1, batch, 'ineligible', 'overwrite'),
-    /not pending/,
-  );
+  assert.equal(store.getJob(1).eligibility, 'eligible');
+  for (const status of ['deleted', 'pending'])
+    assert.throws(
+      () => store.reviewStack(1, { ...stack, status }),
+      /Invalid stack/,
+    );
+  store.reviewStack(1, stack);
+  assert.throws(() => store.reviewStack(1, stack), /not pending/);
 });
 
-test('SIGINT cancels the request, preserves pending work, and releases the lock', async (t) => {
-  const { root, store } = await fixture(t);
-  store.saveResults([result(1)]);
-  const outcome = await reviewJobs(root, store, {}, async (_, { signal }) => {
-    process.emit('SIGINT');
-    signal.throwIfAborted();
-    return decision;
+test('review bounds listing selection, shares scheduling, reports failures and cancels waiting without resetting results', async (t) => {
+  const store = fixture(t);
+  store.setReviewStatus('1', 'hidden');
+  const queues = {
+    scheduleListing: async (_, id) => {
+      assert.equal(id, 2);
+      for (const stage of ['crawl', 'location', 'stack'])
+        await processStage(store, stage, id, async () => {}, services);
+    },
+    syncFailures: async () => {},
+  };
+  assert.deepEqual(await reviewJobs(store, queues, 1), {
+    reviewed: 1,
+    pending: 1,
+    failures: [],
   });
-  assert.equal(outcome.pending, 1);
-  assert.match(outcome.failures.join(' '), /interrupted/);
-  assert.equal(
-    (await reviewJobs(root, store, {}, async () => decision)).reviewed,
+  await assert.rejects(reviewJobs(store, queues, 0), /Invalid review limit/);
+  const controller = new AbortController();
+  controller.abort(new Error('cancelled'));
+  await assert.rejects(
+    reviewJobs(
+      store,
+      { scheduleListing: async () => {}, syncFailures: async () => {} },
+      1,
+      controller.signal,
+    ),
+    /cancelled/,
+  );
+  store.failStage(3, 'crawl', 'offline', true);
+  const failed = await reviewJobs(
+    store,
+    { scheduleListing: async () => {}, syncFailures: async () => {} },
     1,
   );
+  assert.deepEqual(failed.failures, ['Job 3 crawl: offline']);
+  store.resetStage(3, 'crawl');
+  const hidden = await reviewJobs(
+    store,
+    {
+      scheduleListing: async () => store.setReviewStatus('3', 'hidden'),
+      syncFailures: async () => {},
+    },
+    1,
+  );
+  assert.deepEqual(hidden.failures, ['Job 3: no longer active']);
 });

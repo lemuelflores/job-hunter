@@ -290,6 +290,7 @@ test('fetch uses the supplied profile with no country bias and loads its default
           return { results: [], failures: [] };
         },
         supplied,
+        async () => {},
       );
     }
   } finally {

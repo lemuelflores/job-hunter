@@ -470,6 +470,15 @@
           stackStatus === 'error' ? 'score error' : 'score',
         );
         stackBadge.dataset.stackStatus = stackStatus;
+        for (const stage of job.stages || []) {
+          if (!stage.error) continue;
+          addText(
+            card,
+            'p',
+            `${stage.stage}: ${stage.state} — ${stage.error}`,
+            'error',
+          );
+        }
         const meta = document.createElement('div');
         meta.className = 'meta';
         card.append(meta);
@@ -584,12 +593,23 @@
             (job) =>
               !eligibilityFilter ||
               eligibilityFilter.value === 'all' ||
-              job.eligibility === eligibilityFilter.value,
+              job.eligibility === eligibilityFilter.value ||
+              (eligibilityFilter.value === 'error' &&
+                (job.stages || []).some(
+                  (stage) =>
+                    ['crawl', 'location'].includes(stage.stage) &&
+                    ['failed', 'terminal'].includes(stage.state),
+                )),
           )
           .filter(
             (job) =>
               stackFilter.value === 'all' ||
-              (job.stack_status || 'not_checked') === stackFilter.value,
+              (job.stack_status || 'not_checked') === stackFilter.value ||
+              (stackFilter.value === 'error' &&
+                (job.stages || []).some(
+                  (stage) =>
+                    stage.stage === 'stack' && stage.state === 'failed',
+                )),
           )
           .map((job) => [job, jobBusy(job)]);
       };

@@ -4,8 +4,9 @@ import { loadEnvFile } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { scrapeListing } from './firecrawl.js';
-import { SqliteStore } from './persistence.js';
+import { SqliteStore, STAGES, type Stage } from './persistence.js';
 import { loadProfile } from './profile.js';
+import { JobQueues } from './queues.js';
 import type { ReviewServices } from './runner.js';
 import { listenReviewServer } from './web.js';
 
@@ -14,15 +15,17 @@ const HELP = `Usage: node dist/cli.js <command>
 
 fetch             Search Google and save new job URLs (no analysis)
 auth              Sign in with your ChatGPT subscription in a browser
-review [--limit N] Scrape pending jobs with Firecrawl, then analyze through ChatGPT OAuth
-worker            Continuously review new jobs with persistent retries
+review [--limit N] Enqueue unfinished listings and wait (requires Redis and worker)
+worker            Run independent crawl, location and stack consumers
+repair [--stage crawl|location|stack] Restore missing unfinished queue tasks
+retry --stage crawl|location|stack --id N  Retry an exhausted stage
 stack-backfill    Queue stack checks for active, previously reviewed jobs (preserves location decisions)
 fetch-worker      Schedule fetching with FETCH_CRON (default: hourly, UTC)
 serve [--port 3000]  Open the local review UI (127.0.0.1 only)
 jobs              Print saved active jobs as JSON
 
 Database, .env and profile.ts resolve from the application directory, not the shell's cwd.
-Google needs AUTOM_API_KEY. Review needs Firecrawl and a saved ChatGPT OAuth login.
+Google needs AUTOM_API_KEY. Processing needs Redis, Firecrawl and a saved ChatGPT OAuth login.
 `;
 
 function integer(
@@ -38,6 +41,10 @@ function integer(
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   let store: SqliteStore | undefined;
+  let queues: JobQueues | undefined;
+  const jobQueues = () => (queues ??= new JobQueues());
+  const controller = new AbortController();
+  const stop = () => controller.abort(new Error('Processing interrupted'));
   try {
     const parsed = parseArgs({
       args: argv,
@@ -46,6 +53,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         help: { type: 'boolean', short: 'h' },
         limit: { type: 'string' },
         port: { type: 'string' },
+        stage: { type: 'string' },
+        id: { type: 'string' },
       },
     });
     const command = parsed.positionals[0];
@@ -65,13 +74,33 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         'review',
         'worker',
         'stack-backfill',
+        'repair',
+        'retry',
       ].includes(command)
     )
       throw new Error(HELP);
     const allowed =
-      command === 'review' ? ['limit'] : command === 'serve' ? ['port'] : [];
+      command === 'review'
+        ? ['limit']
+        : command === 'serve'
+          ? ['port']
+          : command === 'repair'
+            ? ['stage']
+            : command === 'retry'
+              ? ['stage', 'id']
+              : [];
     if (Object.keys(v).some((key) => !allowed.includes(key)))
       throw new Error('Unexpected option for command');
+    const limit =
+      v.limit === undefined
+        ? undefined
+        : integer(v.limit, 0, Number.MAX_SAFE_INTEGER);
+    if (v.stage !== undefined && !STAGES.includes(v.stage as Stage))
+      throw new Error('Invalid stage');
+    if (command === 'retry' && (!v.stage || !v.id))
+      throw new Error('retry requires --stage and --id');
+    const id =
+      v.id === undefined ? 0 : integer(v.id, 0, Number.MAX_SAFE_INTEGER);
     try {
       loadEnvFile(resolve(ROOT, '.env'));
     } catch (error) {
@@ -93,9 +122,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       }
       return 0;
     }
-    const profile = ['fetch', 'fetch-worker', 'review', 'worker'].includes(
-      command,
-    )
+    const profile = ['fetch', 'fetch-worker', 'worker'].includes(command)
       ? await loadProfile()
       : undefined;
     const { llm } = await import('./llm/index.js');
@@ -107,11 +134,29 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         llm.reviewStack(url, { ...options, skills: profile?.skills }),
     };
     store = new SqliteStore(resolve(ROOT, 'jobs.sqlite'));
+    if (['review', 'worker'].includes(command)) {
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+    }
     if (command === 'jobs')
       console.log(JSON.stringify(store.listReviewJobs('active'), null, 2));
-    else if (command === 'stack-backfill')
-      console.log(JSON.stringify({ queued: store.queueStackBackfill() }));
-    else if (command === 'fetch-worker') {
+    else if (command === 'stack-backfill') {
+      const queued = store.queueStackBackfill();
+      await jobQueues().repair(store);
+      console.log(JSON.stringify({ queued }));
+    } else if (command === 'repair') {
+      console.log(
+        JSON.stringify({
+          listings: await jobQueues().repair(
+            store,
+            v.stage as Stage | undefined,
+          ),
+        }),
+      );
+    } else if (command === 'retry') {
+      await jobQueues().retry(store, v.stage as Stage, id);
+      console.log(JSON.stringify({ retried: id, stage: v.stage }));
+    } else if (command === 'fetch-worker') {
       const { workFetch } = await import('./fetch-worker.js');
       const { fetchJobs } = await import('./runner.js');
       const fetchStore = store;
@@ -123,23 +168,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       });
     } else if (command === 'worker') {
       const { workJobs } = await import('./runner.js');
-      await workJobs(ROOT, store, review);
+      await workJobs(store, jobQueues(), review, controller.signal);
     } else if (command === 'fetch' || command === 'review') {
       const { fetchJobs, reviewJobs } = await import('./runner.js');
       const outcome =
         command === 'fetch'
           ? await fetchJobs(store, undefined, profile)
-          : await reviewJobs(
-              ROOT,
-              store,
-              {
-                limit:
-                  v.limit === undefined
-                    ? undefined
-                    : integer(v.limit, 0, Number.MAX_SAFE_INTEGER),
-              },
-              review,
-            );
+          : await reviewJobs(store, jobQueues(), limit, controller.signal);
       console.log(JSON.stringify(outcome));
       return outcome.failures.length ? 1 : 0;
     } else {
@@ -171,6 +206,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     console.error(error instanceof Error ? error.message : String(error));
     return 1;
   } finally {
+    process.off('SIGINT', stop);
+    process.off('SIGTERM', stop);
+    await queues?.close();
     store?.close();
   }
 }

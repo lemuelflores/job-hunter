@@ -13,6 +13,7 @@
     "fix": "biome check --write .",
     "build": "tsc -p tsconfig.profile.json && tsc -p tsconfig.json && cp src/ui.html dist/ui.html",
     "test": "pnpm build && node --test test/*.test.mjs",
+    "test:queue": "node --test test/queue.integration.mjs",
     "job-hunter": "node dist/cli.js"
   },
   "devDependencies": {
@@ -21,6 +22,8 @@
     "typescript": "^5.8.0"
   },
   "dependencies": {
-    "node-cron": "^4.6.0"
+    "bullmq": "6.3.17",
+    "node-cron": "^4.6.0",
+    "redis": "6.3.0"
   }
 }

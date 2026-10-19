@@ -93,17 +93,24 @@ docker compose down                              # Stop everything
 pnpm job-hunter fetch                            # Search now
 pnpm job-hunter jobs                             # List saved jobs
 pnpm job-hunter stack-backfill                   # Queue missing stack checks
+pnpm job-hunter review --limit 10                # Enqueue and wait; worker must be running
+pnpm job-hunter repair                          # Restore missing unfinished tasks
+pnpm job-hunter retry --stage stack --id 42      # Retry one exhausted stage
 ```
 
 After updating the code, run `pnpm install && pnpm build`, then `docker compose restart web fetch-worker review-worker`.
+
+Keep the worker running when using `review`. If a check fails, its stage and reason appear in the UI. Use `retry` to try that stage again, or `repair` to pick up unfinished work missing from the queue. `stack-backfill` adds missing stack checks, regardless of location eligibility.
+
+Processing commands connect to Redis through `REDIS_URL` (localhost by default). Compose sets this for you and saves queue data in a Docker volume. Avoid `docker compose down -v` unless you want to delete that data.
 
 Jobs and login tokens stay in this checkout (`jobs.sqlite` and `.auth.json`). Keep `.auth.json` private—it contains plaintext credentials. Sign in again with `pnpm job-hunter auth` if needed. The web UI is only exposed locally.
 
 ## Under the hood
 
-TypeScript, SQLite, and a plain HTML/CSS/JS UI. Autom.dev provides Google results, self-hosted Firecrawl reads the pages, and ChatGPT checks location and stack separately. Stack checks run for jobs whose location is eligible or unclear.
+TypeScript, SQLite, BullMQ/Redis, and a plain HTML/CSS/JS UI. Autom.dev provides Google results, self-hosted Firecrawl reads the pages, and ChatGPT checks location and stack independently.
 
-Reviews run one at a time, retry temporary failures, and save each result as it completes. Saved listing text is reused between checks and retries.
+One worker handles crawling and both checks. Saved listing text is reused, each result saves as it finishes, and temporary failures get up to three attempts.
 
 Searches use Autom credits. ChatGPT access uses an unofficial subscription endpoint, so upstream changes may break it.
 
@@ -112,6 +119,7 @@ For local development:
 ```sh
 pnpm check
 pnpm test
+pnpm test:queue  # Isolated Docker Redis restart/recovery tests (build first)
 ```
 
-Tests use mocked services and temporary databases, not live API calls.
+Tests use mocked services and temporary databases, not live API calls. Queue integration tests additionally require Docker and the `redis:8.10.2-alpine` image; they create and remove their own container and temporary storage.
