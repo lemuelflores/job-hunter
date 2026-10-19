@@ -30,17 +30,8 @@ test('rediscovery deduplicates canonical URLs without resetting saved decisions'
   store.reviewStack(1, stack);
   store.setReviewStatus('1', 'hidden');
   const before = store.getJob(1);
-  // Act / Assert: rediscover tracked and canonical aliases without inserting a row.
-  assert.equal(
-    store.saveResults([
-      {
-        ...result(1),
-        url: 'https://boards.greenhouse.io/example/jobs/1?source=google#top',
-      },
-      result(1),
-    ]),
-    0,
-  );
+  // Act / Assert: rediscover the same canonical URL without inserting a row.
+  assert.equal(store.saveResults([result(1), result(1)]), 0);
   // Assert: only last_seen may change; saved decisions and completion remain intact.
   const { last_seen: _beforeSeen, ...saved } = before;
   const { last_seen: _afterSeen, ...after } = store.getJob(1);

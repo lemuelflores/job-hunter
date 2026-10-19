@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { jobUrl } from '../dist/sqlite.js';
+import { jobUrl } from '../dist/discovery/job-url.js';
 
 test('listing URLs accept supported shapes and strip tracking', () => {
   // Arrange: use a valid UUID listing identifier across supported hosts.

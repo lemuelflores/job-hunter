@@ -1,10 +1,11 @@
 import { JobQueues } from '../bullmq.js';
 import { loadProfile, type Profile } from '../profile.js';
-import { jobUrl, type SqliteStore } from '../sqlite.js';
+import type { SqliteStore } from '../sqlite.js';
 import {
   buildQueryMatrix,
   runParallelGoogleSearchesDetailed,
 } from './google.js';
+import { jobUrl } from './job-url.js';
 
 export async function fetchJobs(
   store: SqliteStore,
@@ -25,8 +26,12 @@ export async function fetchJobs(
     ),
     { concurrency: 5, num: 100 },
   );
-  const added = store.saveResults(searched.results);
-  const urls = new Set(searched.results.map((result) => jobUrl(result.url)));
+  const results = searched.results.flatMap((result) => {
+    const url = jobUrl(result.url);
+    return url ? [{ ...result, url }] : [];
+  });
+  const added = store.saveResults(results);
+  const urls = new Set(results.map((result) => result.url));
   await schedule(
     store
       .unfinished()

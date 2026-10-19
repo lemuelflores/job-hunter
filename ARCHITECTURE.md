@@ -13,6 +13,7 @@ job-hunter/
 │   ├── discovery/
 │   │   ├── worker.ts          # UTC scheduled discovery
 │   │   ├── discover-jobs.ts   # Search, save listings, enqueue reviews
+│   │   ├── job-url.ts         # ATS listing URL validation and normalization
 │   │   └── google.ts          # Query construction, search types, Autom.dev requests
 │   ├── review/
 │   │   ├── auth.ts            # Provider sign-in and cancellation lifecycle
@@ -109,7 +110,7 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 `src/discovery/google.ts` builds one combined Google query across Ashby, Lever, and Greenhouse. All title, skill, and search-location terms come from the root profile: array groups are ANDed; canonical names and aliases within a group are ORed. Titles use `intitle:` and skills match page-wide. The builder adds neither a profession nor a remote clause. `searchLocation` controls discovery alternatives; `location` is the candidate's residence for assessment.
 
-`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. `fetchJobs` in `src/discovery/discover-jobs.ts` saves accepted URLs and schedules unfinished jobs found in those results. Fetching does not assess jobs.
+`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. `fetchJobs` in `src/discovery/discover-jobs.ts` validates and canonicalizes URLs through `src/discovery/job-url.ts` before passing accepted results to SQLite and scheduling unfinished jobs found in those results. SQLite persists the supplied URLs and deduplicates by URL; it does not own ATS URL rules. Fetching does not assess jobs.
 
 `src/discovery/worker.ts` uses `FETCH_CRON` (default `0 * * * *`, UTC), with no immediate startup fetch and no overlapping runs. Shutdown waits for the active fetch; scheduled failures are logged without stopping future runs.
 
@@ -285,7 +286,7 @@ No committed feature roadmap is asserted here. Existing architectural limits to 
 
 **Primary contact/team:** Not declared in the package manifest; use the repository's maintainer/contact channels.
 
-**Date of last update:** 2026-10-19.
+**Date of last update:** 2026-10-20.
 
 ## 11. Glossary / Acronyms
 

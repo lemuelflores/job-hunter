@@ -84,3 +84,52 @@ test('fetch deduplicates one profile query and schedules only discovered unfinis
   });
   assert.deepEqual(scheduled, [1, 5]);
 });
+
+test('fetch validates and canonicalizes URLs before persistence and scheduling', async (t) => {
+  // Arrange: keep one completed listing and capture the persistence boundary.
+  const store = fixture(t);
+  store.saveListingText(2, 'Saved text');
+  store.review(2, 'eligible', 'Worldwide');
+  store.reviewStack(2, {
+    status: 'match',
+    reason: 'Laravel',
+    evidence: 'Laravel',
+  });
+  const before = store.getJob(2);
+  const saved = [];
+  const saveResults = store.saveResults.bind(store);
+  store.saveResults = (results) => {
+    saved.push(...results);
+    return saveResults(results);
+  };
+  const scheduled = [];
+  const alias = (id) => ({
+    ...result(id),
+    url: `https://boards.greenhouse.io/example/jobs/${id}?source=google#top`,
+  });
+  // Act: discover tracked aliases, duplicates, and unsupported listing URLs.
+  const outcome = await fetchJobs(
+    store,
+    async () => ({
+      results: [
+        alias(1),
+        alias(2),
+        alias(5),
+        result(5),
+        { ...result(6), url: 'https://evil.test/example/jobs/6' },
+        { ...result(7), url: 'https://jobs.lever.co/example' },
+      ],
+      failures: [],
+    }),
+    undefined,
+    async (ids) => scheduled.push(...ids),
+  );
+  // Assert: only canonical, accepted results reach SQLite, retaining their metadata.
+  assert.deepEqual(saved, [result(1), result(2), result(5), result(5)]);
+  assert.deepEqual(outcome, { added: 1, pending: 3, failures: [] });
+  assert.deepEqual(scheduled, [1, 4]);
+  assert.equal(store.listReviewJobs('active').length, 4);
+  const { last_seen: _beforeSeen, ...original } = before;
+  const { last_seen: _afterSeen, ...after } = store.getJob(2);
+  assert.deepEqual(after, original);
+});
