@@ -41,6 +41,7 @@
     }
     .toolbar {
       display: flex;
+      flex-wrap: wrap;
       justify-content: space-between;
       align-items: center;
       gap: 16px;
@@ -159,12 +160,21 @@
       font-weight: 700;
       text-transform: capitalize;
     }
-    .score[data-eligibility="eligible"] {
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .score[data-eligibility="eligible"],
+    .score[data-stack-status="match"] {
       border-color: #c4dfd0;
       background: var(--accent-soft);
       color: var(--accent);
     }
-    .score[data-eligibility="unclear"] {
+    .score[data-eligibility="unclear"],
+    .score[data-stack-status="partial_match"],
+    .score[data-stack-status="potential_match"],
+    .score[data-stack-status="unclear"] {
       border-color: #eadcb6;
       background: #fcf4df;
       color: #795a19;
@@ -188,6 +198,10 @@
     .assessment p {
       margin: 0;
       max-width: 68ch;
+    }
+    .assessment + .assessment,
+    .evidence + .assessment {
+      margin-top: 18px;
     }
     .evidence {
       margin-top: 18px;
@@ -334,6 +348,19 @@
             <option value="error">Error</option>
           </select></label
         >
+        <label class="filter"
+          >Stack assessment
+          <select id="stack">
+            <option value="all">All</option>
+            <option value="not_checked">Not checked / Skipped</option>
+            <option value="pending">Pending</option>
+            <option value="match">Match</option>
+            <option value="partial_match">Partial match</option>
+            <option value="potential_match">Potential match</option>
+            <option value="unclear">Unclear</option>
+            <option value="error">Error</option>
+          </select></label
+        >
       </div>
       <div id="notice" role="status" aria-live="polite"></div>
       <section
@@ -349,6 +376,7 @@
       const noticeEl = document.getElementById('notice');
       const tabs = [...document.querySelectorAll('[data-status]')];
       const eligibilityFilter = document.getElementById('eligibility');
+      const stackFilter = document.getElementById('stack');
       let currentStatus = 'active';
       let request = null;
       let listingGeneration = 0;
@@ -358,6 +386,7 @@
       const localStatus = new Map();
       const knownJobs = new Map();
       const cache = new Map();
+      const renderedJobs = new WeakMap();
 
       const setNotice = (message, error = false) => {
         noticeEl.textContent = message;
@@ -403,6 +432,7 @@
       const jobBusy = (job) => pending.has(String(job.reviewKey));
       const renderJob = (job, isPending = false) => {
         const card = document.createElement('article');
+        renderedJobs.set(card, JSON.stringify(job));
         card.className = 'job';
         card.dataset.reviewKey = String(job.reviewKey || '');
         card.dataset.pending = String(isPending);
@@ -414,15 +444,32 @@
         addText(heading, 'h2', job.title || 'Untitled role');
         const company = displayCompany(job);
         if (company) addText(heading, 'p', company, 'company');
+        const badges = document.createElement('div');
+        badges.className = 'badges';
+        top.append(badges);
         if (job.eligibility) {
           const badge = addText(
-            top,
+            badges,
             'span',
-            job.eligibility,
+            `Location: ${job.eligibility}`,
             job.eligibility === 'error' ? 'score error' : 'score',
           );
           badge.dataset.eligibility = job.eligibility;
         }
+        const stackStatus = job.stack_status || 'not_checked';
+        const stackLabel =
+          stackStatus === 'not_checked'
+            ? ['ineligible', 'error'].includes(job.eligibility)
+              ? 'Skipped'
+              : 'Not checked'
+            : stackStatus.replaceAll('_', ' ');
+        const stackBadge = addText(
+          badges,
+          'span',
+          `Stack: ${stackLabel}`,
+          stackStatus === 'error' ? 'score error' : 'score',
+        );
+        stackBadge.dataset.stackStatus = stackStatus;
         const meta = document.createElement('div');
         meta.className = 'meta';
         card.append(meta);
@@ -440,7 +487,7 @@
             assessment,
             'h3',
             job.eligibility === 'error'
-              ? 'Listing unavailable'
+              ? 'Location assessment error'
               : 'Location assessment',
           );
           addText(assessment, 'p', job.reason);
@@ -449,8 +496,28 @@
           const evidence = document.createElement('div');
           evidence.className = 'evidence';
           card.append(evidence);
-          addText(evidence, 'h3', 'From the listing');
+          addText(evidence, 'h3', 'Location evidence from the listing');
           addText(evidence, 'blockquote', job.evidence);
+        }
+        if (job.stack_reason) {
+          const assessment = document.createElement('div');
+          assessment.className = 'assessment';
+          card.append(assessment);
+          addText(
+            assessment,
+            'h3',
+            stackStatus === 'error'
+              ? 'Stack assessment error'
+              : 'Stack assessment',
+          );
+          addText(assessment, 'p', job.stack_reason);
+        }
+        if (job.stack_evidence) {
+          const evidence = document.createElement('div');
+          evidence.className = 'evidence';
+          card.append(evidence);
+          addText(evidence, 'h3', 'Stack evidence from the listing');
+          addText(evidence, 'blockquote', job.stack_evidence);
         }
         const actions = document.createElement('div');
         actions.className = 'actions';
@@ -519,6 +586,11 @@
               eligibilityFilter.value === 'all' ||
               job.eligibility === eligibilityFilter.value,
           )
+          .filter(
+            (job) =>
+              stackFilter.value === 'all' ||
+              (job.stack_status || 'not_checked') === stackFilter.value,
+          )
           .map((job) => [job, jobBusy(job)]);
       };
       const renderList = (status, serverJobs, announce = true) => {
@@ -546,6 +618,10 @@
           const key = String(job.reviewKey);
           const card = existing.get(key);
           if (card) {
+            if (renderedJobs.get(card) !== JSON.stringify(job)) {
+              card.replaceWith(renderJob(job, isPending));
+              return;
+            }
             const disabled = isPending || jobBusy(job);
             card.dataset.pending = String(disabled);
             card.querySelectorAll('button').forEach((button) => {
@@ -674,6 +750,7 @@
         });
       });
       eligibilityFilter?.addEventListener('change', load);
+      stackFilter.addEventListener('change', load);
       load();
     })();
     </script>

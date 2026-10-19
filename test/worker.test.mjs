@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { cp, mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { cp, mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -9,7 +9,25 @@ import { test } from 'node:test';
 import { PageError } from '../dist/firecrawl.js';
 import { AuthenticationError, RateLimitError } from '../dist/llm/index.js';
 import { SqliteStore } from '../dist/persistence.js';
-import { fetchJobs, reviewJobs, workJobs } from '../dist/runner.js';
+import {
+  fetchJobs,
+  reviewJobs as runReviewJobs,
+  workJobs as runWorkJobs,
+} from '../dist/runner.js';
+
+const services = (reviewJob) => ({
+  reviewJob,
+  reviewStack: async () => ({
+    status: 'match',
+    reason: 'Laravel role',
+    evidence: 'Laravel',
+  }),
+  scrapeListing: async () => 'Worldwide Laravel role',
+});
+const reviewJobs = (root, store, options, reviewJob = async () => decision) =>
+  runReviewJobs(root, store, options, services(reviewJob));
+const workJobs = (root, store, reviewJob) =>
+  runWorkJobs(root, store, services(reviewJob));
 
 const result = (id) => ({
   url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
@@ -38,14 +56,22 @@ async function fixture(t) {
 test('manual review saves permanent page errors immediately and continues with other jobs', async (t) => {
   const { root, store } = await fixture(t);
   store.saveResults([result(1), result(2)]);
-  const outcome = await reviewJobs(root, store, {}, async (url) => {
-    if (url === result(1).url)
-      throw new PageError(
-        404,
-        'The job board you were viewing is no longer active.',
-      );
-    return decision;
-  });
+  const outcome = await runReviewJobs(
+    root,
+    store,
+    {},
+    {
+      ...services(async () => decision),
+      scrapeListing: async (url) => {
+        if (url === result(1).url)
+          throw new PageError(
+            404,
+            'The job board you were viewing is no longer active.',
+          );
+        return 'Worldwide Laravel';
+      },
+    },
+  );
   assert.equal(outcome.reviewed, 2);
   assert.deepEqual(outcome.failures, []);
   const error = store.listReviewJobs('active').find((row) => row.id === 1);
@@ -66,10 +92,13 @@ test('worker retries temporary page errors then saves error on the fifth failure
   t.mock.timers.enable({ apis: ['setTimeout'] });
   t.after(() => process.emit('SIGTERM'));
   let calls = 0;
-  const running = workJobs(root, store, async () => {
-    calls++;
-    if (calls === 5) setImmediate(() => process.emit('SIGTERM'));
-    throw new PageError(500);
+  const running = runWorkJobs(root, store, {
+    ...services(async () => decision),
+    scrapeListing: async () => {
+      calls++;
+      if (calls === 5) setImmediate(() => process.emit('SIGTERM'));
+      throw new PageError(500);
+    },
   });
   for (let attempt = 1; attempt < 5; attempt++) {
     await new Promise((resolve) => setImmediate(resolve));
@@ -304,10 +333,14 @@ test('SIGKILL releases the lock and abandoned work is picked up on restart', {
       `
     import { SqliteStore } from ${JSON.stringify(new URL('../dist/persistence.js', import.meta.url).href)};
     import { workJobs } from ${JSON.stringify(new URL('../dist/runner.js', import.meta.url).href)};
-    await workJobs(${JSON.stringify(root)}, new SqliteStore(${JSON.stringify(path)}), async () => {
+    await workJobs(${JSON.stringify(root)}, new SqliteStore(${JSON.stringify(path)}), {
+      scrapeListing: async () => 'Worldwide Laravel',
+      reviewStack: async () => { throw new Error('must not run'); },
+      reviewJob: async () => {
       setInterval(() => {}, 1000);
       process.send('reviewing');
       await new Promise(() => {});
+      }
     });
   `,
     ],
@@ -365,15 +398,14 @@ test('worker CLI pauses on missing credentials and exits cleanly on real SIGTERM
 }, async (t) => {
   const { root, store } = await fixture(t);
   store.saveResults([result(1)]);
+  const batch = 'e'.repeat(32);
+  store.claimBatch(batch);
+  store.saveListingText(1, batch, 'Worldwide Laravel');
+  store.finishBatch(batch);
   await cp(new URL('../dist/', import.meta.url), join(root, 'dist'), {
     recursive: true,
   });
   await cp(new URL('../profile.ts', import.meta.url), join(root, 'profile.ts'));
-  await mkdir(join(root, 'src'));
-  await cp(
-    new URL('../src/title.ts', import.meta.url),
-    join(root, 'src/title.ts'),
-  );
   await cp(
     new URL('../package.json', import.meta.url),
     join(root, 'package.json'),

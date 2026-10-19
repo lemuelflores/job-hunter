@@ -5,11 +5,19 @@ import { DatabaseSync } from 'node:sqlite';
 import timers from 'node:timers/promises';
 import { runParallelGoogleSearchesDetailed } from './discovery/google.js';
 import { buildQueryMatrix } from './discovery/queries.js';
-import { PageError } from './firecrawl.js';
+import { PageError, scrapeListing } from './firecrawl.js';
 import { AuthenticationError, llm, RateLimitError } from './llm/index.js';
 import type { LlmProvider } from './llm/types.js';
 import type { Listing, SqliteStore } from './persistence.js';
 import { loadProfile, type Profile } from './profile.js';
+
+export interface ReviewServices {
+  reviewJob: LlmProvider['reviewJob'];
+  reviewStack: LlmProvider['reviewStack'];
+  scrapeListing: typeof scrapeListing;
+}
+
+const reviewServices: ReviewServices = { ...llm, scrapeListing };
 
 export async function fetchJobs(
   store: SqliteStore,
@@ -70,37 +78,64 @@ async function reviewListing(
   job: Listing,
   batch: string,
   signal: AbortSignal,
-  review: LlmProvider['reviewJob'],
+  services: ReviewServices,
 ) {
   signal.throwIfAborted();
-  let decision: Awaited<ReturnType<LlmProvider['reviewJob']>>;
-  try {
-    decision = await review(job.url, { signal });
-  } catch (error) {
-    if (!(error instanceof PageError) || (error.retryable && job.attempts < 4))
-      throw error;
+  let listingText = job.listing_text;
+  if (listingText === null) {
+    try {
+      listingText = await services.scrapeListing(job.url, { signal });
+    } catch (error) {
+      if (
+        !(error instanceof PageError) ||
+        (error.retryable && job.attempts < 4)
+      )
+        throw error;
+      signal.throwIfAborted();
+      if (job.eligibility === 'pending')
+        store.review(job.id, batch, 'error', error.message);
+      else
+        store.reviewStack(job.id, batch, {
+          status: 'error',
+          reason: error.message,
+          evidence: '',
+        });
+      return;
+    }
     signal.throwIfAborted();
-    store.review(job.id, batch, 'error', error.message);
-    return;
+    store.saveListingText(job.id, batch, listingText);
   }
-  signal.throwIfAborted();
-  store.review(
-    job.id,
-    batch,
-    decision.eligibility,
-    decision.reason,
-    decision.evidence,
-    decision.company,
-    decision.location,
-    decision.title,
-  );
+  let eligibility = job.eligibility;
+  if (eligibility === 'pending') {
+    const decision = await services.reviewJob(job.url, { signal, listingText });
+    signal.throwIfAborted();
+    store.review(
+      job.id,
+      batch,
+      decision.eligibility,
+      decision.reason,
+      decision.evidence,
+      decision.company,
+      decision.location,
+      decision.title,
+    );
+    eligibility = decision.eligibility;
+  }
+  if (eligibility === 'eligible' || eligibility === 'unclear') {
+    const decision = await services.reviewStack(job.url, {
+      signal,
+      listingText,
+    });
+    signal.throwIfAborted();
+    store.reviewStack(job.id, batch, decision);
+  }
 }
 
 export async function reviewJobs(
   root: string,
   store: SqliteStore,
   options: { limit?: number } = {},
-  review = llm.reviewJob,
+  services = reviewServices,
 ) {
   if (
     options.limit !== undefined &&
@@ -114,9 +149,9 @@ export async function reviewJobs(
     const jobs = store.claimBatch(batch, options.limit);
     const failures: string[] = [];
     for (const [index, job] of jobs.entries()) {
-      console.error(`[review] ${index + 1} of ${jobs.length}: ${job.url}`);
+      console.info(`[review] ${index + 1} of ${jobs.length}: ${job.url}`);
       try {
-        await reviewListing(store, job, batch, shutdown.signal, review);
+        await reviewListing(store, job, batch, shutdown.signal, services);
       } catch (error) {
         failures.push(
           `Job ${job.id}: ${error instanceof Error ? error.message : String(error)}`,
@@ -147,7 +182,7 @@ export async function reviewJobs(
 export async function workJobs(
   root: string,
   store: SqliteStore,
-  review = llm.reviewJob,
+  services = reviewServices,
 ) {
   const lock = acquireReviewLock(root);
   const shutdown = shutdownSignal();
@@ -160,7 +195,7 @@ export async function workJobs(
     }
   };
   try {
-    console.error('[worker] Started; polling every 30 seconds');
+    console.info('[worker] Started; polling every 30 seconds');
     while (!shutdown.signal.aborted) {
       const [job] = store.claimBatch(batch, 1, true);
       if (!job) {
@@ -169,9 +204,9 @@ export async function workJobs(
       }
       let cooldown = false;
       try {
-        console.error(`[worker] Reviewing job ${job.id}: ${job.url}`);
-        await reviewListing(store, job, batch, shutdown.signal, review);
-        console.error(`[worker] Saved job ${job.id}`);
+        console.info(`[worker] Reviewing job ${job.id}: ${job.url}`);
+        await reviewListing(store, job, batch, shutdown.signal, services);
+        console.info(`[worker] Saved job ${job.id}`);
       } catch (error) {
         if (shutdown.signal.aborted) break;
         const message = error instanceof Error ? error.message : String(error);
@@ -181,10 +216,10 @@ export async function workJobs(
             `[worker] Authentication paused: ${message}; checking again in 60 seconds`,
           );
         } else {
-          store.failReview(job.id, batch, message);
+          const attempts = store.failReview(job.id, batch, message);
           cooldown = error instanceof RateLimitError;
           console.error(
-            `[worker] Job ${job.id} failed (${job.attempts + 1}/5): ${message}`,
+            `[worker] Job ${job.id} failed (${attempts}/5): ${message}`,
           );
         }
       } finally {
@@ -199,6 +234,6 @@ export async function workJobs(
     } finally {
       lock.close();
     }
-    console.error('[worker] Stopped');
+    console.info('[worker] Stopped');
   }
 }

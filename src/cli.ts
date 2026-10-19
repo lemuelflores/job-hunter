@@ -3,8 +3,10 @@ import { resolve } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { scrapeListing } from './firecrawl.js';
 import { SqliteStore } from './persistence.js';
 import { loadProfile } from './profile.js';
+import type { ReviewServices } from './runner.js';
 import { listenReviewServer } from './web.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
@@ -14,6 +16,7 @@ fetch             Search Google and save new job URLs (no analysis)
 auth              Sign in with your ChatGPT subscription in a browser
 review [--limit N] Scrape pending jobs with Firecrawl, then analyze through ChatGPT OAuth
 worker            Continuously review new jobs with persistent retries
+stack-backfill    Queue stack checks for active, previously reviewed jobs (preserves location decisions)
 fetch-worker      Schedule fetching with FETCH_CRON (default: hourly, UTC)
 serve [--port 3000]  Open the local review UI (127.0.0.1 only)
 jobs              Print saved active jobs as JSON
@@ -61,6 +64,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         'jobs',
         'review',
         'worker',
+        'stack-backfill',
       ].includes(command)
     )
       throw new Error(HELP);
@@ -95,11 +99,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       ? await loadProfile()
       : undefined;
     const { llm } = await import('./llm/index.js');
-    const review: typeof llm.reviewJob = (url, options) =>
-      llm.reviewJob(url, { ...options, location: profile?.location });
+    const review: ReviewServices = {
+      scrapeListing,
+      reviewJob: (url, options) =>
+        llm.reviewJob(url, { ...options, location: profile?.location }),
+      reviewStack: (url, options) =>
+        llm.reviewStack(url, { ...options, skills: profile?.skills }),
+    };
     store = new SqliteStore(resolve(ROOT, 'jobs.sqlite'));
     if (command === 'jobs')
       console.log(JSON.stringify(store.listReviewJobs('active'), null, 2));
+    else if (command === 'stack-backfill')
+      console.log(JSON.stringify({ queued: store.queueStackBackfill() }));
     else if (command === 'fetch-worker') {
       const { workFetch } = await import('./fetch-worker.js');
       const { fetchJobs } = await import('./runner.js');

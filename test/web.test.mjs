@@ -1,15 +1,274 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { get as httpGet } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 import { SqliteStore } from '../dist/persistence.js';
 import { UI_HTML } from '../dist/ui.js';
 import { listenReviewServer } from '../dist/web.js';
 
 const batch = 'a'.repeat(32);
+
+// Only the DOM operations used by the inline UI; no browser dependency needed.
+async function uiFixture(jobs) {
+  class Element {
+    constructor(tagName) {
+      this.tagName = tagName;
+      this.children = [];
+      this.dataset = {};
+      this.attributes = {};
+      this.listeners = {};
+      this.className = '';
+      this.value = 'all';
+      this.text = '';
+    }
+    set textContent(value) {
+      this.text = value;
+      this.children = [];
+    }
+    get textContent() {
+      return (
+        this.text + this.children.map((child) => child.textContent).join('')
+      );
+    }
+    append(...children) {
+      for (const child of children) {
+        child.parent = this;
+        this.children.push(child);
+      }
+    }
+    replaceChildren(...children) {
+      this.children = [];
+      this.append(...children);
+    }
+    remove() {
+      this.parent.children = this.parent.children.filter(
+        (child) => child !== this,
+      );
+    }
+    replaceWith(node) {
+      node.parent = this.parent;
+      this.parent.children[this.parent.children.indexOf(this)] = node;
+    }
+    matches(selector) {
+      return selector.startsWith('.')
+        ? this.className.split(' ').includes(selector.slice(1))
+        : this.tagName === selector;
+    }
+    querySelectorAll(selector) {
+      return this.children.flatMap((child) => [
+        ...(selector.split(', ').some((part) => child.matches(part))
+          ? [child]
+          : []),
+        ...child.querySelectorAll(selector),
+      ]);
+    }
+    querySelector(selector) {
+      return this.querySelectorAll(selector)[0];
+    }
+    closest(selector) {
+      return this.matches(selector) ? this : this.parent?.closest(selector);
+    }
+    contains(node) {
+      return (
+        node === this || this.children.some((child) => child.contains(node))
+      );
+    }
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    }
+    addEventListener(event, listener) {
+      this.listeners[event] = listener;
+    }
+    focus() {
+      document.activeElement = this;
+    }
+  }
+  const elements = Object.fromEntries(
+    ['jobs', 'notice', 'eligibility', 'stack'].map((id) => [
+      id,
+      new Element('div'),
+    ]),
+  );
+  const tabs = ['active', 'hidden', 'rejected'].map((status) => {
+    const tab = new Element('button');
+    tab.dataset.status = status;
+    return tab;
+  });
+  const document = {
+    getElementById: (id) => elements[id],
+    querySelectorAll: () => tabs,
+    createElement: (tag) => new Element(tag),
+  };
+  const requests = [];
+  const statuses = new Map();
+  const fetch = async (url, options = {}) => {
+    requests.push({ url, ...options });
+    if (options.method === 'POST') {
+      const { reviewKey, status } = JSON.parse(options.body);
+      statuses.set(reviewKey, status);
+      return { ok: true, json: async () => ({}) };
+    }
+    const status = new URL(url, 'http://localhost').searchParams.get('status');
+    return {
+      ok: true,
+      json: async () => ({
+        jobs: jobs.filter(
+          (job) => (statuses.get(job.reviewKey) || 'active') === status,
+        ),
+      }),
+    };
+  };
+  runInNewContext(UI_HTML.match(/<script>([\s\S]*?)<\/script>/)[1], {
+    document,
+    fetch,
+    URL,
+    AbortController,
+  });
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const event = async (element, type) => {
+    element.listeners[type]();
+    await settle();
+  };
+  await settle();
+  return {
+    ...elements,
+    tabs,
+    requests,
+    event,
+    cards: () => elements.jobs.querySelectorAll('.job'),
+    filter: async (name, value) => {
+      elements[name].value = value;
+      await event(elements[name], 'change');
+    },
+  };
+}
+
+test('UI labels stack states, quotes untrusted evidence and keeps assessment filters independent', async () => {
+  const states = [
+    'not_checked',
+    'pending',
+    'match',
+    'partial_match',
+    'potential_match',
+    'unclear',
+    'error',
+  ];
+  const hostile = '<img src=x onerror="alert(1)"> & <script>bad()</script>';
+  const jobs = states.map((stack_status, index) => ({
+    reviewKey: String(index + 1),
+    eligibility: 'eligible',
+    stack_status,
+    stack_reason: hostile,
+    stack_evidence: hostile,
+  }));
+  jobs.push(
+    { reviewKey: '8', eligibility: 'ineligible', stack_status: 'not_checked' },
+    {
+      reviewKey: '9',
+      eligibility: 'error',
+      reason: 'Fetch failed',
+      stack_status: 'not_checked',
+    },
+    { reviewKey: '10', eligibility: 'unclear', stack_status: 'match' },
+  );
+  const ui = await uiFixture(jobs);
+  assert.equal(ui.cards().length, 10);
+  for (const [index, state] of states.entries()) {
+    const card = ui.cards()[index];
+    assert.equal(
+      card.querySelector('.score').textContent,
+      'Location: eligible',
+    );
+    const badge = card.querySelectorAll('.score')[1];
+    assert.equal(badge.dataset.stackStatus, state);
+    assert.equal(
+      badge.textContent,
+      `Stack: ${state === 'not_checked' ? 'Not checked' : state.replaceAll('_', ' ')}`,
+    );
+    assert.equal(
+      card.querySelector('.assessment').querySelector('p').textContent,
+      hostile,
+    );
+    assert.equal(card.querySelector('blockquote').textContent, hostile);
+    assert.equal(card.querySelector('img'), undefined);
+    assert.equal(card.querySelector('script'), undefined);
+    assert.match(card.textContent, /Stack evidence from the listing/);
+  }
+  assert.match(ui.cards()[6].textContent, /Stack assessment error/);
+  assert.match(ui.cards()[7].textContent, /Stack: Skipped/);
+  assert.match(
+    ui.cards()[8].textContent,
+    /Location: errorStack: Skipped.*Location assessment error/,
+  );
+  for (const state of states) {
+    await ui.filter('stack', state);
+    assert.ok(ui.cards().length > 0);
+    assert.ok(
+      ui
+        .cards()
+        .every(
+          (card) =>
+            card.querySelectorAll('.score')[1].dataset.stackStatus === state,
+        ),
+    );
+  }
+  await ui.filter('stack', 'match');
+  await ui.filter('eligibility', 'unclear');
+  assert.deepEqual(
+    ui.cards().map((card) => card.dataset.reviewKey),
+    ['10'],
+  );
+  assert.equal(ui.stack.value, 'match');
+  await ui.filter('stack', 'pending');
+  assert.equal(ui.cards().length, 0);
+  assert.ok(ui.jobs.querySelector('.empty'));
+  assert.equal(ui.eligibility.value, 'unclear');
+  await ui.filter('eligibility', 'all');
+  assert.deepEqual(
+    ui.cards().map((card) => card.dataset.reviewKey),
+    ['2'],
+  );
+  for (const state of states)
+    assert.match(UI_HTML, new RegExp(`<option value="${state}">`));
+});
+
+test('UI updates same-key assessments and preserves hide, reject and restore actions', async () => {
+  const jobs = [1, 2].map((id) => ({
+    reviewKey: String(id),
+    eligibility: 'eligible',
+    stack_status: 'pending',
+  }));
+  const ui = await uiFixture(jobs);
+  jobs[0].stack_status = 'match';
+  jobs[0].stack_reason = 'Updated assessment';
+  await ui.event(ui.cards()[1].querySelector('button'), 'click');
+  assert.equal(ui.cards().length, 1);
+  assert.match(ui.cards()[0].textContent, /Stack: match.*Updated assessment/);
+  await ui.event(ui.tabs[1], 'click');
+  assert.equal(ui.cards()[0].dataset.reviewKey, '2');
+  assert.equal(ui.cards()[0].querySelector('button').textContent, 'Restore');
+  await ui.event(ui.cards()[0].querySelector('button'), 'click');
+  await ui.event(ui.tabs[0], 'click');
+  assert.equal(ui.cards().length, 2);
+  await ui.event(ui.cards()[0].querySelectorAll('button')[1], 'click');
+  await ui.event(ui.tabs[2], 'click');
+  assert.equal(ui.cards()[0].dataset.reviewKey, '1');
+  assert.deepEqual(
+    ui.requests
+      .filter((request) => request.method === 'POST')
+      .map((request) => JSON.parse(request.body)),
+    [
+      { reviewKey: '2', status: 'hidden' },
+      { reviewKey: '2', status: 'active' },
+      { reviewKey: '1', status: 'rejected' },
+    ],
+  );
+});
+
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'job-hunter-web-'));
   const store = new SqliteStore(join(root, 'jobs.sqlite'));
@@ -134,8 +393,6 @@ test('CLI reads app-local database from another cwd and validates arguments', as
   await cp(resolve('package.json'), join(root, 'package.json'));
   await symlink(resolve('node_modules'), join(root, 'node_modules'), 'dir');
   await cp(resolve('profile.ts'), join(root, 'profile.ts'));
-  await mkdir(join(root, 'src'));
-  await cp(resolve('src/title.ts'), join(root, 'src/title.ts'));
   const cli = (...args) =>
     spawnSync(process.execPath, [join(root, 'dist/cli.js'), ...args], {
       cwd: tmpdir(),

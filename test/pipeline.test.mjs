@@ -4,7 +4,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { jobUrl, SqliteStore } from '../dist/persistence.js';
-import { fetchJobs, reviewJobs } from '../dist/runner.js';
+import { fetchJobs, reviewJobs as runReviewJobs } from '../dist/runner.js';
+
+const stackDecision = {
+  status: 'match',
+  reason: 'Laravel role',
+  evidence: 'Laravel',
+};
+const services = (reviewJob) => ({
+  reviewJob,
+  reviewStack: async () => stackDecision,
+  scrapeListing: async () => 'Worldwide Laravel role',
+});
+const reviewJobs = (root, store, options, reviewJob = async () => decision) =>
+  runReviewJobs(root, store, options, services(reviewJob));
 
 const result = (id) => ({
   url: `https://job-boards.greenhouse.io/example/jobs/${id}`,

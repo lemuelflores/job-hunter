@@ -1,14 +1,14 @@
 # Job Hunter
 
-A personal tool for finding remote jobs and checking whether they hire where you live.
+A personal tool for finding remote jobs that hire where you live and fit your tech stack.
 
-Google search → Firecrawl scraping → ChatGPT eligibility assessment.
+Google search → Firecrawl scraping → ChatGPT location and stack checks.
 
-Set your roles, skills, and location, then let it run. It finds listings on Ashby, Lever, and Greenhouse, reads the job descriptions, and checks location eligibility so you don't have to open every listing yourself.
+Set your roles, skills, and location, then let it run. It finds listings on Ashby, Lever, and Greenhouse, reads the job descriptions, and checks location and stack fit so you don't have to open every listing yourself.
 
 ![Job Hunter web UI](screenshot.png)
 
-Browse the results in a local web UI. Filter by eligibility, hide jobs you're not interested in, and restore them later. Listings are deduplicated and saved in SQLite.
+Browse the results in a local web UI. Filter by location or stack fit, hide jobs you're not interested in, and restore them later. Listings are deduplicated and saved in SQLite.
 
 ## Get started
 
@@ -43,14 +43,39 @@ The review worker picks up new listings automatically. AI assessments can be wro
 
 ## Make it yours
 
-[`profile.ts`](profile.ts) is the search profile:
+[`profile.ts`](profile.ts) controls what to search for and how to review it:
 
 | Field | What to put there |
 | --- | --- |
 | `location` | Where you live, for hiring eligibility checks |
-| `title` | Job titles; use `and(...)` and `or(...)` to combine terms |
+| `title` | Title groups: arrays mean AND; entries in each object mean OR |
 | `searchLocation` | Places or work arrangements to search for, like `APAC` or `remote` |
-| `skills` | Skills to look for; matching any one is enough |
+| `skills` | Technologies to search for and compare against each job; same format as titles |
+
+Each object lists alternatives. Its keys are technology or title names, and its values are other spellings of the same name. Use `[]` when there are no other spellings. Put multiple objects in the array to require a match from each group.
+
+```ts
+title: [
+  { backend: ['back end', 'back-end'], frontend: ['front end', 'front-end'] },
+  { developer: [], engineer: [] },
+],
+skills: [
+  { Laravel: [], Vue: ['Vue.js', 'VueJS'], Nuxt: ['Nuxt.js', 'NuxtJS'] },
+],
+```
+
+The title example looks for backend or frontend roles called developer or engineer, including the other spellings. Titles search only job titles; skills can appear anywhere on the page.
+
+Each job gets a stack assessment. With Laravel, Vue, and Nuxt configured:
+
+| Assessment | Example |
+| --- | --- |
+| Match | Laravel backend or Vue frontend |
+| Partial match | Laravel + React |
+| Potential match | React only |
+| Unclear | No stack specified |
+
+The check focuses on technologies used in the role, not bonus skills or passing mentions. Stack assessments don't automatically reject jobs.
 
 After editing it, restart the workers:
 
@@ -67,6 +92,7 @@ docker compose logs -f fetch-worker review-worker  # Follow activity
 docker compose down                              # Stop everything
 pnpm job-hunter fetch                            # Search now
 pnpm job-hunter jobs                             # List saved jobs
+pnpm job-hunter stack-backfill                   # Queue missing stack checks
 ```
 
 After updating the code, run `pnpm install && pnpm build`, then `docker compose restart web fetch-worker review-worker`.
@@ -75,7 +101,9 @@ Jobs and login tokens stay in this checkout (`jobs.sqlite` and `.auth.json`). Ke
 
 ## Under the hood
 
-TypeScript, SQLite, and a plain HTML/CSS/JS UI. Autom.dev provides Google results, self-hosted Firecrawl reads the pages, and ChatGPT assesses hiring eligibility. Reviews run one at a time, retry temporary failures, and save each result as it completes.
+TypeScript, SQLite, and a plain HTML/CSS/JS UI. Autom.dev provides Google results, self-hosted Firecrawl reads the pages, and ChatGPT checks location and stack separately. Stack checks run for jobs whose location is eligible or unclear.
+
+Reviews run one at a time, retry temporary failures, and save each result as it completes. Saved listing text is reused between checks and retries.
 
 Searches use Autom credits. ChatGPT access uses an unofficial subscription endpoint, so upstream changes may break it.
 

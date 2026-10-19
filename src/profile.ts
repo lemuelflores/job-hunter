@@ -1,12 +1,12 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { TitleExpression } from './title.js';
+export type SearchTerms = Record<string, string[]>[];
 
 export interface Profile {
   location: string;
   searchLocation: string[];
-  title: TitleExpression;
-  skills: string[];
+  title: SearchTerms;
+  skills: SearchTerms;
 }
 
 function safeTerm(value: unknown): value is string {
@@ -18,24 +18,27 @@ function safeTerm(value: unknown): value is string {
   );
 }
 
-function validTitle(value: unknown, ancestors = new Set<unknown>()): boolean {
-  if (typeof value === 'string') return safeTerm(value);
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  if (ancestors.has(value)) return false;
-  const node = value as Record<string, unknown>;
-  if (
-    Object.keys(node).some((key) => !['op', 'terms'].includes(key)) ||
-    !['and', 'or'].includes(node.op as string) ||
-    !Array.isArray(node.terms) ||
-    !node.terms.length
-  )
-    return false;
-  ancestors.add(value);
-  const valid = Array.from(node.terms).every((term) =>
-    validTitle(term, ancestors),
+function validSearchTerms(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    Array.from(value).every((group) => {
+      if (!group || typeof group !== 'object' || Array.isArray(group))
+        return false;
+      const prototype = Object.getPrototypeOf(group);
+      if (prototype !== Object.prototype && prototype !== null) return false;
+      const entries = Object.entries(group);
+      return (
+        entries.length > 0 &&
+        entries.every(
+          ([term, aliases]) =>
+            safeTerm(term) &&
+            Array.isArray(aliases) &&
+            Array.from(aliases).every(safeTerm),
+        )
+      );
+    })
   );
-  ancestors.delete(value);
-  return valid;
 }
 
 export function validateProfile(value: unknown): Profile {
@@ -55,21 +58,21 @@ export function validateProfile(value: unknown): Profile {
     throw new Error(
       'Invalid profile.ts: location must be a nonempty single-line string (max 200 characters)',
     );
-  if (!validTitle(profile.title))
-    throw new Error(
-      'Invalid profile.ts: title must contain safe nonempty terms or and/or nodes with nonempty terms (max 200 characters per term, no quotes, backslashes or newlines)',
-    );
-  for (const key of ['searchLocation', 'skills']) {
-    const terms = profile[key];
-    if (
-      !Array.isArray(terms) ||
-      !terms.length ||
-      !Array.from(terms).every(safeTerm)
-    )
+  for (const key of ['title', 'skills']) {
+    if (!validSearchTerms(profile[key]))
       throw new Error(
-        `Invalid profile.ts: ${key} must be a nonempty array of safe terms (max 200 characters each, no quotes, backslashes or newlines)`,
+        `Invalid profile.ts: ${key} must be a nonempty array of nonempty canonical-to-alias maps with safe terms (max 200 characters each, no quotes, backslashes or newlines); alias arrays may be empty`,
       );
   }
+  const terms = profile.searchLocation;
+  if (
+    !Array.isArray(terms) ||
+    !terms.length ||
+    !Array.from(terms).every(safeTerm)
+  )
+    throw new Error(
+      'Invalid profile.ts: searchLocation must be a nonempty array of safe terms (max 200 characters each, no quotes, backslashes or newlines)',
+    );
   return profile as unknown as Profile;
 }
 

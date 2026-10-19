@@ -12,21 +12,52 @@ import {
 import { SqliteStore } from '../dist/persistence.js';
 import { loadProfile, validateProfile } from '../dist/profile.js';
 import { fetchJobs } from '../dist/runner.js';
-import { and, or } from '../dist/title.js';
 
 const profile = {
   location: 'Germany',
   searchLocation: ['Germany', 'Berlin', 'Europe', 'worldwide'],
-  title: and(
-    or('fullstack', 'full stack', 'backend', 'frontend', 'web'),
-    or('developer', 'engineer'),
-  ),
-  skills: ['Laravel', 'Vue', 'TypeScript'],
+  title: [
+    { fullstack: ['full stack'], backend: [], frontend: [], web: [] },
+    { developer: [], engineer: [] },
+  ],
+  skills: [{ Laravel: [], Vue: [], TypeScript: [] }],
 };
 
 test('runtime validation rejects malformed exports, expressions and unsafe terms', () => {
-  const cyclic = and('nurse');
-  cyclic.terms.push(cyclic);
+  const cyclic = {};
+  cyclic.nurse = [cyclic];
+  const malformedGroups = [
+    undefined,
+    '',
+    'nurse',
+    [],
+    Array(1),
+    {},
+    [{}],
+    [null],
+    [42],
+    ['nurse'],
+    [['nurse']],
+    [new Date()],
+    [new Map([['nurse', []]])],
+    [{ nurse: undefined }],
+    [{ nurse: 'alias' }],
+    [{ nurse: {} }],
+    [{ nurse: Array(1) }],
+    [{ nurse: [42] }],
+    [{ nurse: [['alias']] }],
+    { op: 'and', terms: ['nurse'] },
+    [cyclic],
+    ...[
+      '',
+      ' ',
+      'bad"term',
+      'bad\nterm',
+      'bad\rterm',
+      'bad\\term',
+      'x'.repeat(201),
+    ].flatMap((term) => [[{ [term]: [] }], [{ nurse: [term] }]]),
+  ];
   for (const invalid of [
     null,
     [],
@@ -36,19 +67,7 @@ test('runtime validation rejects malformed exports, expressions and unsafe terms
     { ...profile, remoteOnly: true },
     { ...profile, roleGroups: [['nurse']] },
     { ...profile, skillGroups: [['Laravel']] },
-    ...[
-      undefined,
-      [],
-      Array(1),
-      [['Laravel']],
-      [42],
-      [''],
-      [' '],
-      ['bad"term'],
-      ['bad\nterm'],
-      ['bad\\term'],
-      ['x'.repeat(201)],
-    ].map((skills) => ({ ...profile, skills })),
+    ...malformedGroups.map((skills) => ({ ...profile, skills })),
     { ...profile, searchLocations: [['Germany']] },
     ...[
       undefined,
@@ -61,26 +80,7 @@ test('runtime validation rejects malformed exports, expressions and unsafe terms
       ['bad\nterm'],
       ['bad\\term'],
     ].map((searchLocation) => ({ ...profile, searchLocation })),
-    ...[
-      undefined,
-      '',
-      ' ',
-      'bad"term',
-      'bad\nterm',
-      'bad\rterm',
-      'bad\\term',
-      'x'.repeat(201),
-      [],
-      {},
-      and(),
-      or(),
-      { op: 'and', terms: Array(1) },
-      { op: 'not', terms: ['nurse'] },
-      { op: 'and', terms: 'nurse' },
-      { op: 'or', terms: ['nurse'], extra: true },
-      and('nurse', or('')),
-      cyclic,
-    ].map((title) => ({ ...profile, title })),
+    ...malformedGroups.map((title) => ({ ...profile, title })),
   ]) {
     assert.throws(() => validateProfile(invalid), /Invalid profile.ts/);
   }
@@ -95,7 +95,7 @@ test('TS module loading reports missing files, syntax/import errors and invalid 
     "import './missing.ts'; export default {};",
     'export const notDefault = {};',
     'export default null;',
-    `export default ${JSON.stringify({ ...profile, title: or() })};`,
+    `export default ${JSON.stringify({ ...profile, title: [{}] })};`,
   ].entries()) {
     const path = join(root, `invalid-${index}.ts`);
     await writeFile(path, source);
@@ -120,47 +120,52 @@ test('TS module loading reports missing files, syntax/import errors and invalid 
 });
 
 test('shared rendering preserves Boolean groups, quoting, and title-only prefixes', () => {
-  const expression = and(or(' foo ', 'foo', 'bar'), or('baz', 'qux'));
+  const expression = [{ ' foo ': ['foo', 'bar'], bar: [] }, { baz: ['qux'] }];
   assert.equal(
     renderExpression(expression),
-    '(("foo" OR "bar") ("baz" OR "qux"))',
+    '("foo" OR "bar") ("baz" OR "qux")',
   );
   assert.equal(
     renderTitle(expression),
-    '((intitle:"foo" OR intitle:"bar") (intitle:"baz" OR intitle:"qux"))',
+    '(intitle:"foo" OR intitle:"bar") (intitle:"baz" OR intitle:"qux")',
   );
   assert.equal(
-    renderExpression(or(and('registered nurse', 'senior'), 'accountant')),
-    '(("registered nurse" "senior") OR "accountant")',
+    renderExpression([
+      { 'registered nurse': [], accountant: [] },
+      { senior: [] },
+    ]),
+    '("registered nurse" OR "accountant") ("senior")',
   );
   const [{ query }] = buildQueryMatrix({
     ...profile,
-    skills: [' Vue ', 'Vue', 'Laravel'],
+    skills: [{ ' Vue ': ['Vue'], Laravel: [] }],
     searchLocation: [' Berlin ', 'Berlin', 'on-site'],
   });
   assert.ok(query.endsWith('("Vue" OR "Laravel") ("Berlin" OR "on-site")'));
 });
 
-test('title rendering preserves nesting and scopes each independent leaf', () => {
-  const title = and(
-    or('fullstack', 'full-stack', 'full stack'),
-    or('developer', 'engineer'),
-  );
+test('title rendering includes canonical keys, aliases, and every AND group', () => {
+  const title = [
+    { fullstack: ['full-stack', 'full stack'] },
+    { developer: [], engineer: [] },
+  ];
   assert.equal(
     renderTitle(title),
-    '((intitle:"fullstack" OR intitle:"full-stack" OR intitle:"full stack") (intitle:"developer" OR intitle:"engineer"))',
+    '(intitle:"fullstack" OR intitle:"full-stack" OR intitle:"full stack") (intitle:"developer" OR intitle:"engineer")',
   );
   assert.equal(
-    renderTitle(or(and('registered nurse', 'senior'), 'accountant')),
-    '((intitle:"registered nurse" intitle:"senior") OR intitle:"accountant")',
+    renderTitle([{ backend: ['back-end'], frontend: [] }, { engineer: [] }]),
+    '(intitle:"backend" OR intitle:"back-end" OR intitle:"frontend") (intitle:"engineer")',
   );
-  assert.equal(renderTitle(' nurse '), 'intitle:"nurse"');
+  assert.equal(renderTitle([{ ' nurse ': [] }]), '(intitle:"nurse")');
   const matchesTitle = (expression, text) =>
-    typeof expression === 'string'
-      ? text.toLowerCase().includes(expression.toLowerCase())
-      : expression.op === 'and'
-        ? expression.terms.every((term) => matchesTitle(term, text))
-        : expression.terms.some((term) => matchesTitle(term, text));
+    expression.every((group) =>
+      Object.entries(group).some(([term, aliases]) =>
+        [term, ...aliases].some((term) =>
+          text.toLowerCase().includes(term.toLowerCase()),
+        ),
+      ),
+    );
   assert.equal(matchesTitle(title, 'Senior Fullstack Software Engineer'), true);
   assert.equal(
     matchesTitle(title, 'Senior Full Stack Software Developer'),
@@ -177,7 +182,7 @@ test('one query combines every site, skill and geography without profession assu
     query,
     /\(site:jobs.ashbyhq.com OR site:jobs.lever.co OR site:jobs.eu.lever.co OR site:job-boards.greenhouse.io OR site:boards.greenhouse.io\)/,
   );
-  assert.ok(query.includes(profile.title.terms.map(renderTitle).join(' ')));
+  assert.ok(query.includes(renderTitle(profile.title)));
   assert.ok(query.includes('("Laravel" OR "Vue" OR "TypeScript")'));
   assert.ok(
     query.includes('("Germany" OR "Berlin" OR "Europe" OR "worldwide")'),
@@ -189,7 +194,7 @@ test('one query combines every site, skill and geography without profession assu
   );
   const nursing = buildQueryMatrix({
     ...profile,
-    title: or('nurse', 'accountant'),
+    title: [{ nurse: [], accountant: [] }],
     searchLocation: ['Berlin', 'on-site'],
   });
   assert.equal(nursing.length, queries.length);
@@ -204,22 +209,16 @@ test('one query combines every site, skill and geography without profession assu
 test('the requested query is emitted exactly once without changing profile terms', () => {
   const requested = {
     ...profile,
-    title: and(
-      or(
-        'fullstack',
-        'full stack',
-        'full-stack',
-        'backend',
-        'back end',
-        'back-end',
-        'frontend',
-        'front end',
-        'front-end',
-        'web',
-      ),
-      or('developer', 'engineer'),
-    ),
-    skills: ['Vue', 'Nuxt', 'Laravel'],
+    title: [
+      {
+        fullstack: ['full stack', 'full-stack'],
+        backend: ['back end', 'back-end'],
+        frontend: ['front end', 'front-end'],
+        web: [],
+      },
+      { developer: [], engineer: [] },
+    ],
+    skills: [{ Vue: [], Nuxt: [], Laravel: [] }],
     searchLocation: [
       'remote',
       'remote-first',
@@ -243,54 +242,23 @@ test('the requested query is emitted exactly once without changing profile terms
   assert.deepEqual(requested, before);
 });
 
+test('skill groups AND canonical and alias alternatives without title prefixes', () => {
+  const grouped = {
+    ...profile,
+    skills: [{ Laravel: ['PHP'], Vue: ['Vue.js'] }, { TypeScript: [] }],
+  };
+  assert.deepEqual(validateProfile(grouped), grouped);
+  const [{ query }] = buildQueryMatrix(grouped);
+  assert.ok(
+    query.includes('("Laravel" OR "PHP" OR "Vue" OR "Vue.js") ("TypeScript")'),
+  );
+  assert.doesNotMatch(query, /intitle:"(?:Laravel|PHP|Vue|Vue.js|TypeScript)"/);
+});
+
 test('root TS profile loads from compiled module outside cwd and preserves all search scope', async () => {
   const actual = await loadProfile();
-  assert.equal(actual.location, 'Philippines');
-  assert.deepEqual(
-    actual.title,
-    and(
-      or(
-        'fullstack',
-        'full stack',
-        'full-stack',
-        'backend',
-        'back end',
-        'back-end',
-        'frontend',
-        'front end',
-        'front-end',
-        'web',
-      ),
-      or('developer', 'engineer'),
-    ),
-  );
-  assert.deepEqual(actual.searchLocation, [
-    'remote',
-    'remote-first',
-    'fully remote',
-    'global',
-    'anywhere in the world',
-    'work from home',
-    'APAC',
-    'Asia',
-    'SEA',
-    'Philippines',
-  ]);
-  assert.deepEqual(actual.skills, [
-    'Laravel',
-    'PHP',
-    'Vue',
-    'Vue.js',
-    'VueJS',
-    'Nuxt',
-    'Nuxt.js',
-    'NuxtJS',
-    'Node.js',
-    'NodeJS',
-    'Node',
-    'JavaScript',
-    'TypeScript',
-  ]);
+  const configured = (await import('../profile.ts')).default;
+  assert.deepEqual(actual, configured);
   assert.equal(buildQueryMatrix(actual).length, 1);
   const moduleUrl = new URL('../dist/profile.js', import.meta.url).href;
   const child = spawnSync(

@@ -19,7 +19,7 @@ export async function scrapeListing(
   } = {},
 ): Promise<string> {
   const timeout = AbortSignal.timeout(75_000);
-  console.error(`[firecrawl] Scraping: ${url}`);
+  console.info(`[firecrawl] Scraping: ${url}`);
   const response = await (options.fetch ?? fetch)(
     `${(process.env.FIRECRAWL_URL ?? 'http://127.0.0.1:3002').replace(/\/$/, '')}/v2/scrape`,
     {
@@ -57,6 +57,6 @@ export async function scrapeListing(
       'Firecrawl extraction failed or returned empty/error-page Markdown',
     );
   }
-  console.error(`[firecrawl] Scraped: ${url}`);
+  console.info(`[firecrawl] Scraped: ${url}`);
   return scrape.data.markdown;
 }

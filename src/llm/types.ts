@@ -1,5 +1,7 @@
+import type { SearchTerms } from '../profile.js';
+
 export interface Decision {
-  eligibility: string;
+  eligibility: 'eligible' | 'ineligible' | 'unclear';
   reason: string;
   evidence: string;
   company: string;
@@ -9,12 +11,19 @@ export interface Decision {
 
 export interface ReviewOptions {
   location?: string;
+  skills?: SearchTerms;
   fetch?: typeof fetch;
   authPath?: string;
   model?: string;
   effort?: string;
   signal?: AbortSignal;
   listingText?: string;
+}
+
+export interface StackDecision {
+  status: 'match' | 'partial_match' | 'potential_match' | 'unclear';
+  reason: string;
+  evidence: string;
 }
 
 export interface AuthOptions {
@@ -27,6 +36,7 @@ export interface AuthOptions {
 export interface LlmProvider {
   authenticate(options?: AuthOptions): Promise<void>;
   reviewJob(url: string, options?: ReviewOptions): Promise<Decision>;
+  reviewStack(url: string, options?: ReviewOptions): Promise<StackDecision>;
 }
 
 export class AuthenticationError extends Error {}

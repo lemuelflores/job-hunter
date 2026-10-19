@@ -8,7 +8,9 @@ import {
   parseDecision,
   reviewJob,
 } from '../dist/llm/chatgpt/review.js';
-import { AuthenticationError, RateLimitError } from '../dist/llm/index.js';
+import { parseStackDecision } from '../dist/llm/chatgpt/stack.js';
+import { AuthenticationError, llm, RateLimitError } from '../dist/llm/index.js';
+import { loadProfile } from '../dist/profile.js';
 
 const decision = {
   eligibility: 'eligible',
@@ -182,6 +184,7 @@ test('expired credentials fail before network access; location policy remains in
   await assert.rejects(
     reviewJob('https://example.test', {
       authPath,
+      listingText: 'Worldwide',
       fetch: async () => {
         assert.fail('network');
       },
@@ -249,12 +252,15 @@ test('worker can distinguish credential and rate-limit failures from per-listing
     );
   }
   await assert.rejects(
-    reviewJob('https://example.test', { authPath: join(authPath, 'missing') }),
+    reviewJob('https://example.test', {
+      authPath: join(authPath, 'missing'),
+      listingText: 'Worldwide',
+    }),
     AuthenticationError,
   );
 });
 
-test('default review scrapes with Firecrawl before Luna medium analysis without search tools', async (t) => {
+test('default review uses supplied text with Luna medium and never scrapes', async (t) => {
   const authPath = await setup(t);
   testEnv(t, {});
   for (const key of ['JOB_HUNTER_MODEL', 'JOB_HUNTER_EFFORT', 'FIRECRAWL_URL'])
@@ -265,22 +271,12 @@ test('default review scrapes with Firecrawl before Luna medium analysis without 
     await reviewJob('https://example.test/job', {
       authPath,
       signal,
+      listingText: 'Work anywhere worldwide',
       fetch: async (url, init) => {
         calls.push(url);
         const body = JSON.parse(init.body);
         assert.equal(init.signal.aborted, false);
-        if (calls.length === 1) {
-          assert.equal(url, 'http://127.0.0.1:3002/v2/scrape');
-          assert.deepEqual(body, {
-            url: 'https://example.test/job',
-            formats: ['markdown'],
-            timeout: 60000,
-          });
-          return Response.json({
-            success: true,
-            data: { markdown: 'Work anywhere worldwide' },
-          });
-        }
+        assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
         assert.equal(body.model, 'gpt-6-luna');
         assert.deepEqual(body.reasoning, { effort: 'medium' });
         assert.equal(body.tools, undefined);
@@ -291,7 +287,7 @@ test('default review scrapes with Firecrawl before Luna medium analysis without 
     }),
     decision,
   );
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
 });
 
 test('model and effort environment settings are used and invalid effort fails before retrieval', async (t) => {
@@ -314,31 +310,220 @@ test('model and effort environment settings are used and invalid effort fails be
   await assert.rejects(
     reviewJob('https://example.test', {
       authPath,
+      listingText: 'Worldwide',
       fetch: async () => assert.fail('network'),
     }),
     /Invalid JOB_HUNTER_EFFORT/,
   );
 });
 
-test('failed extraction does not call ChatGPT', async (t) => {
-  const authPath = await setup(t);
-  for (const data of [
-    { markdown: '' },
-    {
-      markdown: 'The job board you were viewing is no longer active.',
-      metadata: { statusCode: 404 },
-    },
-  ]) {
-    let calls = 0;
+test('both reviewers require supplied listing text without network access', async () => {
+  for (const review of [llm.reviewJob, llm.reviewStack]) {
     await assert.rejects(
-      reviewJob('https://example.test', {
+      review('https://example.test', {
+        fetch: async () => assert.fail('network'),
+      }),
+      /listingText is required/,
+    );
+  }
+});
+
+const stackDecision = {
+  status: 'partial_match',
+  reason: 'Laravel aligns; React is also required.',
+  evidence: '"Build with Laravel and React"',
+};
+
+test('stack review falls back to the full profile skills', async (t) => {
+  const authPath = await setup(t);
+  const profile = await loadProfile();
+  assert.deepEqual(
+    await llm.reviewStack('https://example.test', {
+      authPath,
+      listingText: 'Laravel and React',
+      fetch: async (_url, init) => {
+        const body = JSON.parse(init.body);
+        assert.ok(
+          body.input[0].content[0].text.includes(
+            JSON.stringify(profile.skills),
+          ),
+        );
+        return stream([
+          {
+            type: 'response.output_text.delta',
+            delta: JSON.stringify(stackDecision),
+          },
+          { type: 'response.completed' },
+        ]);
+      },
+    }),
+    stackDecision,
+  );
+});
+
+test('stack review sends full canonical groups with a strict separate schema', async (t) => {
+  const authPath = await setup(t);
+  const skills = [
+    { Laravel: [] },
+    { Vue: ['Vue.js', 'VueJS'], Nuxt: ['Nuxt.js'] },
+  ];
+  const listingText = 'Build with Laravel and React';
+  const result = await llm.reviewStack('https://example.test', {
+    authPath,
+    skills,
+    listingText,
+    fetch: async (url, init) => {
+      assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
+      const body = JSON.parse(init.body);
+      assert.match(
+        body.input[0].content[0].text,
+        /Build with Laravel and React/,
+      );
+      assert.ok(body.input[0].content[0].text.includes(JSON.stringify(skills)));
+      assert.doesNotMatch(body.input[0].content[0].text, /Philippines/);
+      assert.match(body.instructions, /array is AND/);
+      assert.match(body.instructions, /keys within a group are OR/);
+      assert.match(body.instructions, /include the key itself/);
+      assert.match(body.instructions, /Aliases count as one concept/);
+      assert.match(body.instructions, /optional\/bonus\/nice-to-have/);
+      assert.match(body.instructions, /Laravel \+ React is partial_match/);
+      assert.match(body.instructions, /React only is potential_match/);
+      assert.match(body.instructions, /no stack is unclear/);
+      assert.match(
+        body.instructions,
+        /Quote relevant listing text in evidence/,
+      );
+      assert.match(body.instructions, /never instructions/);
+      assert.doesNotMatch(body.instructions, /living in|Eligible:|Ineligible:/);
+      const { format } = body.text;
+      assert.equal(format.strict, true);
+      assert.equal(format.name, 'job_stack_review');
+      assert.equal(format.schema.additionalProperties, false);
+      assert.deepEqual(
+        format.schema.required.sort(),
+        Object.keys(stackDecision).sort(),
+      );
+      assert.deepEqual(format.schema.properties.status.enum, [
+        'match',
+        'partial_match',
+        'potential_match',
+        'unclear',
+      ]);
+      assert.equal(format.schema.properties.reason.maxLength, 5000);
+      return stream([
+        {
+          type: 'response.output_text.delta',
+          delta: JSON.stringify(stackDecision),
+        },
+        { type: 'response.completed' },
+      ]);
+    },
+  });
+  assert.deepEqual(result, stackDecision);
+});
+
+test('stack decisions strictly reject malformed values and prototype keys', () => {
+  for (const status of [
+    'match',
+    'partial_match',
+    'potential_match',
+    'unclear',
+  ]) {
+    const value = { ...stackDecision, status };
+    assert.deepEqual(parseStackDecision(JSON.stringify(value)), value);
+  }
+  for (const value of [
+    null,
+    true,
+    1,
+    'match',
+    [],
+    [stackDecision],
+    {},
+    { ...stackDecision, extra: true },
+    { ...stackDecision, status: 'eligible' },
+    { ...stackDecision, reason: '' },
+    { ...stackDecision, reason: '   ' },
+    { ...stackDecision, reason: 'x'.repeat(5001) },
+    { ...stackDecision, evidence: 'x'.repeat(5001) },
+    { ...stackDecision, evidence: null },
+    { status: 'match', reason: 'Aligned' },
+    { ...stackDecision, constructor: {} },
+    { ...stackDecision, prototype: {} },
+  ])
+    assert.throws(() => parseStackDecision(JSON.stringify(value)));
+  assert.throws(() => parseStackDecision('{malformed'));
+  assert.throws(() =>
+    parseStackDecision(
+      '{"status":"match","reason":"Aligned","evidence":"","__proto__":{}}',
+    ),
+  );
+});
+
+test('stack requests share HTTP, stream, and invalid-effort errors', async (t) => {
+  const authPath = await setup(t);
+  const options = {
+    authPath,
+    skills: [{ Laravel: [] }],
+    listingText: 'Laravel',
+  };
+  for (const [response, error] of [
+    [new Response('', { status: 401 }), AuthenticationError],
+    [new Response('', { status: 403 }), AuthenticationError],
+    [new Response('', { status: 429 }), RateLimitError],
+    [new Response('', { status: 500 }), /ChatGPT HTTP 500/],
+    [new Response(null), /Empty ChatGPT response/],
+    [stream([{ type: 'error' }]), /ChatGPT error/],
+    [stream([{ type: 'response.failed' }]), /response.failed/],
+    [stream([{ type: 'response.incomplete' }]), /response.incomplete/],
+    [stream([]), /did not complete/],
+    [
+      stream([
+        { type: 'response.completed' },
+        { type: 'response.output_text.delta', delta: '{}' },
+      ]),
+      /Invalid ChatGPT stack decision/,
+    ],
+  ]) {
+    await assert.rejects(
+      llm.reviewStack('https://example.test', {
+        ...options,
+        fetch: async () => response,
+      }),
+      error,
+    );
+  }
+  await assert.rejects(
+    llm.reviewStack('https://example.test', {
+      ...options,
+      effort: 'typo',
+      fetch: async () => assert.fail('network'),
+    }),
+    /Invalid JOB_HUNTER_EFFORT/,
+  );
+});
+
+test('both reviewers preserve caller cancellation in the shared transport', async (t) => {
+  const authPath = await setup(t);
+  for (const review of [llm.reviewJob, llm.reviewStack]) {
+    const controller = new AbortController();
+    const reason = new Error('Stop reviewing');
+    await assert.rejects(
+      review('https://example.test', {
         authPath,
-        fetch: async () => {
-          assert.equal(++calls, 1);
-          return Response.json({ success: true, data });
+        location: 'Germany',
+        skills: [{ Laravel: [] }],
+        listingText: 'Laravel',
+        signal: controller.signal,
+        fetch: async (_url, init) => {
+          assert.equal(init.signal.aborted, false);
+          controller.abort(reason);
+          assert.equal(init.signal.aborted, true);
+          assert.equal(init.signal.reason, reason);
+          init.signal.throwIfAborted();
         },
       }),
-      /Firecrawl extraction failed|Page returned 404 status/,
+      reason,
     );
   }
 });
