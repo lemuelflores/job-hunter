@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { reviewJobs } from '../dist/review/review-jobs.js';
+import { PageError } from '../dist/review/firecrawl.js';
 import { processStage } from '../dist/review/worker.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
@@ -73,9 +73,8 @@ test('crawl checkpoints text before fan-out; redelivery and duplicate assessment
   // Act: redeliver every completed stage.
   for (const stage of ['crawl', 'location', 'stack'])
     await processStage(store, stage, 1, enqueue, forbidden);
-  // Assert: saved decisions remain unchanged and listing text stays out of summaries.
+  // Assert: saved decisions remain unchanged.
   assert.equal(JSON.stringify(store.getJob(1)), saved);
-  assert.equal('listing_text' in store.listReviewJobs('active')[0], false);
 });
 
 test('each reviewer receives its listing URL and saved text and saves to the same listing', async (t) => {
@@ -159,65 +158,6 @@ test('crawl redelivery repairs a partial fan-out without scraping or reassessing
   assert.equal(store.getJob(1).stack_status, 'match');
 });
 
-test('review bounds listing selection, shares scheduling, reports failures and cancels waiting without resetting results', async (t) => {
-  // Arrange: hide the first listing and complete any selected listing through shared stages.
-  const store = fixture(t);
-  store.setReviewStatus('1', 'hidden');
-  const queues = {
-    scheduleListing: async (_, id) => {
-      // Assert: bounded review selects the first active listing only.
-      assert.equal(id, 2);
-      for (const stage of ['crawl', 'location', 'stack'])
-        await processStage(store, stage, id, async () => {}, services);
-    },
-    syncFailures: async () => {},
-  };
-  // Act / Assert: review one active listing and report remaining work.
-  assert.deepEqual(await reviewJobs(store, queues, 1), {
-    reviewed: 1,
-    pending: 1,
-    failures: [],
-  });
-  // Act / Assert: reject an invalid listing limit.
-  await assert.rejects(reviewJobs(store, queues, 0), /Invalid review limit/);
-  // Arrange: cancel before waiting for another review.
-  const controller = new AbortController();
-  controller.abort(new Error('cancelled'));
-  // Act / Assert: propagate cancellation without resetting saved results.
-  await assert.rejects(
-    reviewJobs(
-      store,
-      { scheduleListing: async () => {}, syncFailures: async () => {} },
-      1,
-      controller.signal,
-    ),
-    /cancelled/,
-  );
-  // Arrange: persist an exhausted crawl failure for the remaining listing.
-  store.failStage(3, 'crawl', 'offline', true);
-  // Act: collect failures for the selected listing.
-  const failed = await reviewJobs(
-    store,
-    { scheduleListing: async () => {}, syncFailures: async () => {} },
-    1,
-  );
-  // Assert: the stage failure includes its listing and cause.
-  assert.deepEqual(failed.failures, ['Job 3 crawl: offline']);
-  // Arrange: reset the stage so the listing can be selected again.
-  store.resetStage(3, 'crawl');
-  // Act: hide the listing while its review is being scheduled.
-  const hidden = await reviewJobs(
-    store,
-    {
-      scheduleListing: async () => store.setReviewStatus('3', 'hidden'),
-      syncFailures: async () => {},
-    },
-    1,
-  );
-  // Assert: review reports that the selected listing is no longer active.
-  assert.deepEqual(hidden.failures, ['Job 3: no longer active']);
-});
-
 const rejectedDecision = {
   ...decision,
   eligibility: 'ineligible',
@@ -230,6 +170,113 @@ const independentServices = {
   reviewJob: async () => rejectedDecision,
 };
 const enqueue = async () => {};
+
+test('permanent crawl errors save the page error and block both assessments', async (t) => {
+  // Arrange: extraction encounters a removed listing.
+  const store = fixture(t);
+  const enqueued = [];
+  const fake = {
+    ...services,
+    scrapeListing: async () => {
+      throw new PageError(404, 'Page removed');
+    },
+  };
+  // Act: process the crawl stage.
+  await processStage(
+    store,
+    'crawl',
+    1,
+    async (stage) => enqueued.push(stage),
+    fake,
+  );
+  // Assert: the page error is saved and no dependent work is scheduled.
+  assert.equal(store.getJob(1).eligibility, 'error');
+  assert.match(store.getJob(1).reason, /Page removed/);
+  assert.deepEqual(
+    store.stages(1).map(({ stage, state }) => ({ stage, state })),
+    [
+      { stage: 'crawl', state: 'terminal' },
+      { stage: 'location', state: 'blocked' },
+      { stage: 'stack', state: 'blocked' },
+    ],
+  );
+  assert.deepEqual(enqueued, []);
+});
+
+test('redelivering terminal or blocked stages makes no external calls', async (t) => {
+  // Arrange: persist the terminal state and forbid external calls and enqueues.
+  const store = fixture(t);
+  store.terminalCrawl(1, 'Gone');
+  const saved = store.getJob(1);
+  const forbidden = {
+    scrapeListing: async () => assert.fail('unexpected scrape'),
+    reviewJob: async () => assert.fail('unexpected location assessment'),
+    reviewStack: async () => assert.fail('unexpected stack assessment'),
+  };
+  // Act: redeliver each stage.
+  for (const stage of ['crawl', 'location', 'stack'])
+    await processStage(
+      store,
+      stage,
+      1,
+      async () => assert.fail('unexpected enqueue'),
+      forbidden,
+    );
+  // Assert: saved data remains unchanged.
+  assert.deepEqual(store.getJob(1), saved);
+});
+
+test('temporary crawl errors propagate to queue retry handling', async (t) => {
+  // Arrange: extraction encounters a temporary server error.
+  const store = fixture(t);
+  const error = new PageError(500, 'Page unavailable');
+  const saved = store.getJob(1);
+  const fake = {
+    ...services,
+    scrapeListing: async () => {
+      throw error;
+    },
+  };
+  // Act / Assert: the processor propagates the original error without enqueueing.
+  await assert.rejects(
+    processStage(
+      store,
+      'crawl',
+      1,
+      async () => assert.fail('unexpected enqueue'),
+      fake,
+    ),
+    error,
+  );
+  // Assert: retry bookkeeping is left to queue delivery, not the processor.
+  assert.deepEqual(store.getJob(1), saved);
+  assert.ok(store.stages(1).every(({ state }) => state === 'pending'));
+});
+
+test('a reset crawl checkpoints recovered text and schedules both assessments', async (t) => {
+  // Arrange: reset a previously exhausted crawl before delivering it again.
+  const store = fixture(t);
+  store.failStage(1, 'crawl', 'Temporary page error', true);
+  store.resetStage(1, 'crawl');
+  const enqueued = [];
+  // Act: deliver the healthy crawl.
+  await processStage(
+    store,
+    'crawl',
+    1,
+    async (stage, id) => enqueued.push({ stage, id }),
+    {
+      ...services,
+      scrapeListing: async () => 'Recovered',
+    },
+  );
+  // Assert: recovered text is saved and both dependent stages are scheduled.
+  assert.equal(store.getJob(1).listing_text, 'Recovered');
+  assert.deepEqual(enqueued, [
+    { stage: 'location', id: 1 },
+    { stage: 'stack', id: 1 },
+  ]);
+});
 
 test('location rejection does not block technology assessment; either evaluation can fail while the other succeeds', async (t) => {
   // Arrange: exercise each assessment as the independently failing stage.
@@ -281,7 +328,7 @@ test('an unfinished location request does not block technology assessment or cra
   const blocked = new Promise((resolve) => {
     release = resolve;
   });
-  // Act: start the blocked location request, then process unrelated work.
+  // Arrange: checkpoint text before starting the blocked location request.
   await processStage(store, 'crawl', 1, enqueue, independentServices);
   const location = processStage(store, 'location', 1, enqueue, {
     ...independentServices,
@@ -290,13 +337,17 @@ test('an unfinished location request does not block technology assessment or cra
       return rejectedDecision;
     },
   });
-  await processStage(store, 'stack', 1, enqueue, independentServices);
-  await processStage(store, 'crawl', 2, enqueue, independentServices);
-  // Assert: stack and the next crawl finish while location remains pending.
-  assert.equal(store.getJob(1).eligibility, 'pending');
-  assert.equal(store.getJob(1).stack_status, 'match');
-  assert.ok(store.getJob(2).listing_text);
-  // Cleanup: release and drain the outstanding location assessment.
-  release();
-  await location;
+  try {
+    // Act: process unrelated stages while location remains blocked.
+    await processStage(store, 'stack', 1, enqueue, independentServices);
+    await processStage(store, 'crawl', 2, enqueue, independentServices);
+    // Assert: stack and the next crawl finish while location remains pending.
+    assert.equal(store.getJob(1).eligibility, 'pending');
+    assert.equal(store.getJob(1).stack_status, 'match');
+    assert.ok(store.getJob(2).listing_text);
+  } finally {
+    // Cleanup: release and drain the assessment even when an assertion fails.
+    release();
+    await location;
+  }
 });

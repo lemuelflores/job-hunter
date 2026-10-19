@@ -64,26 +64,6 @@ function testEnv(t, values) {
   });
 }
 
-test('provider factory defaults to ChatGPT and rejects unsupported providers', (t) => {
-  // Arrange: remove the provider override while preserving the original environment.
-  testEnv(t, {});
-  delete process.env.MODEL_PROVIDER;
-  // Act / Assert: an absent provider selects the default ChatGPT interface.
-  assert.deepEqual(createLlm(), llm);
-  // Arrange: explicitly select the supported provider.
-  process.env.MODEL_PROVIDER = 'chatgpt';
-  // Act / Assert: explicit ChatGPT selection returns the same interface.
-  assert.deepEqual(createLlm(), llm);
-  for (const provider of ['openai', 'ChatGPT', '']) {
-    // Arrange: set this unsupported provider spelling.
-    process.env.MODEL_PROVIDER = provider;
-    // Act / Assert: reject it with the provider name in the error.
-    assert.throws(() => createLlm(), {
-      message: `Model provider "${provider}" is not implemented`,
-    });
-  }
-});
-
 test('direct subscription request uses OAuth and validated JSON', async (t) => {
   // Arrange: prepare credentials and a multilingual decision for byte-split SSE delivery.
   const authPath = await setup(t);

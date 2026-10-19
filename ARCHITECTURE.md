@@ -246,7 +246,17 @@ Application configuration/database paths resolve relative to the application dir
 
 **Testing frameworks:** Node's built-in test runner and assertions. Standard suites use mocked external services and temporary databases. The separate queue integration suite uses isolated Docker Redis instances to exercise delivery, retry, connection failure, shutdown, and restart/crash recovery.
 
-Tests are grouped by responsibility: `discovery.test.mjs` covers discovery scheduling, `review.test.mjs` covers stage orchestration, and `sqlite.integration.test.mjs` covers real database persistence and migrations. `firecrawl.test.mjs` and `chatgpt.test.mjs` cover service adapters with mocked network responses. `bullmq.integration.mjs` covers real Redis delivery separately from the default suite.
+Tests are grouped by the behavior they verify, not every dependency they use:
+
+- `profile.test.mjs`: profile validation and loading; `query.test.mjs`: search-expression rendering; `job-url.test.mjs`: listing URL rules.
+- `discovery.test.mjs`: discovery persistence/scheduling orchestration; `fetch-worker.test.mjs`: cron scheduling and shutdown.
+- `review-jobs.test.mjs`: review selection, waiting, and outcomes; `review-stage.integration.test.mjs`: stage orchestration with real SQLite and fake external services.
+- `sqlite.integration.test.mjs`: persistence, transactions, stage-state transitions, and migrations, without running processors.
+- `cli.test.mjs`: command routing, arguments, help, and application-relative paths; `web.test.mjs`: HTTP behavior, server lifecycle, and pure UI assessment logic.
+- `auth.test.mjs`, `chatgpt.test.mjs`, and `firecrawl.test.mjs`: provider adapters with mocked network responses; `llm.test.mjs`: provider selection.
+- `bullmq.integration.mjs`: real Redis delivery, retries, repair, and recovery, separately from the default suite.
+
+Real SQLite is appropriate in HTTP and workflow integration tests; those suites assert their public behavior rather than duplicating database or adapter contracts.
 
 | Command | Purpose |
 | --- | --- |

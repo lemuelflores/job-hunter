@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fetchJobs } from '../dist/discovery/discover-jobs.js';
+import { buildQueryMatrix } from '../dist/discovery/google.js';
+import { loadProfile } from '../dist/profile.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
 // Arrange: share canonical listing results.
@@ -8,6 +10,42 @@ const result = (id) => ({
   url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
   title: 'Engineer',
   query: 'remote',
+});
+
+test('fetch forwards explicit and default profile queries without a country override', async (t) => {
+  // Arrange: isolate discovery and supply a profile distinct from the root configuration.
+  const store = fixture(t);
+  const profile = {
+    location: 'Germany',
+    searchLocation: ['Germany', 'Berlin', 'Europe', 'worldwide'],
+    title: [
+      { fullstack: ['full stack'], backend: [], frontend: [], web: [] },
+      { developer: [], engineer: [] },
+    ],
+    skills: [{ Laravel: [], Vue: [], TypeScript: [] }],
+  };
+  for (const supplied of [profile, undefined]) {
+    // Arrange: determine the expected explicit or default discovery scope.
+    const expected = supplied ?? (await loadProfile());
+    const calls = [];
+    // Act: discover jobs without real search requests.
+    await fetchJobs(
+      store,
+      async (queries, options) => {
+        calls.push({ queries, options });
+        return { results: [], failures: [] };
+      },
+      supplied,
+      async () => {},
+    );
+    // Assert: discovery forwards precisely the profile query without a country override.
+    assert.equal(calls.length, 1);
+    assert.deepEqual(
+      calls[0].queries,
+      buildQueryMatrix(expected).map(({ query }) => query),
+    );
+    assert.equal(calls[0].options.country, undefined);
+  }
 });
 
 // Arrange: seed three pending listings in an isolated store with automatic cleanup.

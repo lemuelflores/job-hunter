@@ -15,14 +15,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { main } from '../dist/cli.js';
 import {
   authenticate,
   getCredentials,
 } from '../dist/review/llm/chatgpt/auth.js';
-import { AuthenticationError, createLlm } from '../dist/review/llm/index.js';
-
-const llm = createLlm();
+import { AuthenticationError } from '../dist/review/llm/index.js';
 
 // Shared Arrange: synthetic tokens carry only the claims needed by OAuth tests.
 const jwt = (data) =>
@@ -369,49 +366,5 @@ test('missing or corrupt credentials give actionable errors without network call
     await writeFile(authPath, value);
     // Act / Assert: malformed credentials fail locally with the authentication error type.
     await assert.rejects(getCredentials(options), AuthenticationError);
-  }
-});
-
-test('CLI auth routes through default provider interface and removes signal listeners', async (t) => {
-  // Arrange: replace provider authentication and capture the original signal-listener counts.
-  const original = llm.authenticate;
-  const log = console.log;
-  let calls = 0;
-  const before = ['SIGINT', 'SIGTERM'].map((event) =>
-    process.listenerCount(event),
-  );
-  t.after(() => {
-    llm.authenticate = original;
-    console.log = log;
-  });
-  console.log = () => {};
-  llm.authenticate = async (options) => {
-    calls++;
-    // Assert: CLI authentication forwards a cancellation signal to the provider.
-    assert.ok(options.signal instanceof AbortSignal);
-  };
-  // Act / Assert: successful auth routes through the provider and restores signal listeners.
-  assert.equal(await main(['auth']), 0);
-  assert.equal(calls, 1);
-  assert.deepEqual(
-    ['SIGINT', 'SIGTERM'].map((event) => process.listenerCount(event)),
-    before,
-  );
-  // Arrange: silence the expected error output and make the provider reject login.
-  const errorLog = console.error;
-  console.error = () => {};
-  try {
-    llm.authenticate = async () => {
-      throw new Error('denied');
-    };
-    // Act / Assert: failed auth also restores listeners and invalid auth options fail.
-    assert.equal(await main(['auth']), 1);
-    assert.deepEqual(
-      ['SIGINT', 'SIGTERM'].map((event) => process.listenerCount(event)),
-      before,
-    );
-    assert.equal(await main(['auth', '--limit', '1']), 1);
-  } finally {
-    console.error = errorLog;
   }
 });

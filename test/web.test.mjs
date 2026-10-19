@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { get as httpGet } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { SqliteStore } from '../dist/sqlite.js';
@@ -340,119 +339,4 @@ test('serve lifecycle closes the listener and removes signal handlers', {
     ['SIGINT', 'SIGTERM'].map((signal) => process.listenerCount(signal)),
     before,
   );
-});
-
-test('CLI reads app-local database from another cwd and validates arguments', async (t) => {
-  // Arrange: copy an app with its database and profile outside the project cwd.
-  const { root, store } = await fixture(t);
-  await cp(resolve('dist'), join(root, 'dist'), { recursive: true });
-  // A temporary package marker preserves ES module semantics outside this project.
-  await cp(resolve('package.json'), join(root, 'package.json'));
-  await symlink(resolve('node_modules'), join(root, 'node_modules'), 'dir');
-  await cp(resolve('profile.ts'), join(root, 'profile.ts'));
-  // Run each CLI invocation from an unrelated directory to check app-local paths.
-  const cli = (...args) =>
-    spawnSync(process.execPath, [join(root, 'dist/cli.js'), ...args], {
-      cwd: tmpdir(),
-      encoding: 'utf8',
-    });
-  // Act: list saved jobs from the copied application.
-  const saved = cli('jobs');
-  // Assert: read the application's own database successfully.
-  assert.equal(saved.status, 0, saved.stderr);
-  assert.equal(
-    JSON.parse(saved.stdout).length,
-    store.listReviewJobs('active').length,
-  );
-  // Act: list jobs with an unsupported model provider configured.
-  const withoutModel = spawnSync(
-    process.execPath,
-    [join(root, 'dist/cli.js'), 'jobs'],
-    {
-      cwd: tmpdir(),
-      encoding: 'utf8',
-      env: { ...process.env, MODEL_PROVIDER: 'unsupported' },
-    },
-  );
-  // Assert: listing jobs does not initialize the model provider.
-  assert.equal(withoutModel.status, 0, withoutModel.stderr);
-  assert.deepEqual(JSON.parse(withoutModel.stdout), JSON.parse(saved.stdout));
-  // Arrange: pair invalid commands and arguments with their expected diagnostics.
-  for (const [args, error] of [
-    [['review', '--db', '/tmp/arbitrary.sqlite'], /Unknown option.*--db/],
-    [['review', '--status', 'rejected'], /Unknown option.*--status/],
-    [['review', '--limit', '0'], /Expected an integer/],
-    [['fetch', '--limit', '1'], /Unknown option.*--limit/],
-    [['unknown'], /Unknown command: unknown/],
-    [['worker'], /Unknown command: worker/],
-    [['toString'], /Unknown command: toString/],
-    [['jobs', 'extra'], /Unexpected argument/],
-    [['jobs', '--unexpected'], /Unknown option.*--unexpected/],
-    [['review', '--limit'], /--limit.*argument/],
-    [['review', '--limit', '1.5'], /Expected an integer/],
-    [['review', '--limit', '9007199254740992'], /Expected an integer/],
-    [['serve', '--port', '65536'], /Expected an integer/],
-    [['serve', '--port', '0'], /Expected an integer/],
-    [['retry'], /Missing required argument: --stage/],
-    [['retry', '--id', '1'], /Missing required argument: --stage/],
-    [['retry', '--stage', 'stack'], /Missing required argument: --id/],
-    [['retry', '--stage', 'stack', '--id', '0'], /Expected an integer/],
-    [['repair', '--stage', 'invalid'], /Invalid.*stage/],
-    [['repair', '--id', '1'], /Unknown option.*--id/],
-  ]) {
-    // Act: run this invalid command-line case.
-    const invalid = cli(...args);
-    // Assert: exit unsuccessfully with the corresponding validation error.
-    assert.equal(invalid.status, 1, args.join(' '));
-    assert.match(invalid.stderr, error, args.join(' '));
-  }
-  // Act / Assert: accept global help and an invocation without a command.
-  assert.equal(cli('--help').status, 0);
-  assert.equal(cli().status, 0);
-  // Arrange: cover help for each worker and review command below.
-  for (const command of [
-    'review',
-    'review-worker',
-    'fetch-worker',
-    'retry',
-    'serve',
-  ]) {
-    // Act: request this command's help page.
-    const help = cli(command, '--help');
-    // Assert: print command-specific usage without an error.
-    assert.equal(help.status, 0, help.stderr);
-    assert.match(help.stdout, new RegExp(`job-hunter ${command}`));
-  }
-  // Act / Assert: show retry's required options for both help spellings.
-  assert.match(cli('retry', '--help').stdout, /--stage/);
-  assert.match(cli('retry', '-h').stdout, /--id/);
-  // Arrange: make the copied profile syntactically invalid.
-  await writeFile(join(root, 'profile.ts'), 'export default {broken');
-  for (const command of ['fetch', 'review-worker']) {
-    // Act: run each command that requires a loadable profile.
-    const invalid = cli(command);
-    // Assert: report the broken profile instead of starting the command.
-    assert.equal(invalid.status, 1);
-    assert.match(invalid.stderr, /Cannot load profile.ts/);
-  }
-  // Act / Assert: keep listing and help independent of profile validity.
-  assert.equal(cli('jobs').status, 0);
-  assert.equal(cli('--help').status, 0);
-  // Arrange: remove the profile entirely.
-  await rm(join(root, 'profile.ts'));
-  // Act: run a command that requires the missing profile.
-  const missing = cli('fetch');
-  // Assert: identify the missing profile in the diagnostic.
-  assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /Cannot load profile.ts.*profile.ts/);
-  // Arrange: remove the database implementation to check lazy help loading.
-  await rm(join(root, 'dist/sqlite.js'));
-  for (const args of [[], ['--help'], ['review', '--help'], ['retry', '-h']]) {
-    // Act: request each global or command-specific usage variant.
-    const help = cli(...args);
-    // Assert: print usage without loading the unavailable database module.
-    assert.equal(help.status, 0, help.stderr);
-    assert.equal(help.stderr, '');
-    assert.match(help.stdout, /USAGE/);
-  }
 });

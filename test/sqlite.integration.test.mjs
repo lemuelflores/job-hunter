@@ -3,8 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { processStage } from '../dist/review/worker.js';
-import { jobUrl, SqliteStore } from '../dist/sqlite.js';
+import { SqliteStore } from '../dist/sqlite.js';
 
 // Arrange: share canonical listing results.
 const result = (id) => ({
@@ -12,22 +11,8 @@ const result = (id) => ({
   title: 'Engineer',
   query: 'remote',
 });
-// Arrange: share deterministic location and stack responses for independent assessments.
-const decision = {
-  eligibility: 'ineligible',
-  reason: 'US only',
-  evidence: 'US residents',
-  company: 'Example',
-  location: 'US',
-  title: 'Engineer',
-};
+// Arrange: share a valid stack result for persistence tests.
 const stack = { status: 'match', reason: 'Laravel', evidence: 'Laravel' };
-const services = {
-  scrapeListing: async () => 'US Laravel role',
-  reviewJob: async () => decision,
-  reviewStack: async () => stack,
-};
-const enqueue = async () => {};
 
 // Arrange: seed three pending listings in an isolated store with automatic cleanup.
 function fixture(t) {
@@ -36,41 +21,6 @@ function fixture(t) {
   store.saveResults([result(1), result(2), result(3)]);
   return store;
 }
-
-test('URL validation accepts supported listing shapes and strips tracking', () => {
-  // Arrange: use a valid UUID listing identifier across supported hosts.
-  const uuid = '12345678-1234-1234-1234-123456789abc';
-  for (const host of [
-    'jobs.ashbyhq.com',
-    'jobs.lever.co',
-    'jobs.eu.lever.co',
-  ]) {
-    // Arrange: construct this provider's canonical listing URL.
-    const url = `https://${host}/example/${uuid}`;
-    // Act / Assert: strip tracking while retaining the canonical listing URL.
-    assert.equal(jobUrl(`${url}?utm_source=google#details`), url);
-  }
-  // Act / Assert: normalize both Greenhouse hosts to the canonical URL.
-  for (const host of ['boards.greenhouse.io', 'job-boards.greenhouse.io'])
-    assert.equal(
-      jobUrl(`https://${host}/example/jobs/1?tracking=x`),
-      result(1).url,
-    );
-  // Arrange: cover unsupported hosts, paths, protocols, credentials, and encodings.
-  // Act / Assert: reject each unsafe or unsupported listing URL.
-  for (const url of [
-    'https://evil.test/example/jobs/1',
-    'https://jobs.lever.co/example',
-    `https://jobs.lever.co/example/${uuid}/apply`,
-    `http://jobs.lever.co/example/${uuid}`,
-    `https://jobs.lever.co:8443/example/${uuid}`,
-    'https://u:p@job-boards.greenhouse.io/example/jobs/1',
-    `https://jobs.lever.co/ex%2Fample/${uuid}`,
-    `https://jobs.lever.co/ex%5Cample/${uuid}`,
-    `https://jobs.lever.co/ex%ZZample/${uuid}`,
-  ])
-    assert.equal(jobUrl(url), null, url);
-});
 
 test('rediscovery deduplicates canonical URLs without resetting saved decisions', (t) => {
   // Arrange: save both decisions and hide the listing before rediscovery.
@@ -236,14 +186,8 @@ test('migration preserves historical decisions, indexes and triggers without imp
       store.stages(1).find((s) => s.stage === 'location').state,
       'complete',
     );
-    // Act: encounter a removed page while crawling a historical listing for backfill.
-    await processStage(store, 'crawl', 1, enqueue, {
-      ...services,
-      scrapeListing: async () => {
-        const { PageError } = await import('../dist/review/firecrawl.js');
-        throw new PageError(404, 'Gone');
-      },
-    });
+    // Act: persist a terminal crawl result for a historical listing queued for backfill.
+    store.terminalCrawl(1, 'Gone');
     // Assert: history survives, stack is blocked, and the preserved trigger still fires.
     assert.equal(store.getJob(1).reason, 'Saved reason');
     assert.equal(store.getJob(1).evidence, 'Saved evidence');
@@ -265,7 +209,7 @@ test('migration preserves historical decisions, indexes and triggers without imp
   }
 });
 
-test('existing technology assessment results and listing snapshots survive migration without re-evaluation', async (t) => {
+test('migration preserves assessment results and snapshots and restores only unfinished stage state', async (t) => {
   // Arrange: preserve historical decisions and snapshots but remove the stage table.
   const root = await mkdtemp('/tmp/opencode/job-snapshots-');
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -300,13 +244,9 @@ test('existing technology assessment results and listing snapshots survive migra
       store.unfinished().map((row) => row.id),
       [3],
     );
-    // Act: retry stack assessment with location review and rescraping forbidden.
-    await processStage(store, 'stack', 3, enqueue, {
-      ...services,
-      reviewJob: async () => assert.fail('location must stay saved'),
-      scrapeListing: async () => assert.fail('snapshot must be reused'),
-    });
-    // Assert: the retry reuses its snapshot and leaves historical decisions untouched.
+    // Act: save the outstanding stack result directly.
+    store.reviewStack(3, stack);
+    // Assert: completing the stage preserves its snapshot and historical decisions.
     assert.equal(store.getJob(3).reason, 'Historical unclear');
     assert.equal(store.getJob(3).listing_text, 'Stack retry snapshot');
     assert.deepEqual(store.getJob(1), before[0]);
@@ -314,4 +254,39 @@ test('existing technology assessment results and listing snapshots survive migra
   } finally {
     store.close();
   }
+});
+
+test('stage failures remain pending until exhausted and only failed stages can reset', (t) => {
+  // Arrange: start with a pending crawl and a separate terminal crawl.
+  const store = fixture(t);
+  store.terminalCrawl(1, 'Gone');
+  // Act: record a temporary failure with attempts remaining.
+  store.failStage(2, 'crawl', 'Temporary page error', false);
+  // Assert: the stage remains pending for another delivery.
+  assert.deepEqual(
+    { ...store.stages(2)[0] },
+    {
+      stage: 'crawl',
+      state: 'pending',
+      error: 'Temporary page error',
+    },
+  );
+  // Act: record retry exhaustion.
+  store.failStage(2, 'crawl', 'Temporary page error', true);
+  // Assert: only the crawl fails; the listing remains undecided.
+  assert.equal(store.stages(2)[0].state, 'failed');
+  assert.equal(store.getJob(2).eligibility, 'pending');
+  // Act / Assert: terminal stages cannot be reset as failed stages.
+  assert.throws(() => store.resetStage(1, 'crawl'), /not failed/);
+  // Act: reset the failed crawl.
+  store.resetStage(2, 'crawl');
+  // Assert: reset clears the error and restores pending work.
+  assert.deepEqual(
+    { ...store.stages(2)[0] },
+    {
+      stage: 'crawl',
+      state: 'pending',
+      error: '',
+    },
+  );
 });
