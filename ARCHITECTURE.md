@@ -246,12 +246,14 @@ Application configuration/database paths resolve relative to the application dir
 
 **Testing frameworks:** Node's built-in test runner and assertions. Standard suites use mocked external services and temporary databases. The separate queue integration suite uses isolated Docker Redis instances to exercise delivery, retry, connection failure, shutdown, and restart/crash recovery.
 
+Tests are grouped by responsibility: `discovery.test.mjs` covers discovery scheduling, `review.test.mjs` covers stage orchestration, and `sqlite.integration.test.mjs` covers real database persistence and migrations. `firecrawl.test.mjs` and `chatgpt.test.mjs` cover service adapters with mocked network responses. `bullmq.integration.mjs` covers real Redis delivery separately from the default suite.
+
 | Command | Purpose |
 | --- | --- |
 | `pnpm build` | Profile type-check, TypeScript compilation, UI copy |
 | `pnpm check` | Biome lint/format checks, including inline UI code |
 | `pnpm test` | Build and run `test/*.test.mjs` |
-| `pnpm test:queue` | Run `test/queue.integration.mjs`; build first, Docker required |
+| `pnpm test:queue` | Run `test/bullmq.integration.mjs`; build first, Docker required |
 
 **Code quality tools:** TypeScript and Biome 2.5.15. No frontend build framework is needed. Tests do not require paid search/model calls.
 

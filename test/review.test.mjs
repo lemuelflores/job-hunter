@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fetchJobs } from '../dist/discovery/discover-jobs.js';
 import { reviewJobs } from '../dist/review/review-jobs.js';
 import { processStage } from '../dist/review/worker.js';
-import { jobUrl, SqliteStore } from '../dist/sqlite.js';
+import { SqliteStore } from '../dist/sqlite.js';
 
-// Arrange: share canonical discovery results and deterministic reviewer responses.
+// Arrange: share canonical listing results.
 const result = (id) => ({
   url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
   title: 'Engineer',
@@ -33,35 +32,6 @@ function fixture(t) {
   store.saveResults([result(1), result(2), result(3)]);
   return store;
 }
-
-test('fetch deduplicates one profile query and schedules only discovered unfinished listings', async (t) => {
-  // Arrange: include an existing listing outside the next discovery response.
-  const store = fixture(t);
-  store.saveResults([result(4)]);
-  const scheduled = [];
-  // Act: discover duplicate and new listings, recording scheduled IDs.
-  const outcome = await fetchJobs(
-    store,
-    async (queries, options) => {
-      // Assert: discovery receives one profile query and the expected result limit.
-      assert.equal(queries.length, 1);
-      assert.equal(options.num, 100);
-      return {
-        results: [result(1), result(1), result(5)],
-        failures: [{ query: 'bad', error: 'timeout' }],
-      };
-    },
-    undefined,
-    async (ids) => scheduled.push(...ids),
-  );
-  // Assert: only newly discovered unfinished listings are scheduled.
-  assert.deepEqual(outcome, {
-    added: 1,
-    pending: 5,
-    failures: ['bad: timeout'],
-  });
-  assert.deepEqual(scheduled, [1, 5]);
-});
 
 test('crawl checkpoints text before fan-out; redelivery and duplicate assessments preserve saved data', async (t) => {
   // Arrange: record scrapes and verify the checkpoint inside the enqueue callback.
@@ -189,97 +159,6 @@ test('crawl redelivery repairs a partial fan-out without scraping or reassessing
   assert.equal(store.getJob(1).stack_status, 'match');
 });
 
-test('URL validation accepts supported listing shapes and strips tracking', () => {
-  // Arrange: use a valid UUID listing identifier across supported hosts.
-  const uuid = '12345678-1234-1234-1234-123456789abc';
-  for (const host of [
-    'jobs.ashbyhq.com',
-    'jobs.lever.co',
-    'jobs.eu.lever.co',
-  ]) {
-    // Arrange: construct this provider's canonical listing URL.
-    const url = `https://${host}/example/${uuid}`;
-    // Act / Assert: strip tracking while retaining the canonical listing URL.
-    assert.equal(jobUrl(`${url}?utm_source=google#details`), url);
-  }
-  // Act / Assert: normalize both Greenhouse hosts to the canonical URL.
-  for (const host of ['boards.greenhouse.io', 'job-boards.greenhouse.io'])
-    assert.equal(
-      jobUrl(`https://${host}/example/jobs/1?tracking=x`),
-      result(1).url,
-    );
-  // Arrange: cover unsupported hosts, paths, protocols, credentials, and encodings.
-  // Act / Assert: reject each unsafe or unsupported listing URL.
-  for (const url of [
-    'https://evil.test/example/jobs/1',
-    'https://jobs.lever.co/example',
-    `https://jobs.lever.co/example/${uuid}/apply`,
-    `http://jobs.lever.co/example/${uuid}`,
-    `https://jobs.lever.co:8443/example/${uuid}`,
-    'https://u:p@job-boards.greenhouse.io/example/jobs/1',
-    `https://jobs.lever.co/ex%2Fample/${uuid}`,
-    `https://jobs.lever.co/ex%5Cample/${uuid}`,
-    `https://jobs.lever.co/ex%ZZample/${uuid}`,
-  ])
-    assert.equal(jobUrl(url), null, url);
-});
-
-test('rediscovery deduplicates canonical URLs without resetting saved decisions', (t) => {
-  // Arrange: save both decisions and hide the listing before rediscovery.
-  const store = fixture(t);
-  store.saveListingText(1, 'Saved text');
-  store.review(1, 'eligible', 'Saved location');
-  store.reviewStack(1, stack);
-  store.setReviewStatus('1', 'hidden');
-  const before = store.getJob(1);
-  // Act / Assert: rediscover tracked and canonical aliases without inserting a row.
-  assert.equal(
-    store.saveResults([
-      {
-        ...result(1),
-        url: 'https://boards.greenhouse.io/example/jobs/1?source=google#top',
-      },
-      result(1),
-    ]),
-    0,
-  );
-  // Assert: only last_seen may change; saved decisions and completion remain intact.
-  const { last_seen: _beforeSeen, ...saved } = before;
-  const { last_seen: _afterSeen, ...after } = store.getJob(1);
-  assert.deepEqual(after, saved);
-  assert.equal(store.listReviewJobs('hidden').length, 1);
-  assert.ok(store.stages(1).every((stage) => stage.state === 'complete'));
-});
-
-test('invalid results and completed-stage guards reject unsafe writes', (t) => {
-  // Arrange: start with pending stages.
-  const store = fixture(t);
-  // Act / Assert: reject invalid location decisions and empty listing text.
-  assert.throws(() => store.review(1, 'deleted', 'invalid'), /Invalid review/);
-  assert.throws(() => store.review(1, 'eligible', ''), /Invalid review/);
-  assert.throws(() => store.saveListingText(1, ''), /Invalid listing/);
-  // Arrange: complete a valid location assessment.
-  store.saveListingText(1, 'text');
-  store.review(1, 'eligible', 'Worldwide');
-  // Act / Assert: reject overwriting the completed location assessment.
-  assert.throws(
-    () => store.review(1, 'ineligible', 'overwrite'),
-    /not pending/,
-  );
-  // Assert: the original eligibility survives the rejected overwrite.
-  assert.equal(store.getJob(1).eligibility, 'eligible');
-  // Act / Assert: reject each unsupported stack result status.
-  for (const status of ['deleted', 'pending'])
-    assert.throws(
-      () => store.reviewStack(1, { ...stack, status }),
-      /Invalid stack/,
-    );
-  // Arrange: complete a valid stack assessment.
-  store.reviewStack(1, stack);
-  // Act / Assert: completed stack assessments cannot be overwritten either.
-  assert.throws(() => store.reviewStack(1, stack), /not pending/);
-});
-
 test('review bounds listing selection, shares scheduling, reports failures and cancels waiting without resetting results', async (t) => {
   // Arrange: hide the first listing and complete any selected listing through shared stages.
   const store = fixture(t);
@@ -337,4 +216,87 @@ test('review bounds listing selection, shares scheduling, reports failures and c
   );
   // Assert: review reports that the selected listing is no longer active.
   assert.deepEqual(hidden.failures, ['Job 3: no longer active']);
+});
+
+const rejectedDecision = {
+  ...decision,
+  eligibility: 'ineligible',
+  reason: 'US only',
+  evidence: 'US residents',
+  location: 'US',
+};
+const independentServices = {
+  ...services,
+  reviewJob: async () => rejectedDecision,
+};
+const enqueue = async () => {};
+
+test('location rejection does not block technology assessment; either evaluation can fail while the other succeeds', async (t) => {
+  // Arrange: exercise each assessment as the independently failing stage.
+  for (const failing of ['location', 'stack']) {
+    // Arrange: checkpoint listing text and make only this assessment fail.
+    const store = fixture(t);
+    await processStage(store, 'crawl', 1, enqueue, independentServices);
+    const fake = {
+      ...independentServices,
+      [failing === 'location' ? 'reviewJob' : 'reviewStack']: async () => {
+        throw new Error('temporary');
+      },
+    };
+    // Act / Assert: surface the selected assessment's temporary failure.
+    await assert.rejects(
+      processStage(store, failing, 1, enqueue, fake),
+      /temporary/,
+    );
+    // Arrange: persist the failure and select the unaffected assessment.
+    store.failStage(1, failing, 'temporary', true);
+    const other = failing === 'location' ? 'stack' : 'location';
+    // Act: run the other assessment despite the failed stage.
+    await processStage(store, other, 1, enqueue, fake);
+    // Assert: the unaffected assessment completes independently.
+    assert.equal(
+      store.stages(1).find((s) => s.stage === other).state,
+      'complete',
+    );
+    // Arrange: snapshot the successful assessment before resetting the failure.
+    const before = store.getJob(1);
+    store.resetStage(1, failing);
+    // Act: retry the failed assessment with healthy independentServices.
+    await processStage(store, failing, 1, enqueue, independentServices);
+    // Assert: retry preserves the other decision and completes both assessments.
+    const after = store.getJob(1);
+    for (const key of other === 'location'
+      ? ['eligibility', 'reason', 'evidence', 'company', 'location', 'title']
+      : ['stack_status', 'stack_reason', 'stack_evidence'])
+      assert.equal(after[key], before[key]);
+    assert.equal(after.eligibility, 'ineligible');
+    assert.equal(after.stack_status, 'match');
+  }
+});
+
+test('an unfinished location request does not block technology assessment or crawling the next listing', async (t) => {
+  // Arrange: create a gate that holds the first location assessment open.
+  const store = fixture(t);
+  let release;
+  const blocked = new Promise((resolve) => {
+    release = resolve;
+  });
+  // Act: start the blocked location request, then process unrelated work.
+  await processStage(store, 'crawl', 1, enqueue, independentServices);
+  const location = processStage(store, 'location', 1, enqueue, {
+    ...independentServices,
+    reviewJob: async () => {
+      await blocked;
+      return rejectedDecision;
+    },
+  });
+  await processStage(store, 'stack', 1, enqueue, independentServices);
+  await processStage(store, 'crawl', 2, enqueue, independentServices);
+  // Assert: stack and the next crawl finish while location remains pending.
+  assert.equal(store.getJob(1).eligibility, 'pending');
+  assert.equal(store.getJob(1).stack_status, 'match');
+  assert.ok(store.getJob(2).listing_text);
+  // Cleanup: release and drain the outstanding location assessment.
+  release();
+  await location;
 });
