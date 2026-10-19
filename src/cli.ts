@@ -39,6 +39,86 @@ function integer(
   return n;
 }
 
+function parseCommand(argv: string[]) {
+  const parsed = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      help: { type: 'boolean', short: 'h' },
+      limit: { type: 'string' },
+      port: { type: 'string' },
+      stage: { type: 'string' },
+      id: { type: 'string' },
+    },
+  });
+  const command = parsed.positionals[0];
+  const v = parsed.values;
+  if (v.help || !command) {
+    console.log(HELP);
+    return { exitCode: v.help ? 0 : 1 } as const;
+  }
+  if (
+    parsed.positionals.length !== 1 ||
+    ![
+      'auth',
+      'fetch',
+      'fetch-worker',
+      'serve',
+      'jobs',
+      'review',
+      'worker',
+      'stack-backfill',
+      'repair',
+      'retry',
+    ].includes(command)
+  )
+    throw new Error(HELP);
+  const allowed =
+    (
+      {
+        review: ['limit'],
+        serve: ['port'],
+        repair: ['stage'],
+        retry: ['stage', 'id'],
+      } as Record<string, string[]>
+    )[command] ?? [];
+  if (Object.keys(v).some((key) => !allowed.includes(key)))
+    throw new Error('Unexpected option for command');
+  const limit =
+    v.limit === undefined
+      ? undefined
+      : integer(v.limit, 0, Number.MAX_SAFE_INTEGER);
+  if (v.stage !== undefined && !STAGES.includes(v.stage as Stage))
+    throw new Error('Invalid stage');
+  if (command === 'retry' && (!v.stage || !v.id))
+    throw new Error('retry requires --stage and --id');
+  const id = v.id === undefined ? 0 : integer(v.id, 0, Number.MAX_SAFE_INTEGER);
+  return { command, v, limit, id };
+}
+
+async function authenticate() {
+  const { llm } = await import('./llm/index.js');
+  const controller = new AbortController();
+  const stop = () => controller.abort(new Error('Authentication interrupted'));
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+  try {
+    await llm.authenticate({ signal: controller.signal });
+    console.log('Signed in with ChatGPT.');
+  } finally {
+    process.off('SIGINT', stop);
+    process.off('SIGTERM', stop);
+  }
+}
+
+function loadEnvironment() {
+  try {
+    loadEnvFile(resolve(ROOT, '.env'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   let store: SqliteStore | undefined;
   let queues: JobQueues | undefined;
@@ -46,80 +126,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const controller = new AbortController();
   const stop = () => controller.abort(new Error('Processing interrupted'));
   try {
-    const parsed = parseArgs({
-      args: argv,
-      allowPositionals: true,
-      options: {
-        help: { type: 'boolean', short: 'h' },
-        limit: { type: 'string' },
-        port: { type: 'string' },
-        stage: { type: 'string' },
-        id: { type: 'string' },
-      },
-    });
-    const command = parsed.positionals[0];
-    const v = parsed.values;
-    if (v.help || !command) {
-      console.log(HELP);
-      return v.help ? 0 : 1;
-    }
-    if (
-      parsed.positionals.length !== 1 ||
-      ![
-        'auth',
-        'fetch',
-        'fetch-worker',
-        'serve',
-        'jobs',
-        'review',
-        'worker',
-        'stack-backfill',
-        'repair',
-        'retry',
-      ].includes(command)
-    )
-      throw new Error(HELP);
-    const allowed =
-      command === 'review'
-        ? ['limit']
-        : command === 'serve'
-          ? ['port']
-          : command === 'repair'
-            ? ['stage']
-            : command === 'retry'
-              ? ['stage', 'id']
-              : [];
-    if (Object.keys(v).some((key) => !allowed.includes(key)))
-      throw new Error('Unexpected option for command');
-    const limit =
-      v.limit === undefined
-        ? undefined
-        : integer(v.limit, 0, Number.MAX_SAFE_INTEGER);
-    if (v.stage !== undefined && !STAGES.includes(v.stage as Stage))
-      throw new Error('Invalid stage');
-    if (command === 'retry' && (!v.stage || !v.id))
-      throw new Error('retry requires --stage and --id');
-    const id =
-      v.id === undefined ? 0 : integer(v.id, 0, Number.MAX_SAFE_INTEGER);
-    try {
-      loadEnvFile(resolve(ROOT, '.env'));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
+    const parsed = parseCommand(argv);
+    if (parsed.exitCode !== undefined) return parsed.exitCode;
+    const { command, v, limit, id } = parsed;
+    loadEnvironment();
     if (command === 'auth') {
-      const { llm } = await import('./llm/index.js');
-      const controller = new AbortController();
-      const stop = () =>
-        controller.abort(new Error('Authentication interrupted'));
-      process.once('SIGINT', stop);
-      process.once('SIGTERM', stop);
-      try {
-        await llm.authenticate({ signal: controller.signal });
-        console.log('Signed in with ChatGPT.');
-      } finally {
-        process.off('SIGINT', stop);
-        process.off('SIGTERM', stop);
-      }
+      await authenticate();
       return 0;
     }
     const profile = ['fetch', 'fetch-worker', 'worker'].includes(command)
@@ -138,68 +150,83 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       process.once('SIGINT', stop);
       process.once('SIGTERM', stop);
     }
-    if (command === 'jobs')
-      console.log(JSON.stringify(store.listReviewJobs('active'), null, 2));
-    else if (command === 'stack-backfill') {
-      const queued = store.queueStackBackfill();
-      await jobQueues().repair(store);
-      console.log(JSON.stringify({ queued }));
-    } else if (command === 'repair') {
-      console.log(
-        JSON.stringify({
-          listings: await jobQueues().repair(
-            store,
-            v.stage as Stage | undefined,
-          ),
-        }),
-      );
-    } else if (command === 'retry') {
-      await jobQueues().retry(store, v.stage as Stage, id);
-      console.log(JSON.stringify({ retried: id, stage: v.stage }));
-    } else if (command === 'fetch-worker') {
-      const { workFetch } = await import('./fetch-worker.js');
-      const { fetchJobs } = await import('./runner.js');
-      const fetchStore = store;
-      await workFetch(async () => {
-        const outcome = await fetchJobs(fetchStore, undefined, profile);
+    switch (command) {
+      case 'jobs':
+        console.log(JSON.stringify(store.listReviewJobs('active'), null, 2));
+        break;
+      case 'stack-backfill': {
+        const queued = store.queueStackBackfill();
+        await jobQueues().repair(store);
+        console.log(JSON.stringify({ queued }));
+        break;
+      }
+      case 'repair': {
+        console.log(
+          JSON.stringify({
+            listings: await jobQueues().repair(
+              store,
+              v.stage as Stage | undefined,
+            ),
+          }),
+        );
+        break;
+      }
+      case 'retry': {
+        await jobQueues().retry(store, v.stage as Stage, id);
+        console.log(JSON.stringify({ retried: id, stage: v.stage }));
+        break;
+      }
+      case 'fetch-worker': {
+        const { workFetch } = await import('./fetch-worker.js');
+        const { fetchJobs } = await import('./runner.js');
+        const fetchStore = store;
+        await workFetch(async () => {
+          const outcome = await fetchJobs(fetchStore, undefined, profile);
+          console.log(JSON.stringify(outcome));
+          if (outcome.failures.length)
+            throw new Error(outcome.failures.join('; '));
+        });
+        break;
+      }
+      case 'worker': {
+        const { workJobs } = await import('./runner.js');
+        await workJobs(store, jobQueues(), review, controller.signal);
+        break;
+      }
+      case 'fetch':
+      case 'review': {
+        const { fetchJobs, reviewJobs } = await import('./runner.js');
+        const outcome =
+          command === 'fetch'
+            ? await fetchJobs(store, undefined, profile)
+            : await reviewJobs(store, jobQueues(), limit, controller.signal);
         console.log(JSON.stringify(outcome));
-        if (outcome.failures.length)
-          throw new Error(outcome.failures.join('; '));
-      });
-    } else if (command === 'worker') {
-      const { workJobs } = await import('./runner.js');
-      await workJobs(store, jobQueues(), review, controller.signal);
-    } else if (command === 'fetch' || command === 'review') {
-      const { fetchJobs, reviewJobs } = await import('./runner.js');
-      const outcome =
-        command === 'fetch'
-          ? await fetchJobs(store, undefined, profile)
-          : await reviewJobs(store, jobQueues(), limit, controller.signal);
-      console.log(JSON.stringify(outcome));
-      return outcome.failures.length ? 1 : 0;
-    } else {
-      const server = await listenReviewServer(
-        store,
-        integer(v.port, 3000, 65535),
-        process.env.JOB_HUNTER_HOST || '127.0.0.1',
-      );
-      console.log(
-        `Review UI: http://127.0.0.1:${(server.address() as { port: number }).port}`,
-      );
-      await new Promise<void>((done) => {
-        let closing = false;
-        const stop = () => {
-          if (closing) return;
-          closing = true;
-          server.close(() => {
-            process.off('SIGINT', stop);
-            process.off('SIGTERM', stop);
-            done();
-          });
-        };
-        process.once('SIGINT', stop);
-        process.once('SIGTERM', stop);
-      });
+        return outcome.failures.length ? 1 : 0;
+      }
+      default: {
+        const server = await listenReviewServer(
+          store,
+          integer(v.port, 3000, 65535),
+          process.env.JOB_HUNTER_HOST || '127.0.0.1',
+        );
+        console.log(
+          `Review UI: http://127.0.0.1:${(server.address() as { port: number }).port}`,
+        );
+        await new Promise<void>((done) => {
+          let closing = false;
+          const stop = () => {
+            if (closing) return;
+            closing = true;
+            server.close(() => {
+              process.off('SIGINT', stop);
+              process.off('SIGTERM', stop);
+              done();
+            });
+          };
+          process.once('SIGINT', stop);
+          process.once('SIGTERM', stop);
+        });
+      }
     }
     return 0;
   } catch (error) {

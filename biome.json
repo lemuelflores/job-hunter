@@ -11,6 +11,13 @@
   "formatter": {
     "indentStyle": "space"
   },
+  "linter": {
+    "rules": {
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "error"
+      }
+    }
+  },
   "html": {
     "experimentalFullSupportEnabled": true,
     "formatter": {

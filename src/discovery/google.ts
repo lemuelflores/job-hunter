@@ -28,6 +28,56 @@ function getAutomApiKey(): string {
   return apiKey;
 }
 
+async function searchPage(url: URL, apiKey: string) {
+  const response = await fetch(url, {
+    method: 'GET',
+    signal: AbortSignal.timeout(30_000),
+    headers: { 'x-api-key': apiKey, Accept: 'application/json' },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Autom.dev Google search failed: ${response.status} ${body}`,
+    );
+  }
+  const data = (await response.json()) as AutomGoogleSearchResponse;
+  if (data.error)
+    throw new Error(`Autom.dev Google search failed: ${data.error}`);
+  return data;
+}
+
+function pageResults(data: AutomGoogleSearchResponse, query: string) {
+  return (data.organic_results ?? [])
+    .filter(
+      (item): item is AutomOrganicResult & { link: string; title: string } =>
+        typeof item.link === 'string' &&
+        Boolean(item.link.trim()) &&
+        typeof item.title === 'string' &&
+        Boolean(item.title.trim()),
+    )
+    .map((item) => ({
+      title: item.title,
+      url: item.link,
+      snippet: item.snippet ?? undefined,
+      position: item.position,
+      query,
+    }));
+}
+
+function appendResults(
+  results: SearchResult[],
+  seen: Set<string>,
+  page: SearchResult[],
+  limit: number,
+) {
+  for (const result of page) {
+    if (seen.has(result.url)) continue;
+    seen.add(result.url);
+    results.push(result);
+    if (results.length >= limit) break;
+  }
+}
+
 /**
  * Runs a Google search through Autom.dev's Search endpoint.
  *
@@ -53,50 +103,9 @@ export async function googleSearch(
   let page = 1;
   while (results.length < limit) {
     url.searchParams.set('page', String(page));
-    const response = await fetch(url, {
-      method: 'GET',
-      signal: AbortSignal.timeout(30_000),
-      headers: {
-        'x-api-key': apiKey,
-        Accept: 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(
-        `Autom.dev Google search failed: ${response.status} ${body}`,
-      );
-    }
-
-    const data = (await response.json()) as AutomGoogleSearchResponse;
-
-    if (data.error) {
-      throw new Error(`Autom.dev Google search failed: ${data.error}`);
-    }
-
-    const pageResults = (data.organic_results ?? [])
-      .filter(
-        (item): item is AutomOrganicResult & { link: string; title: string } =>
-          typeof item.link === 'string' &&
-          Boolean(item.link.trim()) &&
-          typeof item.title === 'string' &&
-          Boolean(item.title.trim()),
-      )
-      .map((item) => ({
-        title: item.title,
-        url: item.link,
-        snippet: item.snippet ?? undefined,
-        position: item.position,
-        query,
-      }));
+    const data = await searchPage(url, apiKey);
     const before = results.length;
-    for (const result of pageResults) {
-      if (seen.has(result.url)) continue;
-      seen.add(result.url);
-      results.push(result);
-      if (results.length >= limit) break;
-    }
+    appendResults(results, seen, pageResults(data, query), limit);
     if (results.length === before || !data.pagination?.has_next_page) break;
     const next = data.pagination.next ?? page + 1;
     if (!Number.isSafeInteger(next) || next <= page) break;

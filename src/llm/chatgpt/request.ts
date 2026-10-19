@@ -59,6 +59,10 @@ export async function request(
   if (response.status === 429)
     throw new RateLimitError('ChatGPT HTTP 429; quota/rate limit reached');
   if (!response.ok) throw new Error(`ChatGPT HTTP ${response.status}`);
+  return readResponse(response);
+}
+
+async function readResponse(response: Response): Promise<string> {
   if (!response.body) throw new Error('Empty ChatGPT response');
   let buffer = '',
     text = '';

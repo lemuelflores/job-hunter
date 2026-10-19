@@ -4,7 +4,13 @@ import { buildQueryMatrix } from './discovery/queries.js';
 import { PageError, scrapeListing } from './firecrawl.js';
 import { llm } from './llm/index.js';
 import type { LlmProvider } from './llm/types.js';
-import { jobUrl, type SqliteStore, STAGES, type Stage } from './persistence.js';
+import {
+  jobUrl,
+  type Listing,
+  type SqliteStore,
+  STAGES,
+  type Stage,
+} from './persistence.js';
 import { loadProfile, type Profile } from './profile.js';
 import { JobQueues } from './queues.js';
 
@@ -48,6 +54,32 @@ export async function fetchJobs(
   };
 }
 
+async function crawlJob(
+  store: SqliteStore,
+  job: Listing,
+  enqueue: (stage: Stage, id: number) => Promise<unknown>,
+  services: ReviewServices,
+  signal?: AbortSignal,
+) {
+  const id = job.id;
+  if (store.needsStage(id, 'crawl') && job.listing_text === null) {
+    let text: string;
+    try {
+      text = await services.scrapeListing(job.url, { signal });
+    } catch (error) {
+      if (!(error instanceof PageError) || error.retryable) throw error;
+      signal?.throwIfAborted();
+      store.terminalCrawl(id, error.message);
+      return;
+    }
+    signal?.throwIfAborted();
+    store.saveListingText(id, text);
+  }
+  // Redelivery also repairs a save/enqueue interruption without scraping again.
+  for (const evaluation of ['location', 'stack'] as const)
+    if (store.needsStage(id, evaluation)) await enqueue(evaluation, id);
+}
+
 export async function processStage(
   store: SqliteStore,
   stage: Stage,
@@ -60,23 +92,7 @@ export async function processStage(
   const job = store.getJob(id);
   if (job?.status !== 'active') return;
   if (stage === 'crawl') {
-    if (store.needsStage(id, stage) && job.listing_text === null) {
-      let text: string;
-      try {
-        text = await services.scrapeListing(job.url, { signal });
-      } catch (error) {
-        if (!(error instanceof PageError) || error.retryable) throw error;
-        signal?.throwIfAborted();
-        store.terminalCrawl(id, error.message);
-        return;
-      }
-      signal?.throwIfAborted();
-      store.saveListingText(id, text);
-    }
-    // Redelivery also repairs a save/enqueue interruption without scraping again.
-    for (const evaluation of ['location', 'stack'] as const)
-      if (store.needsStage(id, evaluation)) await enqueue(evaluation, id);
-    return;
+    return crawlJob(store, job, enqueue, services, signal);
   }
   if (!store.needsStage(id, stage) || job.listing_text === null) return;
   const options = { signal, listingText: job.listing_text };
@@ -99,6 +115,24 @@ export async function processStage(
   }
 }
 
+async function reviewOutcome(
+  store: SqliteStore,
+  queues: JobQueues,
+  id: number,
+) {
+  if (store.getJob(id)?.status !== 'active')
+    return [`Job ${id}: no longer active`];
+  await queues.syncFailures(store, id);
+  const states = store.stages(id);
+  const crawlFailed =
+    store.getJob(id)?.listing_text === null &&
+    states.some((s) => s.stage === 'crawl' && s.state === 'failed');
+  if (states.some((s) => s.state === 'pending') && !crawlFailed) return null;
+  return states
+    .filter((s) => ['failed', 'terminal'].includes(s.state))
+    .map((s) => `Job ${id} ${s.stage}: ${s.error}`);
+}
+
 export async function reviewJobs(
   store: SqliteStore,
   queues: JobQueues,
@@ -115,25 +149,9 @@ export async function reviewJobs(
   while (waiting.size) {
     signal?.throwIfAborted();
     for (const id of waiting) {
-      if (store.getJob(id)?.status !== 'active') {
-        failures.push(`Job ${id}: no longer active`);
-        waiting.delete(id);
-        continue;
-      }
-      await queues.syncFailures(store, id);
-      const states = store.stages(id);
-      if (
-        states.some((s) => s.state === 'pending') &&
-        !(
-          store.getJob(id)?.listing_text === null &&
-          states.some((s) => s.stage === 'crawl' && s.state === 'failed')
-        )
-      )
-        continue;
-      const errors = states.filter((s) =>
-        ['failed', 'terminal'].includes(s.state),
-      );
-      failures.push(...errors.map((s) => `Job ${id} ${s.stage}: ${s.error}`));
+      const errors = await reviewOutcome(store, queues, id);
+      if (errors === null) continue;
+      failures.push(...errors);
       if (!errors.length) reviewed++;
       waiting.delete(id);
     }

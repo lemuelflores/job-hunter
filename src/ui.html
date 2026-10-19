@@ -430,12 +430,7 @@
         return board || null;
       };
       const jobBusy = (job) => pending.has(String(job.reviewKey));
-      const renderJob = (job, isPending = false) => {
-        const card = document.createElement('article');
-        renderedJobs.set(card, JSON.stringify(job));
-        card.className = 'job';
-        card.dataset.reviewKey = String(job.reviewKey || '');
-        card.dataset.pending = String(isPending);
+      const renderHeading = (card, job) => {
         const top = document.createElement('div');
         top.className = 'job-top';
         card.append(top);
@@ -444,6 +439,9 @@
         addText(heading, 'h2', job.title || 'Untitled role');
         const company = displayCompany(job);
         if (company) addText(heading, 'p', company, 'company');
+        renderBadges(top, job);
+      };
+      const renderBadges = (top, job) => {
         const badges = document.createElement('div');
         badges.className = 'badges';
         top.append(badges);
@@ -470,6 +468,8 @@
           stackStatus === 'error' ? 'score error' : 'score',
         );
         stackBadge.dataset.stackStatus = stackStatus;
+      };
+      const renderMetadata = (card, job) => {
         for (const stage of job.stages || []) {
           if (!stage.error) continue;
           addText(
@@ -488,6 +488,8 @@
           addText(meta, 'span', String(job.ats));
         const published = formatDate(job.publishedAt);
         if (published) addText(meta, 'span', `Posted ${published}`);
+      };
+      const renderAssessments = (card, job) => {
         if (job.reason) {
           const assessment = document.createElement('div');
           assessment.className = 'assessment';
@@ -515,7 +517,7 @@
           addText(
             assessment,
             'h3',
-            stackStatus === 'error'
+            job.stack_status === 'error'
               ? 'Stack assessment error'
               : 'Stack assessment',
           );
@@ -528,6 +530,8 @@
           addText(evidence, 'h3', 'Stack evidence from the listing');
           addText(evidence, 'blockquote', job.stack_evidence);
         }
+      };
+      const renderActions = (card, job, isPending) => {
         const actions = document.createElement('div');
         actions.className = 'actions';
         card.append(actions);
@@ -564,6 +568,17 @@
             ),
           );
         }
+      };
+      const renderJob = (job, isPending = false) => {
+        const card = document.createElement('article');
+        renderedJobs.set(card, JSON.stringify(job));
+        card.className = 'job';
+        card.dataset.reviewKey = String(job.reviewKey || '');
+        card.dataset.pending = String(isPending);
+        renderHeading(card, job);
+        renderMetadata(card, job);
+        renderAssessments(card, job);
+        renderActions(card, job, isPending);
         return card;
       };
       const actionButton = (label, status, className, disabled = false) => {
@@ -613,14 +628,7 @@
           )
           .map((job) => [job, jobBusy(job)]);
       };
-      const renderList = (status, serverJobs, announce = true) => {
-        if (
-          status === currentStatus &&
-          (listingState === 'loading' || listingState === 'error') &&
-          !announce
-        )
-          return;
-        const jobs = jobsForStatus(status, serverJobs);
+      const reconcileCards = (jobs) => {
         const existing = new Map(
           [...jobsEl.children]
             .filter((node) => node.className === 'job')
@@ -649,22 +657,27 @@
             });
           } else jobsEl.append(renderJob(job, isPending));
         });
+      };
+      const renderEmpty = (status) => {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        addText(
+          empty,
+          'strong',
+          status === 'active' ? 'Nothing here yet' : `No ${status} jobs`,
+        );
+        addText(
+          empty,
+          'span',
+          status === 'active'
+            ? 'Jobs will appear after your next run or reload.'
+            : 'Jobs you move here will stay available for review.',
+        );
+        jobsEl.append(empty);
+      };
+      const renderSummary = (status, jobs) => {
         if (!jobs.length && !jobsEl.querySelector('.empty, .list-control')) {
-          const empty = document.createElement('div');
-          empty.className = 'empty';
-          addText(
-            empty,
-            'strong',
-            status === 'active' ? 'Nothing here yet' : `No ${status} jobs`,
-          );
-          addText(
-            empty,
-            'span',
-            status === 'active'
-              ? 'Jobs will appear after your next run or reload.'
-              : 'Jobs you move here will stay available for review.',
-          );
-          jobsEl.append(empty);
+          renderEmpty(status);
         }
         if (jobs.length)
           jobsEl.querySelector('.empty, .list-control')?.remove();
@@ -672,6 +685,37 @@
           ? jobs.length + (jobs.length === 1 ? ' job' : ' jobs')
           : '';
         if (!persistentError) setNotice(count);
+      };
+      const renderList = (status, serverJobs, announce = true) => {
+        if (
+          status === currentStatus &&
+          (listingState === 'loading' || listingState === 'error') &&
+          !announce
+        )
+          return;
+        const jobs = jobsForStatus(status, serverJobs);
+        reconcileCards(jobs);
+        renderSummary(status, jobs);
+      };
+      const showLoadError = (error) => {
+        listingState = 'error';
+        jobsEl.replaceChildren();
+        setError(error.message || 'Could not load jobs.');
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'list-control button';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', load);
+        jobsEl.append(retry);
+      };
+      const fetchJobs = async (status, signal) => {
+        const response = await fetch(
+          `/api/jobs?status=${encodeURIComponent(status)}`,
+          { signal },
+        );
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || 'Could not load jobs.');
+        return Array.isArray(body.jobs) ? body.jobs : [];
       };
       const load = async () => {
         if (request) request.abort();
@@ -685,44 +729,35 @@
         persistentError = '';
         setNotice('Loading…');
         try {
-          const response = await fetch(
-            `/api/jobs?status=${encodeURIComponent(loadStatus)}`,
-            { signal },
-          );
-          const body = await response.json().catch(() => ({}));
-          if (!response.ok)
-            throw new Error(body.error || 'Could not load jobs.');
+          const jobs = await fetchJobs(loadStatus, signal);
           if (
             signal.aborted ||
             generation !== listingGeneration ||
             currentStatus !== loadStatus
           )
             return;
-          const jobs = Array.isArray(body.jobs) ? body.jobs : [];
           cache.set(loadStatus, jobs);
-          if (
-            generation === listingGeneration &&
-            currentStatus === loadStatus
-          ) {
-            listingState = 'ready';
-            renderList(loadStatus, jobs, true);
-          }
+          listingState = 'ready';
+          renderList(loadStatus, jobs, true);
         } catch (error) {
           if (error.name !== 'AbortError' && generation === listingGeneration) {
-            listingState = 'error';
-            jobsEl.replaceChildren();
-            setError(error.message || 'Could not load jobs.');
-            const retry = document.createElement('button');
-            retry.type = 'button';
-            retry.className = 'list-control button';
-            retry.textContent = 'Retry';
-            retry.addEventListener('click', load);
-            jobsEl.append(retry);
+            showLoadError(error);
           }
         } finally {
           if (!signal.aborted && generation === listingGeneration)
             jobsEl.setAttribute('aria-busy', 'false');
         }
+      };
+      const restoreStatus = (reviewKey, previousStatus, from, job, error) => {
+        pending.delete(reviewKey);
+        localStatus.set(reviewKey, previousStatus);
+        const sourceJobs = cache.get(from) || [];
+        if (!sourceJobs.some((item) => String(item.reviewKey) === reviewKey))
+          cache.set(from, [...sourceJobs, job]);
+        renderList(currentStatus, cache.get(currentStatus) || [], false);
+        setError(
+          `${error.message || 'Could not save that change.'} Try again.`,
+        );
       };
       const updateStatus = async (button, status) => {
         const card = button.closest('.job');
@@ -747,15 +782,7 @@
           pending.delete(reviewKey);
           renderList(currentStatus, cache.get(currentStatus) || [], false);
         } catch (error) {
-          pending.delete(reviewKey);
-          localStatus.set(reviewKey, previousStatus);
-          const sourceJobs = cache.get(from) || [];
-          if (!sourceJobs.some((item) => String(item.reviewKey) === reviewKey))
-            cache.set(from, [...sourceJobs, job]);
-          renderList(currentStatus, cache.get(currentStatus) || [], false);
-          setError(
-            `${error.message || 'Could not save that change.'} Try again.`,
-          );
+          restoreStatus(reviewKey, previousStatus, from, job, error);
         }
       };
       tabs.forEach((tab) => {
