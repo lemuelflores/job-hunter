@@ -11,7 +11,7 @@
   "scripts": {
     "check": "biome check .",
     "fix": "biome check --write .",
-    "build": "tsc -p tsconfig.profile.json && tsc -p tsconfig.json && cp src/ui.html dist/ui.html",
+    "build": "tsc -p tsconfig.profile.json && tsc -p tsconfig.json && cp src/web/index.html dist/web/index.html",
     "test": "pnpm build && node --test test/*.test.mjs",
     "test:queue": "node --test test/queue.integration.mjs",
     "job-hunter": "node dist/cli.js"

@@ -1,4 +1,4 @@
-import { loadProfile } from '../../profile.js';
+import { loadProfile } from '../../../profile.js';
 import type { Decision, ReviewOptions } from '../types.js';
 import { request } from './request.js';
 

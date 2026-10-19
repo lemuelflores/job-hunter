@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path';
 import { loadEnvFile } from 'node:process';
+import timers from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { scrapeListing } from './firecrawl.js';
-import { SqliteStore, STAGES, type Stage } from './persistence.js';
+import { JobQueues } from './bullmq.js';
+import { fetchJobs } from './discovery/discover-jobs.js';
 import { loadProfile } from './profile.js';
-import { JobQueues } from './queues.js';
-import type { ReviewServices } from './runner.js';
-import { listenReviewServer } from './web.js';
+import { scrapeListing } from './review/firecrawl.js';
+import type { ReviewServices } from './review/worker.js';
+import { SqliteStore, STAGES, type Stage } from './sqlite.js';
+import { listenReviewServer } from './web/server.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const HELP = `Usage: node dist/cli.js <command>
@@ -97,7 +99,7 @@ function parseCommand(argv: string[]) {
 }
 
 async function authenticate() {
-  const { createLlm } = await import('./llm/index.js');
+  const { createLlm } = await import('./review/llm/index.js');
   const llm = createLlm();
   const controller = new AbortController();
   const stop = () => controller.abort(new Error('Authentication interrupted'));
@@ -138,7 +140,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const profile = ['fetch', 'fetch-worker', 'worker'].includes(command)
       ? await loadProfile()
       : undefined;
-    const { createLlm } = await import('./llm/index.js');
+    const { createLlm } = await import('./review/llm/index.js');
     const llm = createLlm();
     const review: ReviewServices = {
       scrapeListing,
@@ -179,8 +181,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         break;
       }
       case 'fetch-worker': {
-        const { workFetch } = await import('./fetch-worker.js');
-        const { fetchJobs } = await import('./runner.js');
+        const { workFetch } = await import('./discovery/worker.js');
         const fetchStore = store;
         await workFetch(async () => {
           const outcome = await fetchJobs(fetchStore, undefined, profile);
@@ -191,13 +192,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         break;
       }
       case 'worker': {
-        const { workJobs } = await import('./runner.js');
+        const { workJobs } = await import('./review/worker.js');
         await workJobs(store, jobQueues(), review, controller.signal);
         break;
       }
       case 'fetch':
       case 'review': {
-        const { fetchJobs, reviewJobs } = await import('./runner.js');
         const outcome =
           command === 'fetch'
             ? await fetchJobs(store, undefined, profile)
@@ -240,6 +240,51 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     await queues?.close();
     store?.close();
   }
+}
+
+async function reviewOutcome(
+  store: SqliteStore,
+  queues: JobQueues,
+  id: number,
+) {
+  if (store.getJob(id)?.status !== 'active')
+    return [`Job ${id}: no longer active`];
+  await queues.syncFailures(store, id);
+  const states = store.stages(id);
+  const crawlFailed =
+    store.getJob(id)?.listing_text === null &&
+    states.some((s) => s.stage === 'crawl' && s.state === 'failed');
+  if (states.some((s) => s.state === 'pending') && !crawlFailed) return null;
+  return states
+    .filter((s) => ['failed', 'terminal'].includes(s.state))
+    .map((s) => `Job ${id} ${s.stage}: ${s.error}`);
+}
+
+export async function reviewJobs(
+  store: SqliteStore,
+  queues: JobQueues,
+  limit?: number,
+  signal?: AbortSignal,
+) {
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1))
+    throw new Error('Invalid review limit');
+  const jobs = store.unfinished(limit);
+  for (const job of jobs) await queues.scheduleListing(store, job.id);
+  const failures: string[] = [];
+  let reviewed = 0;
+  const waiting = new Set(jobs.map((job) => job.id));
+  while (waiting.size) {
+    signal?.throwIfAborted();
+    for (const id of waiting) {
+      const errors = await reviewOutcome(store, queues, id);
+      if (errors === null) continue;
+      failures.push(...errors);
+      if (!errors.length) reviewed++;
+      waiting.delete(id);
+    }
+    if (waiting.size) await timers.setTimeout(250, undefined, { signal });
+  }
+  return { reviewed, pending: store.pendingCount(), failures };
 }
 
 if (

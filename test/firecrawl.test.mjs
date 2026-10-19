@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PageError, scrapeListing } from '../dist/firecrawl.js';
+import { PageError, scrapeListing } from '../dist/review/firecrawl.js';
 
 test('extraction rejects service HTTP errors and unsuccessful/empty responses', async () => {
   for (const response of [

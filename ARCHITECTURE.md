@@ -9,29 +9,32 @@ Job Hunter is a local, single-user application that discovers jobs, assesses rem
 ```text
 job-hunter/
 ├── src/
-│   ├── cli.ts                 # Commands, dependency construction, shutdown
-│   ├── runner.ts              # Discovery and processing orchestration
-│   ├── fetch-worker.ts        # UTC scheduled discovery
-│   ├── queues.ts              # BullMQ scheduling, consumers, repair, retry
-│   ├── persistence.ts         # SQLite schema, migrations, domain transitions
-│   ├── profile.ts             # Profile types, validation, runtime loading
+│   ├── cli.ts                 # Commands, dependency construction, review waiting, shutdown
 │   ├── discovery/
-│   │   ├── queries.ts         # Profile-derived Google query
-│   │   └── google.ts          # Autom.dev requests and pagination
-│   ├── firecrawl.ts           # Markdown extraction and page-error handling
-│   ├── llm/
-│   │   ├── types.ts           # Provider contract and assessment types
-│   │   ├── index.ts           # Provider selection
-│   │   └── chatgpt/
-│   │       ├── auth.ts        # OAuth sign-in, refresh, credential storage
-│   │       ├── request.ts     # Streaming requests and structured output
-│   │       ├── review.ts      # Location eligibility assessment
-│   │       └── stack.ts       # Technology-fit assessment
-│   ├── web.ts                 # HTTP server, API, request validation
-│   ├── web-types.ts           # Review-status and API types
-│   ├── ui.html                # Entire browser UI: HTML, CSS, JavaScript
-│   ├── ui.ts                  # Loads colocated UI HTML
-│   └── types.ts               # Discovery request/result types
+│   │   ├── worker.ts          # UTC scheduled discovery
+│   │   ├── discover-jobs.ts   # Search, save listings, enqueue reviews
+│   │   └── google.ts          # Query construction, search types, Autom.dev requests
+│   ├── review/
+│   │   ├── worker.ts          # Crawl/location/stack consumers and stage dispatch
+│   │   ├── crawl.ts           # Extract and save listing text, enqueue assessments
+│   │   ├── location-check.ts  # Run and save location eligibility assessment
+│   │   ├── tech-check.ts      # Run and save technology-fit assessment
+│   │   ├── firecrawl.ts       # Markdown extraction client and page errors
+│   │   └── llm/
+│   │       ├── types.ts       # Provider contract and assessment types
+│   │       ├── index.ts       # Provider selection
+│   │       └── chatgpt/
+│   │           ├── auth.ts    # OAuth sign-in, refresh, credential storage
+│   │           ├── request.ts # Streaming requests and structured output
+│   │           ├── location-check.ts # Location prompt and model response validation
+│   │           └── tech-check.ts     # Technology prompt and model response validation
+│   ├── web/
+│   │   ├── server.ts          # HTTP server, API, validation, HTML loading
+│   │   ├── types.ts           # Review-status and API types
+│   │   └── index.html         # Entire browser UI: HTML, CSS, JavaScript
+│   ├── bullmq.ts              # Shared queue delivery, repair, retry
+│   ├── sqlite.ts              # SQLite schema, migrations, domain transitions
+│   └── profile.ts             # Profile types, validation, runtime loading
 ├── test/                      # Node test suites and Redis integration suite
 ├── profile.ts                 # Candidate search/review preferences
 ├── .env.example               # Supported environment configuration
@@ -43,7 +46,7 @@ job-hunter/
 ├── biome.json                 # Formatting and linting
 ├── .gitignore                 # Excludes secrets, databases, build output
 ├── README.md                  # Setup and everyday usage
-├── ARCHITECTURE_V3.md          # This document
+├── ARCHITECTURE.md             # This document
 ├── dist/                      # Generated JavaScript and copied UI HTML
 ├── jobs.sqlite                # Local domain database; not versioned
 ├── .env                       # Local configuration/secrets; not versioned
@@ -51,6 +54,8 @@ job-hunter/
 ```
 
 The tree focuses on application code and operational files. Dependencies, tooling metadata, and local scratch artifacts are omitted.
+
+Feature directories own their workflows and workers. `review/` operations load saved listings, call integrations, and persist results; `review/llm/chatgpt/` owns provider-specific prompts, requests, and response validation without database writes. Shared queue delivery and storage remain at the source root. File names use `tech-check`, while the existing queue and database stage remains named `stack`.
 
 ## 2. High-Level System Diagram
 
@@ -83,11 +88,11 @@ SQLite is authoritative for job data and processing state. Redis coordinates wor
 
 **Name:** Local job-review UI.
 
-**Description:** `src/ui.html` displays saved listings, eligibility and stack assessments, filtering, and active/hidden/rejected review states. Users can change a listing's state or hide/reject a company's active listings. Browser state and rendering live in the same document; there is no frontend framework or bundler. `src/ui.ts` loads the HTML for the HTTP server.
+**Description:** `src/web/index.html` displays saved listings, eligibility and stack assessments, filtering, and active/hidden/rejected review states. Users can change a listing's state or hide/reject a company's active listings. Browser state and rendering live in the same document; there is no frontend framework or bundler. `src/web/server.ts` loads the colocated HTML for the HTTP server.
 
 **Technologies:** Plain HTML, CSS, JavaScript, browser Fetch API.
 
-**Deployment:** Served by the application at `http://127.0.0.1:3000`. Build copies the HTML into `dist/`; applying UI changes requires rebuilding and restarting the server.
+**Deployment:** Served by the application at `http://127.0.0.1:3000`. Build copies the HTML into `dist/web/index.html`; applying UI changes requires rebuilding and restarting the server.
 
 ### 3.2. Backend Services
 
@@ -99,11 +104,11 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 **Description:** `src/cli.ts` loads root-relative configuration, constructs dependencies, dispatches commands, and manages shutdown. Commands include `auth`, `fetch`, `fetch-worker`, `review`, `worker`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`.
 
-`src/discovery/queries.ts` emits one combined query across Ashby, Lever, and Greenhouse. All title, skill, and search-location terms come from the root profile: array groups are ANDed; canonical names and aliases within a group are ORed. Titles use `intitle:` and skills match page-wide. The builder adds neither a profession nor a remote clause. `searchLocation` controls discovery alternatives; `location` is the candidate's residence for assessment.
+`src/discovery/google.ts` builds one combined Google query across Ashby, Lever, and Greenhouse. All title, skill, and search-location terms come from the root profile: array groups are ANDed; canonical names and aliases within a group are ORed. Titles use `intitle:` and skills match page-wide. The builder adds neither a profession nor a remote clause. `searchLocation` controls discovery alternatives; `location` is the candidate's residence for assessment.
 
-`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. `fetchJobs` saves accepted URLs and schedules unfinished jobs found in those results. Fetching does not assess jobs.
+`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. `fetchJobs` in `src/discovery/discover-jobs.ts` saves accepted URLs and schedules unfinished jobs found in those results. Fetching does not assess jobs.
 
-`src/fetch-worker.ts` uses `FETCH_CRON` (default `0 * * * *`, UTC), with no immediate startup fetch and no overlapping runs. Shutdown waits for the active fetch; scheduled failures are logged without stopping future runs.
+`src/discovery/worker.ts` uses `FETCH_CRON` (default `0 * * * *`, UTC), with no immediate startup fetch and no overlapping runs. Shutdown waits for the active fetch; scheduled failures are logged without stopping future runs.
 
 **Technologies:** Node.js 22.18+, TypeScript ESM, native Fetch API, node-cron.
 
@@ -113,7 +118,7 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 **Name:** Independent crawl, location, and stack consumers.
 
-**Description:** `src/runner.ts` implements stage processing; `src/queues.ts` owns delivery. One `worker` process hosts three consumers. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
+**Description:** `src/review/worker.ts` constructs consumers and dispatches stages to `crawl.ts`, `location-check.ts`, and `tech-check.ts` in the same directory; `src/bullmq.ts` owns shared queue delivery and recovery. One `worker` process hosts three consumers. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
 
 Queues use prefix `job-hunter`, names `crawl`, `location`, and `stack`, payload `{ id }`, and stable per-queue IDs `listing-N`. Crawling saves Markdown once and schedules both assessments. Processors consult SQLite before work; completed stages cannot overwrite saved results. Redelivered crawl tasks can enqueue missing assessments without scraping again.
 
@@ -136,7 +141,7 @@ Workers drain active tasks during graceful shutdown. BullMQ recovers stalled del
 
 **Name:** Review server.
 
-**Description:** `src/web.ts` serves the UI and saved data through Node's HTTP server.
+**Description:** `src/web/server.ts` serves the UI and saved data through Node's HTTP server.
 
 | Route | Responsibility |
 | --- | --- |
@@ -201,7 +206,7 @@ Legacy job columns remain to preserve historical values and existing database ob
 | OpenAI authentication | ChatGPT subscription sign-in and token refresh | OAuth using the public Codex client and loopback callback on port 1455 |
 | ChatGPT subscription backend | Independent location and stack assessments | HTTPS POST to undocumented `backend-api/codex/responses`, SSE streaming, strict JSON-schema output |
 
-`src/llm/types.ts` defines the provider contract. `createLlm` currently supports only `MODEL_PROVIDER=chatgpt`; unsupported values fail explicitly. `MODEL_NAME` defaults to `gpt-6-luna` and `MODEL_EFFORT` to `medium`. Assessment functions require saved listing text and validate returned decisions before persistence.
+`src/review/llm/types.ts` defines the provider contract. `createLlm` currently supports only `MODEL_PROVIDER=chatgpt`; unsupported values fail explicitly. `MODEL_NAME` defaults to `gpt-6-luna` and `MODEL_EFFORT` to `medium`. Assessment functions require saved listing text and validate returned decisions before persistence.
 
 ## 6. Deployment & Infrastructure
 

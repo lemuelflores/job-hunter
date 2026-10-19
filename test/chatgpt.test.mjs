@@ -3,18 +3,18 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { loadProfile } from '../dist/profile.js';
 import {
   locationRule,
   parseDecision,
   reviewJob,
-} from '../dist/llm/chatgpt/review.js';
-import { parseStackDecision } from '../dist/llm/chatgpt/stack.js';
+} from '../dist/review/llm/chatgpt/location-check.js';
+import { parseStackDecision } from '../dist/review/llm/chatgpt/tech-check.js';
 import {
   AuthenticationError,
   createLlm,
   RateLimitError,
-} from '../dist/llm/index.js';
-import { loadProfile } from '../dist/profile.js';
+} from '../dist/review/llm/index.js';
 
 const llm = createLlm();
 

@@ -1,7 +1,6 @@
-import { createNodeRedisClient, Queue, RedisConnection, Worker } from 'bullmq';
+import { createNodeRedisClient, Queue, RedisConnection } from 'bullmq';
 import { createClient } from 'redis';
-import { type SqliteStore, STAGES, type Stage } from './persistence.js';
-import { processStage, type ReviewServices } from './runner.js';
+import { type SqliteStore, STAGES, type Stage } from './sqlite.js';
 
 RedisConnection.clientFactory = (options) => {
   const producer = options.enableOfflineQueue === false;
@@ -27,8 +26,8 @@ RedisConnection.clientFactory = (options) => {
 
 export class JobQueues {
   readonly queues: Record<Stage, Queue>;
-  private readonly url: string;
-  private readonly prefix: string;
+  readonly url: string;
+  readonly prefix: string;
 
   constructor(
     url = process.env.REDIS_URL || 'redis://127.0.0.1:6379',
@@ -116,69 +115,6 @@ export class JobQueues {
         throw error;
       }
     } else await this.enqueue(stage, id);
-  }
-
-  async startWorkers(
-    store: SqliteStore,
-    services: ReviewServices,
-    signal?: AbortSignal,
-  ) {
-    const workers: Worker[] = [];
-    try {
-      for (const stage of STAGES) {
-        await this.queues[stage].setGlobalConcurrency(1);
-        const worker = new Worker(
-          stage,
-          async (task) => {
-            const id = task.data.id;
-            if (!Number.isSafeInteger(id) || id < 1)
-              throw new Error('Invalid listing ID');
-            try {
-              await processStage(
-                store,
-                stage,
-                id,
-                (s, key) => this.enqueue(s, key),
-                services,
-                signal,
-              );
-            } catch (error) {
-              store.failStage(
-                id,
-                stage,
-                error instanceof Error ? error.message : String(error),
-                task.attemptsMade + 1 >= (task.opts.attempts ?? 3),
-              );
-              throw error;
-            }
-          },
-          {
-            prefix: this.prefix,
-            connection: { url: this.url },
-            concurrency: 1,
-          },
-        );
-        worker.on('error', (error) =>
-          console.error(`[worker] ${stage}: ${error.message}`),
-        );
-        worker.on('failed', (task, error) => {
-          console.error(
-            `[worker] ${stage} listing ${task?.data.id}: ${error.message}`,
-          );
-          if (task)
-            void this.syncFailures(store, task.data.id).catch((failure) =>
-              console.error(
-                `[worker] Cannot save queue failure: ${failure instanceof Error ? failure.message : String(failure)}`,
-              ),
-            );
-        });
-        workers.push(worker);
-      }
-      return workers;
-    } catch (error) {
-      await Promise.all(workers.map((worker) => worker.close()));
-      throw error;
-    }
   }
 
   async close() {

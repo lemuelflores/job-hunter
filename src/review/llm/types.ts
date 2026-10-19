@@ -1,4 +1,4 @@
-import type { SearchTerms } from '../profile.js';
+import type { SearchTerms } from '../../profile.js';
 
 export interface Decision {
   eligibility: 'eligible' | 'ineligible' | 'unclear';

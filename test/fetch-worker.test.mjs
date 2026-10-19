@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout } from 'node:timers/promises';
-import { workFetch } from '../dist/fetch-worker.js';
+import { workFetch } from '../dist/discovery/worker.js';
 
 test('fetch worker rejects invalid cron before fetching', async () => {
   await assert.rejects(

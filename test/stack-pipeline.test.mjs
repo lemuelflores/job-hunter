@@ -3,8 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { SqliteStore } from '../dist/persistence.js';
-import { processStage } from '../dist/runner.js';
+import { processStage } from '../dist/review/worker.js';
+import { SqliteStore } from '../dist/sqlite.js';
 
 const decision = {
   eligibility: 'ineligible',
@@ -151,7 +151,7 @@ test('migration preserves historical decisions, indexes and triggers without imp
     await processStage(store, 'crawl', 1, enqueue, {
       ...services,
       scrapeListing: async () => {
-        const { PageError } = await import('../dist/firecrawl.js');
+        const { PageError } = await import('../dist/review/firecrawl.js');
         throw new PageError(404, 'Gone');
       },
     });

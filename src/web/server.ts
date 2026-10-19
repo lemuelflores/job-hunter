@@ -1,17 +1,22 @@
+import { readFileSync } from 'node:fs';
 import {
   createServer,
   type IncomingMessage,
   type Server,
   type ServerResponse,
 } from 'node:http';
-import type { SqliteStore } from './persistence.js';
-import { UI_HTML } from './ui.js';
+import type { SqliteStore } from '../sqlite.js';
 import {
   REVIEW_STATUSES,
   type ReviewStatus,
   type UpdateCompanyStatusRequest,
   type UpdateJobStatusRequest,
-} from './web-types.js';
+} from './types.js';
+
+export const UI_HTML = readFileSync(
+  new URL('./index.html', import.meta.url),
+  'utf8',
+);
 
 const MAX_BODY_BYTES = 16 * 1024;
 

@@ -4,14 +4,14 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fetchJobs } from '../dist/discovery/discover-jobs.js';
 import {
   buildQueryMatrix,
   renderExpression,
   renderTitle,
-} from '../dist/discovery/queries.js';
-import { SqliteStore } from '../dist/persistence.js';
+} from '../dist/discovery/google.js';
 import { loadProfile, validateProfile } from '../dist/profile.js';
-import { fetchJobs } from '../dist/runner.js';
+import { SqliteStore } from '../dist/sqlite.js';
 
 const profile = {
   location: 'Germany',

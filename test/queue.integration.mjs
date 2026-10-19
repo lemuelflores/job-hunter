@@ -6,9 +6,10 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { SqliteStore } from '../dist/persistence.js';
-import { JobQueues } from '../dist/queues.js';
-import { reviewJobs, workJobs } from '../dist/runner.js';
+import { JobQueues } from '../dist/bullmq.js';
+import { reviewJobs } from '../dist/cli.js';
+import { startWorkers, workJobs } from '../dist/review/worker.js';
+import { SqliteStore } from '../dist/sqlite.js';
 
 const location = {
   eligibility: 'ineligible',
@@ -116,7 +117,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       const blocked = new Promise((resolve) => {
         release = resolve;
       });
-      workers = await queues.startWorkers(store, {
+      workers = await startWorkers(store, queues, {
         ...services,
         scrapeListing: async () => {
           scrapes++;
@@ -153,7 +154,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       const saved = JSON.stringify(store.getJob(1));
       for (const stage of ['crawl', 'location', 'stack'])
         await queues.enqueue(stage, 1);
-      workers = await queues.startWorkers(store, {
+      workers = await startWorkers(store, queues, {
         scrapeListing: async () => assert.fail('duplicate scrape'),
         reviewJob: async () => assert.fail('duplicate location'),
         reviewStack: async () => assert.fail('duplicate stack'),
@@ -178,7 +179,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
     async () => {
       store.saveResults([result(3)]);
       let calls = 0;
-      workers = await queues.startWorkers(store, {
+      workers = await startWorkers(store, queues, {
         ...services,
         reviewJob: async () => {
           calls++;
@@ -211,7 +212,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
         (await queues.queues.location.getJob('listing-3')).attemptsMade,
         0,
       );
-      workers = await queues.startWorkers(store, services);
+      workers = await startWorkers(store, queues, services);
       await until(() => store.getJob(3).eligibility === 'ineligible');
       for (const key of [
         'stack_status',
@@ -230,7 +231,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
     async () => {
       store.saveResults([result(4), result(5)]);
       store.saveListingText(4, 'Saved before interrupted enqueue');
-      workers = await queues.startWorkers(store, services);
+      workers = await startWorkers(store, queues, services);
       const outcome = await reviewJobs(store, queues, 1);
       assert.equal(outcome.reviewed, 1);
       assert.equal(
@@ -275,7 +276,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
         }
       });
       await queuesReady(queues);
-      workers = await queues.startWorkers(store, services);
+      workers = await startWorkers(store, queues, services);
       await until(
         () =>
           store.getJob(6).stack_status === 'match' &&
@@ -300,15 +301,16 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
     async () => {
       store.saveResults([result(8), result(9)]);
       store.saveListingText(8, 'Checkpoint before model interruption');
-      const transport = new URL('../dist/queues.js', import.meta.url).href;
-      const persistence = new URL('../dist/persistence.js', import.meta.url)
-        .href;
+      const transport = new URL('../dist/bullmq.js', import.meta.url).href;
+      const worker = new URL('../dist/review/worker.js', import.meta.url).href;
+      const persistence = new URL('../dist/sqlite.js', import.meta.url).href;
       const code = `
       import {JobQueues} from ${JSON.stringify(transport)};
+      import {startWorkers} from ${JSON.stringify(worker)};
       import {SqliteStore} from ${JSON.stringify(persistence)};
       const store=new SqliteStore(${JSON.stringify(path)});
       const queues=new JobQueues(${JSON.stringify(url)},'isolated-job-hunter');
-      await queues.startWorkers(store,{
+      await startWorkers(store,queues,{
         scrapeListing:async()=>new Promise(()=>{}),
         reviewJob:async()=>{process.send('active');return new Promise(()=>{});},
         reviewStack:async()=>(${JSON.stringify(stack)}),
@@ -333,7 +335,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       child.kill('SIGKILL');
       await exited;
       child = undefined;
-      workers = await queues.startWorkers(store, services);
+      workers = await startWorkers(store, queues, services);
       await queues.repair(store);
       await until(() => store.pendingCount() === 0, 100_000);
       assert.equal(

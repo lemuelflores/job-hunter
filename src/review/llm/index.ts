@@ -1,6 +1,6 @@
 import { authenticate } from './chatgpt/auth.js';
-import { reviewJob } from './chatgpt/review.js';
-import { reviewStack } from './chatgpt/stack.js';
+import { reviewJob } from './chatgpt/location-check.js';
+import { reviewStack } from './chatgpt/tech-check.js';
 import type { LlmProvider } from './types.js';
 
 const chatgpt: LlmProvider = { authenticate, reviewJob, reviewStack };

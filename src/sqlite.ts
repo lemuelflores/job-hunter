@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { StackDecision } from './llm/types.js';
-import type { SearchResult } from './types.js';
-import type { ReviewStatus } from './web-types.js';
+import type { SearchResult } from './discovery/google.js';
+import type { StackDecision } from './review/llm/types.js';
+import type { ReviewStatus } from './web/types.js';
 
 export const STAGES = ['crawl', 'location', 'stack'] as const;
 export type Stage = (typeof STAGES)[number];

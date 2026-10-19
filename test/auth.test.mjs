@@ -16,8 +16,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { main } from '../dist/cli.js';
-import { authenticate, getCredentials } from '../dist/llm/chatgpt/auth.js';
-import { AuthenticationError, createLlm } from '../dist/llm/index.js';
+import {
+  authenticate,
+  getCredentials,
+} from '../dist/review/llm/chatgpt/auth.js';
+import { AuthenticationError, createLlm } from '../dist/review/llm/index.js';
 
 const llm = createLlm();
 
@@ -60,15 +63,15 @@ async function startLogin(t, options, login = authenticate) {
 
 test('default login and reviews share app-root .auth.json regardless of cwd or environment', async (t) => {
   const { root } = await setup(t);
-  const directory = join(root, 'dist', 'llm', 'chatgpt');
+  const directory = join(root, 'dist', 'review', 'llm', 'chatgpt');
   await mkdir(directory, { recursive: true });
   await writeFile(join(root, 'package.json'), '{"type":"module"}');
   await copyFile(
-    new URL('../dist/llm/chatgpt/auth.js', import.meta.url),
+    new URL('../dist/review/llm/chatgpt/auth.js', import.meta.url),
     join(directory, 'auth.js'),
   );
   await copyFile(
-    new URL('../dist/llm/types.js', import.meta.url),
+    new URL('../dist/review/llm/types.js', import.meta.url),
     join(directory, '..', 'types.js'),
   );
   const provider = await import(pathToFileURL(join(directory, 'auth.js')).href);

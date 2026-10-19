@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PageError } from '../dist/firecrawl.js';
-import { SqliteStore } from '../dist/persistence.js';
-import { processStage } from '../dist/runner.js';
+import { PageError } from '../dist/review/firecrawl.js';
+import { processStage } from '../dist/review/worker.js';
+import { SqliteStore } from '../dist/sqlite.js';
 
 test('terminal crawl failures stop both evaluations; temporary errors remain repairable', async (t) => {
   const store = new SqliteStore(':memory:');

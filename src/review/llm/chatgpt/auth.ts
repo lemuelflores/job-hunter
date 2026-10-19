@@ -20,7 +20,7 @@ interface Credentials {
 }
 
 const AUTH_PATH = fileURLToPath(
-  new URL('../../../.auth.json', import.meta.url),
+  new URL('../../../../.auth.json', import.meta.url),
 );
 
 async function readAuth(path: string): Promise<Record<string, unknown>> {

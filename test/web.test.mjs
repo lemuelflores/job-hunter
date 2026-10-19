@@ -6,9 +6,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { SqliteStore } from '../dist/persistence.js';
-import { UI_HTML } from '../dist/ui.js';
-import { listenReviewServer } from '../dist/web.js';
+import { SqliteStore } from '../dist/sqlite.js';
+import { listenReviewServer, UI_HTML } from '../dist/web/server.js';
 
 // Only the DOM operations used by the inline UI; no browser dependency needed.
 async function uiFixture(jobs) {
