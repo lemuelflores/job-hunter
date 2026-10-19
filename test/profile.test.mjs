@@ -13,6 +13,7 @@ import {
 import { loadProfile, validateProfile } from '../dist/profile.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
+// Shared Arrange: canonical grouped terms exercise applicant and search geography separately.
 const profile = {
   location: 'Germany',
   searchLocation: ['Germany', 'Berlin', 'Europe', 'worldwide'],
@@ -24,6 +25,7 @@ const profile = {
 };
 
 test('runtime validation rejects malformed exports, expressions and unsafe terms', () => {
+  // Arrange: cover malformed groups, unsafe terms and cyclic alias values.
   const cyclic = {};
   cyclic.nurse = [cyclic];
   const malformedGroups = [
@@ -82,12 +84,16 @@ test('runtime validation rejects malformed exports, expressions and unsafe terms
     ].map((searchLocation) => ({ ...profile, searchLocation })),
     ...malformedGroups.map((title) => ({ ...profile, title })),
   ]) {
+    // Arrange: use each invalid profile from the table with the shared valid baseline.
+    // Act / Assert: validation rejects every malformed shape with an actionable error.
     assert.throws(() => validateProfile(invalid), /Invalid profile.ts/);
   }
+  // Act / Assert: the valid baseline is accepted unchanged.
   assert.deepEqual(validateProfile(profile), profile);
 });
 
 test('TS module loading reports missing files, syntax/import errors and invalid exports', async (t) => {
+  // Arrange: isolate temporary TypeScript modules and remove them after the test.
   const root = await mkdtemp(join(tmpdir(), 'profile-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const [index, source] of [
@@ -97,30 +103,38 @@ test('TS module loading reports missing files, syntax/import errors and invalid 
     'export default null;',
     `export default ${JSON.stringify({ ...profile, title: [{}] })};`,
   ].entries()) {
+    // Arrange: write this table case's broken module to its own import path.
     const path = join(root, `invalid-${index}.ts`);
     await writeFile(path, source);
+    // Act / Assert: loading surfaces syntax, import and export validation failures.
     await assert.rejects(
       loadProfile(path),
       /Cannot load profile.ts|Invalid profile.ts/,
     );
   }
+  // Act / Assert: a nonexistent module reports the missing path.
   await assert.rejects(
     loadProfile(join(root, 'missing.ts')),
     /Cannot load profile.ts.*missing.ts/,
   );
+  // Arrange: write a valid module containing a TypeScript annotation.
   const path = join(root, 'valid.ts');
   await writeFile(
     path,
     `const location: string = 'Germany'; export default { ...${JSON.stringify(profile)}, location };`,
   );
+  // Act / Assert: native TypeScript loading returns the expected profile.
   assert.deepEqual(await loadProfile(path), profile);
   // Native imports are cached; workers intentionally require a restart after edits.
   await writeFile(path, 'export default null;');
+  // Act / Assert: a repeated import retains the cached valid export.
   assert.deepEqual(await loadProfile(path), profile);
 });
 
 test('shared rendering preserves Boolean groups, quoting, and title-only prefixes', () => {
+  // Arrange: include whitespace, duplicate aliases and multiple AND groups.
   const expression = [{ ' foo ': ['foo', 'bar'], bar: [] }, { baz: ['qux'] }];
+  // Act / Assert: render normalized alternatives with prefixes only for titles.
   assert.equal(
     renderExpression(expression),
     '("foo" OR "bar") ("baz" OR "qux")',
@@ -136,19 +150,23 @@ test('shared rendering preserves Boolean groups, quoting, and title-only prefixe
     ]),
     '("registered nurse" OR "accountant") ("senior")',
   );
+  // Act: render a complete query with duplicate skill and geography terms.
   const [{ query }] = buildQueryMatrix({
     ...profile,
     skills: [{ ' Vue ': ['Vue'], Laravel: [] }],
     searchLocation: [' Berlin ', 'Berlin', 'on-site'],
   });
+  // Assert: skill and geography alternatives are trimmed and deduplicated.
   assert.ok(query.endsWith('("Vue" OR "Laravel") ("Berlin" OR "on-site")'));
 });
 
 test('title rendering includes canonical keys, aliases, and every AND group', () => {
+  // Arrange: combine canonical titles, aliases and a separate occupation group.
   const title = [
     { fullstack: ['full-stack', 'full stack'] },
     { developer: [], engineer: [] },
   ];
+  // Act / Assert: every canonical title and alias receives the title-only prefix.
   assert.equal(
     renderTitle(title),
     '(intitle:"fullstack" OR intitle:"full-stack" OR intitle:"full stack") (intitle:"developer" OR intitle:"engineer")',
@@ -161,7 +179,10 @@ test('title rendering includes canonical keys, aliases, and every AND group', ()
 });
 
 test('one query combines every site, skill and geography without profession assumptions', () => {
+  // Arrange: use the shared profile with no additional query configuration.
+  // Act: build its combined ATS query.
   const queries = buildQueryMatrix(profile);
+  // Assert: one query preserves all terms without injecting profession or remote defaults.
   assert.equal(queries.length, 1);
   const [{ query }] = queries;
   assert.match(
@@ -178,13 +199,16 @@ test('one query combines every site, skill and geography without profession assu
     query,
     /Philippines|\(developer OR engineer\)|intitle:"Laravel/,
   );
+  // Act: build the same query shape for unrelated occupations and on-site geography.
   const nursing = buildQueryMatrix({
     ...profile,
     title: [{ nurse: [], accountant: [] }],
     searchLocation: ['Berlin', 'on-site'],
   });
+  // Assert: changing occupations does not change query count or introduce defaults.
   assert.equal(nursing.length, queries.length);
   for (const { query } of nursing) {
+    // Assert: each generated occupation query preserves only the requested scope.
     assert.match(query, /\(intitle:"nurse" OR intitle:"accountant"\)/);
     assert.doesNotMatch(query, /developer|engineer/);
     assert.ok(query.endsWith('("Berlin" OR "on-site")'));
@@ -193,6 +217,7 @@ test('one query combines every site, skill and geography without profession assu
 });
 
 test('the requested query is emitted exactly once without changing profile terms', () => {
+  // Arrange: retain a snapshot of the full requested title, skill and geography scope.
   const requested = {
     ...profile,
     title: [
@@ -219,6 +244,7 @@ test('the requested query is emitted exactly once without changing profile terms
     ],
   };
   const before = structuredClone(requested);
+  // Act / Assert: generate exactly the requested query and leave its input unchanged.
   assert.deepEqual(
     buildQueryMatrix(requested).map(({ query }) => query),
     [
@@ -229,12 +255,16 @@ test('the requested query is emitted exactly once without changing profile terms
 });
 
 test('skill groups AND canonical and alias alternatives without title prefixes', () => {
+  // Arrange: combine alternatives in one skill group with a required second group.
   const grouped = {
     ...profile,
     skills: [{ Laravel: ['PHP'], Vue: ['Vue.js'] }, { TypeScript: [] }],
   };
+  // Act / Assert: validation accepts the grouped skill expression unchanged.
   assert.deepEqual(validateProfile(grouped), grouped);
+  // Act: render the validated skill groups in a query.
   const [{ query }] = buildQueryMatrix(grouped);
+  // Assert: skill alternatives retain AND grouping and never gain title prefixes.
   assert.ok(
     query.includes('("Laravel" OR "PHP" OR "Vue" OR "Vue.js") ("TypeScript")'),
   );
@@ -242,11 +272,16 @@ test('skill groups AND canonical and alias alternatives without title prefixes',
 });
 
 test('root TS profile loads from compiled module outside cwd and preserves all search scope', async () => {
+  // Arrange: use the root profile resolved by the compiled loader without a path override.
+  // Act: load the default profile and its source export.
   const actual = await loadProfile();
   const configured = (await import('../profile.ts')).default;
+  // Assert: default loading preserves the configured search scope.
   assert.deepEqual(actual, configured);
   assert.equal(buildQueryMatrix(actual).length, 1);
+  // Arrange: resolve the compiled module before starting outside the repository.
   const moduleUrl = new URL('../dist/profile.js', import.meta.url).href;
+  // Act: load the profile in a child process whose cwd is the temporary directory.
   const child = spawnSync(
     process.execPath,
     [
@@ -256,18 +291,23 @@ test('root TS profile loads from compiled module outside cwd and preserves all s
     ],
     { cwd: tmpdir(), encoding: 'utf8' },
   );
+  // Assert: module-relative resolution succeeds and yields the same profile.
   assert.equal(child.status, 0, child.stderr);
   assert.deepEqual(JSON.parse(child.stdout), actual);
 });
 
 test('fetch uses the supplied profile with no country bias and loads its default asynchronously', async () => {
+  // Arrange: isolate discovery state in an in-memory store, closed even on failure.
   const store = new SqliteStore(':memory:');
   try {
     for (const supplied of [profile, undefined]) {
+      // Arrange: determine the expected scope for this explicit or default profile case.
       const expected = supplied ?? (await loadProfile());
+      // Act: discover jobs with an injected search callback and no results to scrape.
       await fetchJobs(
         store,
         async (queries, options) => {
+          // Assert: discovery forwards the profile queries without a country override.
           assert.deepEqual(
             queries,
             buildQueryMatrix(expected).map(({ query }) => query),

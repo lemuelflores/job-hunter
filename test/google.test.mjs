@@ -5,6 +5,7 @@ import {
   runParallelGoogleSearchesDetailed,
 } from '../dist/discovery/google.js';
 
+// Shared Arrange: isolate API credentials and fetch, then restore both after each test.
 function mock(t, fetcher) {
   const original = globalThis.fetch;
   const key = process.env.AUTOM_API_KEY;
@@ -18,7 +19,9 @@ function mock(t, fetcher) {
 }
 
 test('Google integration has no hardcoded country bias and preserves credentials, metadata and a request timeout', async (t) => {
+  // Arrange: return one valid listing alongside malformed organic results.
   mock(t, async (raw, options) => {
+    // Assert: the outgoing request keeps neutral geography, credentials and a timeout.
     assert.equal(raw.origin, 'https://api.autom.dev');
     assert.equal(raw.searchParams.get('gl'), null);
     assert.equal(raw.searchParams.get('hl'), 'en');
@@ -38,6 +41,7 @@ test('Google integration has no hardcoded country bias and preserves credentials
       ],
     });
   });
+  // Act / Assert: search and retain only the valid listing with its metadata.
   assert.deepEqual(await googleSearch('remote engineer'), [
     {
       title: 'Engineer',
@@ -50,6 +54,7 @@ test('Google integration has no hardcoded country bias and preserves credentials
 });
 
 test('parallel searches retain successes and report failed requests independently', async (t) => {
+  // Arrange: fail only the bad query while the other queries return listings.
   mock(t, async (raw) =>
     raw.searchParams.get('query') === 'bad'
       ? new Response('unavailable', { status: 503 })
@@ -59,10 +64,12 @@ test('parallel searches retain successes and report failed requests independentl
           ],
         }),
   );
+  // Act: run all three queries with two workers.
   const outcome = await runParallelGoogleSearchesDetailed(
     ['good', 'bad', 'other'],
     { concurrency: 2 },
   );
+  // Assert: successful listings survive and the failed query is identified.
   assert.equal(outcome.results.length, 2);
   assert.equal(outcome.failures.length, 1);
   assert.equal(outcome.failures[0].query, 'bad');
@@ -70,10 +77,12 @@ test('parallel searches retain successes and report failed requests independentl
 });
 
 test('pagination follows next pages, preserves localization and stops at 100 unique results', async (t) => {
+  // Arrange: advertise unlimited pages with one overlapping listing per page.
   const pages = [];
   mock(t, async (raw) => {
     const page = Number(raw.searchParams.get('page'));
     pages.push(page);
+    // Assert: localization survives pagination without an unsupported num parameter.
     assert.equal(raw.searchParams.get('gl'), 'ph');
     assert.equal(raw.searchParams.get('hl'), 'en');
     assert.equal(raw.searchParams.get('num'), null);
@@ -85,16 +94,19 @@ test('pagination follows next pages, preserves localization and stops at 100 uni
       pagination: { has_next_page: true, next: page + 1 },
     });
   });
+  // Act: request more results than the supported maximum.
   const results = await googleSearch('remote engineer', {
     country: 'ph',
     num: 200,
   });
+  // Assert: deduplication and the cap stop fetching after ten pages.
   assert.equal(results.length, 100);
   assert.equal(new Set(results.map((result) => result.url)).size, 100);
   assert.deepEqual(pages, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 });
 
 test('pagination follows advertised next page even after a short page', async (t) => {
+  // Arrange: a short first page explicitly points to page three.
   const pages = [];
   mock(t, async (raw) => {
     const page = Number(raw.searchParams.get('page'));
@@ -106,15 +118,18 @@ test('pagination follows advertised next page even after a short page', async (t
       pagination: { has_next_page: page === 1, next: 3 },
     });
   });
+  // Act / Assert: follow the advertised page rather than stopping at a short page.
   assert.equal((await googleSearch('remote engineer')).length, 2);
   assert.deepEqual(pages, [1, 3]);
 });
 
 for (const ending of ['empty', 'duplicate', 'backwards']) {
   test(`pagination stops on ${ending} pages`, async (t) => {
+    // Arrange: simulate this table case's empty, repeated or backwards continuation.
     let calls = 0;
     mock(t, async () => {
       calls++;
+      // Assert: no termination case may keep requesting pages indefinitely.
       assert.ok(calls <= 2);
       return Response.json({
         organic_results:
@@ -127,12 +142,14 @@ for (const ending of ['empty', 'duplicate', 'backwards']) {
         },
       });
     });
+    // Act / Assert: search stops with one unique listing at the expected page count.
     assert.equal((await googleSearch('remote engineer')).length, 1);
     assert.equal(calls, ending === 'backwards' ? 1 : 2);
   });
 }
 
 test('pagination honors a smaller requested result limit', async (t) => {
+  // Arrange: return ten listings and advertise another page.
   let calls = 0;
   mock(t, async () => {
     calls++;
@@ -144,6 +161,7 @@ test('pagination honors a smaller requested result limit', async (t) => {
       pagination: { has_next_page: true, next: 2 },
     });
   });
+  // Act / Assert: a three-result request truncates the page without fetching another.
   assert.equal((await googleSearch('remote engineer', { num: 3 })).length, 3);
   assert.equal(calls, 1);
 });
