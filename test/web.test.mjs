@@ -325,7 +325,7 @@ async function fixture(t) {
   return { root, store };
 }
 
-test('HTTP UI lists eligibility, persists reversible statuses and board-level company actions', async (t) => {
+test('HTTP UI lists eligibility and persists individual listing statuses', async (t) => {
   const { store } = await fixture(t);
   const job = store.getJob(1);
   store.review(job.id, 'ineligible', 'US residents only', 'United States');
@@ -383,16 +383,24 @@ test('HTTP UI lists eligibility, persists reversible statuses and board-level co
     ).status,
     200,
   );
-  const company = await (
-    await post('/api/jobs/company-status', {
-      companyKey: jobs[0].companyKey,
-      status: 'rejected',
-    })
-  ).json();
-  assert.equal(company.updated, 2);
+  assert.equal(
+    (
+      await post('/api/jobs/status', {
+        reviewKey: String(job.id),
+        status: 'rejected',
+      })
+    ).status,
+    200,
+  );
   assert.equal(
     (await (await get('/api/jobs?status=rejected')).json()).jobs.length,
-    2,
+    1,
+  );
+  assert.deepEqual(
+    (await (await get('/api/jobs?status=active')).json()).jobs.map(
+      (row) => row.id,
+    ),
+    [2],
   );
   assert.equal(
     (await post('/api/jobs/status', { reviewKey: '1', status: 'deleted' }))

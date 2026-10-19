@@ -5,8 +5,3 @@ export interface UpdateJobStatusRequest {
   reviewKey: string;
   status: ReviewStatus;
 }
-
-export interface UpdateCompanyStatusRequest {
-  companyKey: string;
-  status: 'hidden' | 'rejected';
-}

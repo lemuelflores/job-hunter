@@ -91,7 +91,7 @@ SQLite is authoritative for job data and processing state. Redis coordinates wor
 
 **Name:** Local job-review UI.
 
-**Description:** `src/web/index.html` displays saved listings, eligibility and stack assessments, filtering, and active/hidden/rejected review states. Users can change a listing's state or hide/reject a company's active listings. Browser state and rendering live in the same document; there is no frontend framework or bundler. `src/web/server.ts` loads the colocated HTML for the HTTP server.
+**Description:** `src/web/index.html` displays saved listings, eligibility and stack assessments, filtering, and active/hidden/rejected review states. Users can change an individual listing's state. Browser state and rendering live in the same document; there is no frontend framework or bundler. `src/web/server.ts` loads the colocated HTML for the HTTP server.
 
 **Technologies:** Plain HTML, CSS, JavaScript, browser Fetch API.
 
@@ -151,7 +151,6 @@ Workers drain active tasks during graceful shutdown. BullMQ recovers stalled del
 | `GET /` | Serve UI HTML |
 | `GET /api/jobs?status=active` | Read active, hidden, or rejected listings |
 | `POST /api/jobs/status` | Change one listing's user review status |
-| `POST /api/jobs/company-status` | Hide/reject a company's active listings |
 
 Responses are not cached. Request validation and persistence remain server-side; the API has no routes to invoke paid search or model processing.
 

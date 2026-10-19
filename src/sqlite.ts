@@ -430,14 +430,7 @@ export class SqliteStore {
       ...row,
       stages: this.stages(row.id),
       reviewKey: String(row.id),
-      companyKey: this.companyKey(row.url),
-      companyLabel: row.company || new URL(row.url).pathname.split('/')[1],
     }));
-  }
-
-  private companyKey(url: string): string {
-    const parsed = new URL(url);
-    return `${parsed.hostname}/${parsed.pathname.split('/')[1]}`;
   }
 
   setReviewStatus(key: string, status: ReviewStatus): boolean {
@@ -450,22 +443,6 @@ export class SqliteStore {
       this.db.prepare('UPDATE jobs SET status=? WHERE id=?').run(status, key)
         .changes,
     );
-  }
-
-  setActiveCompanyStatus(key: string, status: 'hidden' | 'rejected'): string[] {
-    if (!['hidden', 'rejected'].includes(status)) return [];
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const keys = this.listReviewJobs('active')
-        .filter((row) => row.companyKey === key)
-        .map((row) => row.reviewKey);
-      for (const id of keys) this.setReviewStatus(id, status);
-      this.db.exec('COMMIT');
-      return keys;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
   }
 
   close(): void {

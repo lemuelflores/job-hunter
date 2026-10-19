@@ -9,7 +9,6 @@ import type { SqliteStore } from '../sqlite.js';
 import {
   REVIEW_STATUSES,
   type ReviewStatus,
-  type UpdateCompanyStatusRequest,
   type UpdateJobStatusRequest,
 } from './types.js';
 
@@ -99,34 +98,6 @@ async function updateJobStatus(
   return json(response, 200, { ok: true });
 }
 
-async function updateCompanyStatus(
-  store: SqliteStore,
-  request: IncomingMessage,
-  response: ServerResponse,
-) {
-  const body = (await readJson(
-    request,
-  )) as Partial<UpdateCompanyStatusRequest> | null;
-  if (
-    !body ||
-    typeof body !== 'object' ||
-    typeof body.companyKey !== 'string' ||
-    !body.companyKey.trim() ||
-    (body.status !== 'hidden' && body.status !== 'rejected')
-  )
-    return json(response, 400, { error: 'Invalid request payload' });
-  const reviewKeys = store.setActiveCompanyStatus(body.companyKey, body.status);
-  if (!reviewKeys.length)
-    return json(response, 404, {
-      error: 'No active matching company jobs found',
-    });
-  return json(response, 200, {
-    ok: true,
-    updated: reviewKeys.length,
-    reviewKeys,
-  });
-}
-
 async function routeRequest(
   store: SqliteStore,
   request: IncomingMessage,
@@ -147,10 +118,7 @@ async function routeRequest(
       return json(response, 400, { error: 'Invalid status' });
     return json(response, 200, { jobs: store.listReviewJobs(rawStatus) });
   }
-  if (
-    request.method !== 'POST' ||
-    !['/api/jobs/status', '/api/jobs/company-status'].includes(url.pathname)
-  )
+  if (request.method !== 'POST' || url.pathname !== '/api/jobs/status')
     return json(response, 404, { error: 'Not found' });
   if (!sameOrigin(request))
     return json(response, 403, { error: 'Origin is not allowed' });
@@ -162,9 +130,7 @@ async function routeRequest(
     return json(response, 400, {
       error: 'Content-Type must be application/json',
     });
-  return url.pathname === '/api/jobs/status'
-    ? updateJobStatus(store, request, response)
-    : updateCompanyStatus(store, request, response);
+  return updateJobStatus(store, request, response);
 }
 
 export function createReviewServer(store: SqliteStore): Server {
