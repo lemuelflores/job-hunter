@@ -91,18 +91,129 @@ test('crawl checkpoints text before fan-out; redelivery and duplicate assessment
   assert.equal('listing_text' in store.listReviewJobs('active')[0], false);
 });
 
-test('URL validation, invalid results and completed-stage guards reject unsafe writes', (t) => {
+test('each reviewer receives its listing URL and saved text and saves to the same listing', async (t) => {
   const store = fixture(t);
-  assert.equal(
-    jobUrl('https://boards.greenhouse.io/example/jobs/1?tracking=x'),
-    result(1).url,
+  for (const id of [1, 2]) {
+    const url = result(id).url;
+    const text = `Listing ${id}: Worldwide Laravel`;
+    const fake = {
+      scrapeListing: async (receivedUrl) => {
+        assert.equal(receivedUrl, url);
+        return text;
+      },
+      reviewJob: async (receivedUrl, options) => {
+        assert.equal(receivedUrl, url);
+        assert.equal(options.listingText, text);
+        return { ...decision, reason: `Location ${id}` };
+      },
+      reviewStack: async (receivedUrl, options) => {
+        assert.equal(receivedUrl, url);
+        assert.equal(options.listingText, text);
+        return { ...stack, reason: `Stack ${id}` };
+      },
+    };
+    for (const stage of ['crawl', 'location', 'stack'])
+      await processStage(store, stage, id, async () => {}, fake);
+  }
+  for (const id of [1, 2]) {
+    assert.equal(store.getJob(id).reason, `Location ${id}`);
+    assert.equal(store.getJob(id).stack_reason, `Stack ${id}`);
+  }
+});
+
+test('crawl redelivery repairs a partial fan-out without scraping or reassessing saved results', async (t) => {
+  const store = fixture(t);
+  const delivered = [];
+  await assert.rejects(
+    processStage(
+      store,
+      'crawl',
+      1,
+      async (stage, id) => {
+        if (stage === 'stack') throw new Error('Redis unavailable');
+        delivered.push(stage);
+        await processStage(store, stage, id, async () => {}, services);
+      },
+      services,
+    ),
+    /Redis unavailable/,
   );
+  assert.deepEqual(delivered, ['location']);
+  assert.equal(store.getJob(1).listing_text, 'Worldwide Laravel');
+  const saved = store.getJob(1);
+  await processStage(
+    store,
+    'crawl',
+    1,
+    async (stage, id) => {
+      delivered.push(stage);
+      await processStage(store, stage, id, async () => {}, services);
+    },
+    {
+      ...services,
+      scrapeListing: async () => assert.fail('saved text must be reused'),
+    },
+  );
+  assert.deepEqual(delivered, ['location', 'stack']);
+  assert.equal(store.getJob(1).reason, saved.reason);
+  assert.equal(store.getJob(1).stack_status, 'match');
+});
+
+test('URL validation accepts supported listing shapes and strips tracking', () => {
+  const uuid = '12345678-1234-1234-1234-123456789abc';
+  for (const host of [
+    'jobs.ashbyhq.com',
+    'jobs.lever.co',
+    'jobs.eu.lever.co',
+  ]) {
+    const url = `https://${host}/example/${uuid}`;
+    assert.equal(jobUrl(`${url}?utm_source=google#details`), url);
+  }
+  for (const host of ['boards.greenhouse.io', 'job-boards.greenhouse.io'])
+    assert.equal(
+      jobUrl(`https://${host}/example/jobs/1?tracking=x`),
+      result(1).url,
+    );
   for (const url of [
     'https://evil.test/example/jobs/1',
     'https://jobs.lever.co/example',
+    `https://jobs.lever.co/example/${uuid}/apply`,
+    `http://jobs.lever.co/example/${uuid}`,
+    `https://jobs.lever.co:8443/example/${uuid}`,
     'https://u:p@job-boards.greenhouse.io/example/jobs/1',
+    `https://jobs.lever.co/ex%2Fample/${uuid}`,
+    `https://jobs.lever.co/ex%5Cample/${uuid}`,
+    `https://jobs.lever.co/ex%ZZample/${uuid}`,
   ])
-    assert.equal(jobUrl(url), null);
+    assert.equal(jobUrl(url), null, url);
+});
+
+test('rediscovery deduplicates canonical URLs without resetting saved decisions', (t) => {
+  const store = fixture(t);
+  store.saveListingText(1, 'Saved text');
+  store.review(1, 'eligible', 'Saved location');
+  store.reviewStack(1, stack);
+  store.setReviewStatus('1', 'hidden');
+  const before = store.getJob(1);
+  assert.equal(
+    store.saveResults([
+      {
+        ...result(1),
+        url: 'https://boards.greenhouse.io/example/jobs/1?source=google#top',
+      },
+      result(1),
+    ]),
+    0,
+  );
+  const { last_seen: _beforeSeen, ...saved } = before;
+  const { last_seen: _afterSeen, ...after } = store.getJob(1);
+  assert.deepEqual(after, saved);
+  assert.equal(store.listReviewJobs('hidden').length, 1);
+  assert.ok(store.stages(1).every((stage) => stage.state === 'complete'));
+});
+
+test('invalid results and completed-stage guards reject unsafe writes', (t) => {
+  const store = fixture(t);
   assert.throws(() => store.review(1, 'deleted', 'invalid'), /Invalid review/);
   assert.throws(() => store.review(1, 'eligible', ''), /Invalid review/);
   assert.throws(() => store.saveListingText(1, ''), /Invalid listing/);

@@ -9,6 +9,7 @@ import {
   parseDecision,
   reviewJob,
 } from '../dist/review/llm/chatgpt/location-check.js';
+import { request } from '../dist/review/llm/chatgpt/request.js';
 import { parseStackDecision } from '../dist/review/llm/chatgpt/tech-check.js';
 import {
   AuthenticationError,
@@ -75,6 +76,14 @@ test('provider factory defaults to ChatGPT and rejects unsupported providers', (
 
 test('direct subscription request uses OAuth and validated JSON', async (t) => {
   const authPath = await setup(t);
+  const unicodeDecision = { ...decision, reason: 'Worldwide — 日本 🌍' };
+  const unicodeEvents = [
+    {
+      type: 'response.output_text.delta',
+      delta: JSON.stringify(unicodeDecision),
+    },
+    events[1],
+  ];
   const value = await reviewJob('https://jobs.example/job', {
     authPath,
     listingText: 'Worldwide',
@@ -98,7 +107,7 @@ test('direct subscription request uses OAuth and validated JSON', async (t) => {
       ]);
       assert.equal(schema.properties.reason.maxLength, 5000);
       // Split every byte to exercise partial SSE lines and UTF-8 decoding.
-      const bytes = new TextEncoder().encode(itemsText(events));
+      const bytes = new TextEncoder().encode(itemsText(unicodeEvents));
       return new Response(
         new ReadableStream({
           start(controller) {
@@ -110,7 +119,7 @@ test('direct subscription request uses OAuth and validated JSON', async (t) => {
       );
     },
   });
-  assert.deepEqual(value, decision);
+  assert.deepEqual(value, unicodeDecision);
 });
 
 test('review uses the configured applicant location rather than search regions', async (t) => {
@@ -136,7 +145,7 @@ function itemsText(items) {
   return items.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('');
 }
 
-test('extracted text is treated as untrusted input and requires completion', async (t) => {
+test('extracted text is supplied without browsing tools', async (t) => {
   const authPath = await setup(t);
   const options = {
     authPath,
@@ -158,31 +167,9 @@ test('extracted text is treated as untrusted input and requires completion', asy
     },
   };
   assert.deepEqual(await reviewJob('https://example.test', options), decision);
-  await assert.rejects(
-    reviewJob('https://example.test', {
-      ...options,
-      fetch: async () => stream([events[0]]),
-    }),
-  );
 });
 
-test('rejects HTTP errors, failed/incomplete streams, and malformed decisions', async (t) => {
-  const authPath = await setup(t);
-  for (const response of [
-    new Response('secret upstream details', { status: 429 }),
-    stream(events.slice(0, 1)),
-    stream([{ type: 'response.failed' }]),
-    stream([{ type: 'response.incomplete' }]),
-    stream([{ type: 'response.output_text.delta', delta: '{}' }, events[1]]),
-  ]) {
-    await assert.rejects(
-      reviewJob('https://example.test', {
-        authPath,
-        listingText: 'Worldwide',
-        fetch: async () => response,
-      }),
-    );
-  }
+test('location decisions reject malformed values', () => {
   for (const value of [
     null,
     {},
@@ -254,23 +241,8 @@ test('review refreshes expiring credentials and sends the new access token to Ch
   assert.equal(calls.length, 2);
 });
 
-test('worker can distinguish credential and rate-limit failures from per-listing errors', async (t) => {
+test('review reports missing credentials as an authentication error', async (t) => {
   const authPath = await setup(t);
-  for (const [status, type] of [
-    [401, AuthenticationError],
-    [403, AuthenticationError],
-    [429, RateLimitError],
-    [500, Error],
-  ]) {
-    await assert.rejects(
-      reviewJob('https://example.test', {
-        authPath,
-        listingText: 'Worldwide',
-        fetch: async () => new Response('', { status }),
-      }),
-      type,
-    );
-  }
   await assert.rejects(
     reviewJob('https://example.test', {
       authPath: join(authPath, 'missing'),
@@ -346,6 +318,25 @@ test('both reviewers require supplied listing text without network access', asyn
       /listingText is required/,
     );
   }
+});
+
+test('both reviewers validate the completed model response', async (t) => {
+  const authPath = await setup(t);
+  for (const review of [llm.reviewJob, llm.reviewStack])
+    await assert.rejects(
+      review('https://example.test', {
+        authPath,
+        location: 'Germany',
+        skills: [{ Laravel: [] }],
+        listingText: 'Worldwide Laravel',
+        fetch: async () =>
+          stream([
+            { type: 'response.output_text.delta', delta: '{}' },
+            events[1],
+          ]),
+      }),
+      /Invalid ChatGPT/,
+    );
 });
 
 const stackDecision = {
@@ -480,12 +471,10 @@ test('stack decisions strictly reject malformed values and prototype keys', () =
   );
 });
 
-test('stack requests share HTTP, stream, and invalid-effort errors', async (t) => {
+test('shared transport rejects HTTP errors, incomplete streams and invalid effort', async (t) => {
   const authPath = await setup(t);
   const options = {
     authPath,
-    skills: [{ Laravel: [] }],
-    listingText: 'Laravel',
   };
   for (const [response, error] of [
     [new Response('', { status: 401 }), AuthenticationError],
@@ -496,29 +485,34 @@ test('stack requests share HTTP, stream, and invalid-effort errors', async (t) =
     [stream([{ type: 'error' }]), /ChatGPT error/],
     [stream([{ type: 'response.failed' }]), /response.failed/],
     [stream([{ type: 'response.incomplete' }]), /response.incomplete/],
-    [stream([]), /did not complete/],
-    [
-      stream([
-        { type: 'response.completed' },
-        { type: 'response.output_text.delta', delta: '{}' },
-      ]),
-      /Invalid ChatGPT stack decision/,
-    ],
+    [stream([events[0]]), /did not complete/],
   ]) {
     await assert.rejects(
-      llm.reviewStack('https://example.test', {
-        ...options,
-        fetch: async () => response,
-      }),
+      request(
+        {
+          ...options,
+          fetch: async () => response,
+        },
+        'instructions',
+        'listing text',
+        'test',
+        {},
+      ),
       error,
     );
   }
   await assert.rejects(
-    llm.reviewStack('https://example.test', {
-      ...options,
-      effort: 'typo',
-      fetch: async () => assert.fail('network'),
-    }),
+    request(
+      {
+        ...options,
+        effort: 'typo',
+        fetch: async () => assert.fail('network'),
+      },
+      'instructions',
+      'listing text',
+      'test',
+      {},
+    ),
     /Invalid MODEL_EFFORT/,
   );
 });

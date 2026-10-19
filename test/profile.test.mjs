@@ -158,20 +158,6 @@ test('title rendering includes canonical keys, aliases, and every AND group', ()
     '(intitle:"backend" OR intitle:"back-end" OR intitle:"frontend") (intitle:"engineer")',
   );
   assert.equal(renderTitle([{ ' nurse ': [] }]), '(intitle:"nurse")');
-  const matchesTitle = (expression, text) =>
-    expression.every((group) =>
-      Object.entries(group).some(([term, aliases]) =>
-        [term, ...aliases].some((term) =>
-          text.toLowerCase().includes(term.toLowerCase()),
-        ),
-      ),
-    );
-  assert.equal(matchesTitle(title, 'Senior Fullstack Software Engineer'), true);
-  assert.equal(
-    matchesTitle(title, 'Senior Full Stack Software Developer'),
-    true,
-  );
-  assert.equal(matchesTitle(title, 'Senior Fullstack Designer'), false);
 });
 
 test('one query combines every site, skill and geography without profession assumptions', () => {

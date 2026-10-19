@@ -2,6 +2,27 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { PageError, scrapeListing } from '../dist/review/firecrawl.js';
 
+test('extraction posts the listing URL and returns Markdown', async () => {
+  const url = 'https://example.test/job';
+  const markdown = '# Backend developer\nWorldwide Laravel role';
+  const text = await scrapeListing(url, {
+    fetch: async (endpoint, init) => {
+      assert.ok(endpoint.endsWith('/v2/scrape'));
+      assert.equal(init.method, 'POST');
+      assert.equal(init.redirect, 'error');
+      assert.equal(init.headers['Content-Type'], 'application/json');
+      assert.deepEqual(JSON.parse(init.body), {
+        url,
+        formats: ['markdown'],
+        timeout: 60_000,
+      });
+      assert.ok(init.signal instanceof AbortSignal);
+      return Response.json({ success: true, data: { markdown } });
+    },
+  });
+  assert.equal(text, markdown);
+});
+
 test('extraction rejects service HTTP errors and unsuccessful/empty responses', async () => {
   for (const response of [
     new Response('private error', { status: 500 }),

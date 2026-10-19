@@ -91,6 +91,44 @@ test('an unfinished location request does not block stack or crawling the next l
   await location;
 });
 
+test('a failed result write rolls back stage completion and permits retry', async (t) => {
+  const root = await mkdtemp('/tmp/opencode/job-rollback-');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'jobs.sqlite');
+  const store = new SqliteStore(path);
+  const db = new DatabaseSync(path);
+  t.after(() => {
+    db.close();
+    store.close();
+  });
+  store.saveResults([
+    {
+      url: 'https://job-boards.greenhouse.io/example/jobs/1',
+      title: 'Engineer',
+      query: 'remote',
+    },
+  ]);
+  const before = store.getJob(1);
+  db.exec(`CREATE TRIGGER reject_review BEFORE UPDATE OF eligibility ON jobs
+    BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END;`);
+  assert.throws(
+    () => store.review(1, 'eligible', 'Worldwide'),
+    /simulated write failure/,
+  );
+  assert.deepEqual(store.getJob(1), before);
+  assert.equal(
+    store.stages(1).find((stage) => stage.stage === 'location').state,
+    'pending',
+  );
+  db.exec('DROP TRIGGER reject_review');
+  store.review(1, 'eligible', 'Worldwide');
+  assert.equal(store.getJob(1).eligibility, 'eligible');
+  assert.equal(
+    store.stages(1).find((stage) => stage.stage === 'location').state,
+    'complete',
+  );
+});
+
 test('migration preserves historical decisions, indexes and triggers without implicit backfill', async (t) => {
   const root = await mkdtemp('/tmp/opencode/job-migration-');
   t.after(() => rm(root, { recursive: true, force: true }));

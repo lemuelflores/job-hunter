@@ -485,30 +485,32 @@ test('CLI reads app-local database from another cwd and validates arguments', as
   );
   assert.equal(withoutModel.status, 0, withoutModel.stderr);
   assert.deepEqual(JSON.parse(withoutModel.stdout), JSON.parse(saved.stdout));
-  assert.equal(cli('review', '--db', '/tmp/arbitrary.sqlite').status, 1);
-  assert.equal(cli('review', '--status', 'rejected').status, 1);
-  assert.equal(cli('review', '--limit', '0').status, 1);
-  assert.match(cli('review', '--limit', '0').stderr, /Expected an integer/);
-  assert.equal(cli('fetch', '--limit', '1').status, 1);
-  for (const args of [
-    ['unknown'],
-    ['worker'],
-    ['toString'],
-    ['jobs', 'extra'],
-    ['jobs', '--unexpected'],
-    ['review', '--limit'],
-    ['review', '--limit', '1.5'],
-    ['review', '--limit', '9007199254740992'],
-    ['serve', '--port', '65536'],
-    ['serve', '--port', '0'],
-    ['retry'],
-    ['retry', '--id', '1'],
-    ['retry', '--stage', 'stack'],
-    ['retry', '--stage', 'stack', '--id', '0'],
-    ['repair', '--stage', 'invalid'],
-    ['repair', '--id', '1'],
-  ])
-    assert.equal(cli(...args).status, 1);
+  for (const [args, error] of [
+    [['review', '--db', '/tmp/arbitrary.sqlite'], /Unknown option.*--db/],
+    [['review', '--status', 'rejected'], /Unknown option.*--status/],
+    [['review', '--limit', '0'], /Expected an integer/],
+    [['fetch', '--limit', '1'], /Unknown option.*--limit/],
+    [['unknown'], /Unknown command: unknown/],
+    [['worker'], /Unknown command: worker/],
+    [['toString'], /Unknown command: toString/],
+    [['jobs', 'extra'], /Unexpected argument/],
+    [['jobs', '--unexpected'], /Unknown option.*--unexpected/],
+    [['review', '--limit'], /--limit.*argument/],
+    [['review', '--limit', '1.5'], /Expected an integer/],
+    [['review', '--limit', '9007199254740992'], /Expected an integer/],
+    [['serve', '--port', '65536'], /Expected an integer/],
+    [['serve', '--port', '0'], /Expected an integer/],
+    [['retry'], /Missing required argument: --stage/],
+    [['retry', '--id', '1'], /Missing required argument: --stage/],
+    [['retry', '--stage', 'stack'], /Missing required argument: --id/],
+    [['retry', '--stage', 'stack', '--id', '0'], /Expected an integer/],
+    [['repair', '--stage', 'invalid'], /Invalid.*stage/],
+    [['repair', '--id', '1'], /Unknown option.*--id/],
+  ]) {
+    const invalid = cli(...args);
+    assert.equal(invalid.status, 1, args.join(' '));
+    assert.match(invalid.stderr, error, args.join(' '));
+  }
   assert.equal(cli('--help').status, 0);
   assert.equal(cli().status, 0);
   for (const command of [
