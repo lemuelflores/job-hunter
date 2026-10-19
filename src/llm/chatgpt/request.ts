@@ -13,9 +13,9 @@ export async function request(
   schema: object,
 ): Promise<string> {
   const auth = await getCredentials(options);
-  const effort = options.effort ?? process.env.JOB_HUNTER_EFFORT ?? 'medium';
+  const effort = options.effort ?? process.env.MODEL_EFFORT ?? 'medium';
   if (!['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort))
-    throw new Error('Invalid JOB_HUNTER_EFFORT');
+    throw new Error('Invalid MODEL_EFFORT');
   const timeout = AbortSignal.timeout(120_000);
   // shortcut: subscription backend is undocumented; recheck the contract if requests stop working.
   const response = await (options.fetch ?? fetch)(
@@ -33,7 +33,7 @@ export async function request(
         ...(auth.accountId ? { 'ChatGPT-Account-Id': auth.accountId } : {}),
       },
       body: JSON.stringify({
-        model: (options.model ?? process.env.JOB_HUNTER_MODEL ?? 'gpt-6-luna')
+        model: (options.model ?? process.env.MODEL_NAME ?? 'gpt-6-luna')
           .replace(/^openai\//, '')
           .split('#')[0],
         reasoning: { effort },

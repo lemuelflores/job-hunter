@@ -2,7 +2,7 @@ import timers from 'node:timers/promises';
 import { runParallelGoogleSearchesDetailed } from './discovery/google.js';
 import { buildQueryMatrix } from './discovery/queries.js';
 import { PageError, scrapeListing } from './firecrawl.js';
-import { llm } from './llm/index.js';
+import { createLlm } from './llm/index.js';
 import type { LlmProvider } from './llm/types.js';
 import {
   jobUrl,
@@ -85,7 +85,7 @@ export async function processStage(
   stage: Stage,
   id: number,
   enqueue: (stage: Stage, id: number) => Promise<unknown>,
-  services: ReviewServices = { ...llm, scrapeListing },
+  services: ReviewServices = { ...createLlm(), scrapeListing },
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();

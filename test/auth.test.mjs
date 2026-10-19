@@ -17,7 +17,9 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { main } from '../dist/cli.js';
 import { authenticate, getCredentials } from '../dist/llm/chatgpt/auth.js';
-import { AuthenticationError, llm } from '../dist/llm/index.js';
+import { AuthenticationError, createLlm } from '../dist/llm/index.js';
+
+const llm = createLlm();
 
 const jwt = (data) =>
   `header.${Buffer.from(JSON.stringify(data)).toString('base64url')}.signature`;

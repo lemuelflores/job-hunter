@@ -83,7 +83,7 @@ After editing it, restart the workers:
 docker compose restart fetch-worker review-worker
 ```
 
-Optional settings in `.env`: `FETCH_CRON` changes the UTC fetch schedule, while `JOB_HUNTER_MODEL` and `JOB_HUNTER_EFFORT` control the reviewer. After changing `.env`, run `docker compose up -d`.
+Optional settings in `.env`: `FETCH_CRON` changes the UTC fetch schedule, while `MODEL_NAME` and `MODEL_EFFORT` control the reviewer. `MODEL_PROVIDER` defaults to `chatgpt`, the only supported provider. After changing `.env`, run `docker compose up -d`.
 
 ## Usage
 

@@ -9,8 +9,14 @@ import {
   reviewJob,
 } from '../dist/llm/chatgpt/review.js';
 import { parseStackDecision } from '../dist/llm/chatgpt/stack.js';
-import { AuthenticationError, llm, RateLimitError } from '../dist/llm/index.js';
+import {
+  AuthenticationError,
+  createLlm,
+  RateLimitError,
+} from '../dist/llm/index.js';
 import { loadProfile } from '../dist/profile.js';
+
+const llm = createLlm();
 
 const decision = {
   eligibility: 'eligible',
@@ -52,6 +58,20 @@ function testEnv(t, values) {
     process.env = original;
   });
 }
+
+test('provider factory defaults to ChatGPT and rejects unsupported providers', (t) => {
+  testEnv(t, {});
+  delete process.env.MODEL_PROVIDER;
+  assert.deepEqual(createLlm(), llm);
+  process.env.MODEL_PROVIDER = 'chatgpt';
+  assert.deepEqual(createLlm(), llm);
+  for (const provider of ['openai', 'ChatGPT', '']) {
+    process.env.MODEL_PROVIDER = provider;
+    assert.throws(() => createLlm(), {
+      message: `Model provider "${provider}" is not implemented`,
+    });
+  }
+});
 
 test('direct subscription request uses OAuth and validated JSON', async (t) => {
   const authPath = await setup(t);
@@ -263,7 +283,7 @@ test('worker can distinguish credential and rate-limit failures from per-listing
 test('default review uses supplied text with Luna medium and never scrapes', async (t) => {
   const authPath = await setup(t);
   testEnv(t, {});
-  for (const key of ['JOB_HUNTER_MODEL', 'JOB_HUNTER_EFFORT', 'FIRECRAWL_URL'])
+  for (const key of ['MODEL_NAME', 'MODEL_EFFORT', 'FIRECRAWL_URL'])
     delete process.env[key];
   const calls = [];
   const signal = new AbortController().signal;
@@ -293,8 +313,8 @@ test('default review uses supplied text with Luna medium and never scrapes', asy
 test('model and effort environment settings are used and invalid effort fails before retrieval', async (t) => {
   const authPath = await setup(t);
   testEnv(t, {
-    JOB_HUNTER_MODEL: 'openai/gpt-6.1-sol#low',
-    JOB_HUNTER_EFFORT: 'high',
+    MODEL_NAME: 'openai/gpt-6.1-sol#low',
+    MODEL_EFFORT: 'high',
   });
   await reviewJob('https://example.test', {
     authPath,
@@ -306,14 +326,14 @@ test('model and effort environment settings are used and invalid effort fails be
       return stream(events);
     },
   });
-  process.env.JOB_HUNTER_EFFORT = 'typo';
+  process.env.MODEL_EFFORT = 'typo';
   await assert.rejects(
     reviewJob('https://example.test', {
       authPath,
       listingText: 'Worldwide',
       fetch: async () => assert.fail('network'),
     }),
-    /Invalid JOB_HUNTER_EFFORT/,
+    /Invalid MODEL_EFFORT/,
   );
 });
 
@@ -499,7 +519,7 @@ test('stack requests share HTTP, stream, and invalid-effort errors', async (t) =
       effort: 'typo',
       fetch: async () => assert.fail('network'),
     }),
-    /Invalid JOB_HUNTER_EFFORT/,
+    /Invalid MODEL_EFFORT/,
   );
 });
 

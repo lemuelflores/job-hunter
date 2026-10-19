@@ -97,7 +97,8 @@ function parseCommand(argv: string[]) {
 }
 
 async function authenticate() {
-  const { llm } = await import('./llm/index.js');
+  const { createLlm } = await import('./llm/index.js');
+  const llm = createLlm();
   const controller = new AbortController();
   const stop = () => controller.abort(new Error('Authentication interrupted'));
   process.once('SIGINT', stop);
@@ -137,7 +138,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const profile = ['fetch', 'fetch-worker', 'worker'].includes(command)
       ? await loadProfile()
       : undefined;
-    const { llm } = await import('./llm/index.js');
+    const { createLlm } = await import('./llm/index.js');
+    const llm = createLlm();
     const review: ReviewServices = {
       scrapeListing,
       reviewJob: (url, options) =>
