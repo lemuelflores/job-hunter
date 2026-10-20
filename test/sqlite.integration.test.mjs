@@ -306,3 +306,30 @@ test('migration adds retry generations without resetting existing stage failures
   migrated.failStage(1, 'crawl', 'Current failure', true, 1);
   assert.equal(migrated.stages(1)[0].state, 'failed');
 });
+
+test('listing summaries omit snapshots and counts retain stage and visibility rules', (t) => {
+  const store = fixture(t);
+  store.saveListingText(1, 'Large saved description'.repeat(10000));
+  store.failStage(1, 'location', 'Exhausted', true);
+  store.setReviewStatus('2', 'hidden');
+  store.terminalCrawl(3, 'Gone');
+  const { listing_text, batch, ...job } = store.getJob(1);
+  assert.ok(listing_text.length > 100000);
+  assert.deepEqual(
+    store.listReviewJobs('active').find((row) => row.id === 1),
+    {
+      ...job,
+      stages: store.stages(1),
+      reviewKey: '1',
+    },
+  );
+  assert.deepEqual(
+    store.unfinished().map((row) => ({ ...row })),
+    [{ id: 1, url: result(1).url }],
+  );
+  assert.equal(store.pendingCount(), 1);
+  store.resetStage(1, 'location');
+  store.review(1, 'eligible', 'Worldwide');
+  store.reviewStack(1, stack);
+  assert.equal(store.pendingCount(), 0);
+});

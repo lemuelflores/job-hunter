@@ -203,21 +203,20 @@ export class SqliteStore {
       .all(id) as unknown as StageState[];
   }
 
-  unfinished(limit?: number): Listing[] {
+  unfinished(limit?: number): Pick<Listing, 'id' | 'url'>[] {
     return this.db
-      .prepare(`SELECT * FROM jobs WHERE status='active' AND id IN
+      .prepare(`SELECT id,url FROM jobs WHERE status='active' AND id IN
       (SELECT job_id FROM job_stages WHERE state IN ('pending','failed')) ORDER BY id LIMIT ?`)
-      .all(limit ?? -1) as unknown as Listing[];
+      .all(limit ?? -1) as unknown as Pick<Listing, 'id' | 'url'>[];
   }
 
   needsStage(id: number, stage: Stage): boolean {
-    const job = this.getJob(id);
     return Boolean(
-      job?.status === 'active' &&
-        this.stages(id).some(
-          (s) => s.stage === stage && s.state === 'pending',
-        ) &&
-        (stage === 'crawl' || job.listing_text !== null),
+      this.db
+        .prepare(`SELECT 1 FROM jobs JOIN job_stages ON job_stages.job_id=jobs.id
+        WHERE jobs.id=? AND jobs.status='active' AND job_stages.stage=?
+        AND job_stages.state='pending' AND (?='crawl' OR jobs.listing_text IS NOT NULL)`)
+        .get(id, stage, stage),
     );
   }
 
@@ -408,15 +407,24 @@ export class SqliteStore {
   }
 
   pendingCount(): number {
-    return this.unfinished().length;
+    return Number(
+      this.db
+        .prepare(`SELECT COUNT(*) AS count FROM jobs
+      WHERE status='active' AND id IN
+      (SELECT job_id FROM job_stages WHERE state IN ('pending','failed'))`)
+        .get()?.count,
+    );
   }
 
   listReviewJobs(status: ReviewStatus) {
     return (
       this.db
-        .prepare('SELECT * FROM jobs WHERE status=? ORDER BY id DESC')
-        .all(status) as unknown as Listing[]
-    ).map(({ listing_text: _listingText, batch: _batch, ...row }) => ({
+        .prepare(`SELECT id,url,title,snippet,query,first_seen,last_seen,
+          eligibility,reason,evidence,company,location,status,reviewed_at,last_attempt,
+          attempts,next_retry_at,last_error,stack_status,stack_reason,stack_evidence
+          FROM jobs WHERE status=? ORDER BY id DESC`)
+        .all(status) as unknown as Omit<Listing, 'listing_text' | 'batch'>[]
+    ).map((row) => ({
       ...row,
       stages: this.stages(row.id),
       reviewKey: String(row.id),
