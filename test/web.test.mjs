@@ -92,6 +92,40 @@ test('UI cards group statuses, reasons and expandable evidence without interpret
   assert.equal(card.attributes['aria-labelledby'], 'job-title-1');
   assert.equal(nodes.find((node) => node.tag === 'h2').textContent, job.title);
   assert.ok(nodes.some((node) => node.textContent === 'Location: Worldwide'));
+  const metadata = nodes.find(
+    (node) => node.className === 'job-card__metadata',
+  );
+  assert.equal(metadata.children[0].textContent, 'Example');
+  assert.equal(metadata.children[1].textContent, 'Location: Worldwide');
+  for (const [fields, company, location] of [
+    [{}, 'Company not provided', 'Not provided'],
+    [{ company: '  ', location: '  ' }, 'Company not provided', 'Not provided'],
+    [{ company: null, location: null }, 'Company not provided', 'Not provided'],
+    [{ company: 42, location: 42 }, 'Company not provided', 'Not provided'],
+    [{ company: ' Example ', location: ' Worldwide ' }, 'Example', 'Worldwide'],
+    [
+      { board: ' Example board ', eligibility: 'pending' },
+      'Example board',
+      'Not provided',
+    ],
+    [{ eligibility: 'error' }, 'Company not provided', 'Not provided'],
+    [
+      { eligibility: 'unclear', location: 'Europe' },
+      'Company not provided',
+      'Europe',
+    ],
+    [
+      { eligibility: 'unclear', location: 'Unclear' },
+      'Company not provided',
+      'Unclear',
+    ],
+  ]) {
+    const row = descendants(renderJob({ reviewKey: '3', ...fields })).find(
+      (node) => node.className === 'job-card__metadata',
+    );
+    assert.equal(row.children[0].textContent, company);
+    assert.equal(row.children[1].textContent, `Location: ${location}`);
+  }
   assert.ok(nodes.some((node) => node.className === 'job-card__error'));
   const panels = nodes.filter((node) => node.className === 'assessment');
   assert.equal(panels.length, 2);
@@ -100,6 +134,9 @@ test('UI cards group statuses, reasons and expandable evidence without interpret
     [1, job.stack_reason, job.stack_evidence, 'partial-match'],
   ]) {
     const contents = descendants(panels[index]);
+    assert.equal(panels[index].children[0].className, 'assessment__header');
+    assert.equal(panels[index].children[1].className, 'assessment__content');
+    assert.equal(panels[index].children[1].children[0].textContent, reason);
     assert.ok(contents.some((node) => node.textContent === reason));
     assert.ok(
       contents.some((node) => node.className?.endsWith(`__status--${status}`)),

@@ -132,9 +132,8 @@
       letter-spacing: -0.025em;
     }
     .job-card__company {
-      margin: 6px 0 0;
-      color: var(--muted);
-      font-size: 15px;
+      color: var(--ink);
+      font-weight: 600;
     }
     .job-card__metadata {
       display: flex;
@@ -161,24 +160,30 @@
       text-transform: capitalize;
     }
     .job-card__assessments {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 16px;
-    }
-    .assessment {
-      min-width: 0;
-      padding: 18px;
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: #f8faf6;
+      overflow: hidden;
+    }
+    .assessment {
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr);
+      min-width: 0;
+    }
+    .assessment + .assessment {
+      border-top: 1px solid var(--line);
     }
     .assessment__header {
       display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
+      flex-direction: column;
+      align-items: flex-start;
       gap: 8px;
-      margin-bottom: 12px;
+      padding: 18px;
+      border-right: 1px solid var(--line);
+      background: #f8faf6;
+    }
+    .assessment__content {
+      min-width: 0;
+      padding: 18px;
     }
     .assessment__status--eligible,
     .assessment__status--match {
@@ -332,8 +337,16 @@
       .job-list {
         gap: 16px;
       }
-      .job-card__assessments {
+      .assessment {
         grid-template-columns: 1fr;
+      }
+      .assessment__header {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
       }
       .job-card__actions {
         flex-wrap: wrap;
@@ -491,6 +504,9 @@
         const board = typeof job.board === 'string' ? job.board.trim() : '';
         return board || null;
       };
+      const displayLocation = (job) =>
+        (typeof job.location === 'string' ? job.location.trim() : '') ||
+        'Not provided';
       const jobBusy = (job) => pending.has(String(job.reviewKey));
       const renderHeading = (card, job) => {
         const top = document.createElement('header');
@@ -506,8 +522,6 @@
         );
         title.id = `job-title-${job.reviewKey}`;
         card.setAttribute('aria-labelledby', title.id);
-        const company = displayCompany(job);
-        if (company) addText(heading, 'p', company, 'job-card__company');
       };
       const renderMetadata = (card, job) => {
         for (const stage of job.stages || []) {
@@ -525,7 +539,13 @@
         addText(
           meta,
           'span',
-          `Location: ${job.location || 'Not provided'}`,
+          displayCompany(job) || 'Company not provided',
+          'job-card__metadata-item job-card__company',
+        );
+        addText(
+          meta,
+          'span',
+          `Location: ${displayLocation(job)}`,
           'job-card__metadata-item',
         );
         if (job.isRemote)
@@ -574,8 +594,11 @@
             label,
             `assessment__status assessment__status--${status.replaceAll('_', '-')}`,
           );
+          const content = document.createElement('div');
+          content.className = 'assessment__content';
+          assessment.append(content);
           addText(
-            assessment,
+            content,
             'p',
             reason || 'No assessment available yet.',
             reason
@@ -585,7 +608,7 @@
           if (evidence) {
             const details = document.createElement('details');
             details.className = 'assessment__evidence';
-            assessment.append(details);
+            content.append(details);
             addText(
               details,
               'summary',
