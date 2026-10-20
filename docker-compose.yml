@@ -40,8 +40,6 @@ services:
       FIRECRAWL_URL: http://firecrawl:3002
       REDIS_URL: redis://redis:6379
     depends_on:
-      firecrawl:
-        condition: service_healthy
       redis:
         condition: service_healthy
 
