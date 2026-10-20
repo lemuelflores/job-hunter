@@ -9,6 +9,7 @@ export interface StageState {
   stage: Stage;
   state: 'pending' | 'complete' | 'failed' | 'terminal' | 'blocked';
   error: string;
+  generation: number;
 }
 
 export interface Listing {
@@ -116,6 +117,7 @@ export class SqliteStore {
           stage TEXT NOT NULL CHECK(stage IN ('crawl','location','stack')),
           state TEXT NOT NULL CHECK(state IN ('pending','complete','failed','terminal','blocked')),
           error TEXT NOT NULL DEFAULT '',
+          generation INTEGER NOT NULL DEFAULT 0,
           PRIMARY KEY(job_id,stage)
         );
         INSERT OR IGNORE INTO job_stages(job_id,stage,state)
@@ -128,6 +130,15 @@ export class SqliteStore {
           SELECT id,'stack',CASE WHEN stack_status='pending' AND eligibility IN ('pending','eligible','unclear')
             THEN 'pending' ELSE 'complete' END FROM jobs;
       `);
+      if (
+        !this.db
+          .prepare('PRAGMA table_info(job_stages)')
+          .all()
+          .some((column) => column.name === 'generation')
+      )
+        this.db.exec(
+          'ALTER TABLE job_stages ADD COLUMN generation INTEGER NOT NULL DEFAULT 0',
+        );
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -187,7 +198,7 @@ export class SqliteStore {
   stages(id: number): StageState[] {
     return this.db
       .prepare(
-        'SELECT stage,state,error FROM job_stages WHERE job_id=? ORDER BY stage',
+        'SELECT stage,state,error,generation FROM job_stages WHERE job_id=? ORDER BY stage',
       )
       .all(id) as unknown as StageState[];
   }
@@ -210,18 +221,32 @@ export class SqliteStore {
     );
   }
 
-  failStage(id: number, stage: Stage, error: string, exhausted: boolean): void {
+  failStage(
+    id: number,
+    stage: Stage,
+    error: string,
+    exhausted: boolean,
+    generation: number | null = null,
+  ): void {
     this.db
       .prepare(
-        `UPDATE job_stages SET state=?,error=? WHERE job_id=? AND stage=? AND state='pending'`,
+        `UPDATE job_stages SET state=?,error=? WHERE job_id=? AND stage=? AND state='pending'
+        AND (? IS NULL OR generation=?)`,
       )
-      .run(exhausted ? 'failed' : 'pending', error.slice(0, 5000), id, stage);
+      .run(
+        exhausted ? 'failed' : 'pending',
+        error.slice(0, 5000),
+        id,
+        stage,
+        generation,
+        generation,
+      );
   }
 
   resetStage(id: number, stage: Stage): void {
     const changed = this.db
       .prepare(
-        `UPDATE job_stages SET state='pending',error='' WHERE job_id=? AND stage=? AND state='failed'`,
+        `UPDATE job_stages SET state='pending',error='',generation=generation+1 WHERE job_id=? AND stage=? AND state='failed'`,
       )
       .run(id, stage).changes;
     if (!changed) throw new Error('Stage is not failed');

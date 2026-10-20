@@ -118,7 +118,7 @@ export class JobQueues {
   }
 
   async syncFailures(store: SqliteStore, id: number) {
-    for (const stage of STAGES) {
+    for (const { stage, generation } of store.stages(id)) {
       const task = await this.queues[stage].getJob(`listing-${id}`);
       if (task && (await task.getState()) === 'failed')
         store.failStage(
@@ -126,6 +126,7 @@ export class JobQueues {
           stage,
           task.failedReason || 'Queue task failed',
           true,
+          generation,
         );
     }
   }
@@ -153,24 +154,11 @@ export class JobQueues {
     const task = await this.queues[stage].getJob(`listing-${id}`);
     if (task && (await task.getState()) !== 'failed')
       throw new Error('Task is still queued or active');
-    // Reset first: if enqueue fails, explicit repair can restore the missing task.
+    // Remove old delivery before reset; generation guards in-flight failure reads.
+    if (task) await task.remove();
     store.resetStage(id, stage);
-    if (task) {
-      try {
-        await task.retry('failed', {
-          resetAttemptsMade: true,
-          resetAttemptsStarted: true,
-        });
-      } catch (error) {
-        store.failStage(
-          id,
-          stage,
-          error instanceof Error ? error.message : String(error),
-          true,
-        );
-        throw error;
-      }
-    } else await this.enqueue(stage, id);
+    // A failed enqueue leaves pending work that explicit repair can restore.
+    await this.enqueue(stage, id);
   }
 
   async close() {

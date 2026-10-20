@@ -260,6 +260,7 @@ test('stage failures remain pending until exhausted and only failed stages can r
       stage: 'crawl',
       state: 'pending',
       error: 'Temporary page error',
+      generation: 0,
     },
   );
   // Act: record retry exhaustion.
@@ -278,6 +279,30 @@ test('stage failures remain pending until exhausted and only failed stages can r
       stage: 'crawl',
       state: 'pending',
       error: '',
+      generation: 1,
     },
   );
+});
+
+test('migration adds retry generations without resetting existing stage failures', async (t) => {
+  const root = await mkdtemp('/tmp/opencode/job-generations-');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'jobs.sqlite');
+  const original = new SqliteStore(path);
+  original.saveResults([result(1)]);
+  original.failStage(1, 'crawl', 'Preserved failure', true);
+  original.close();
+  const db = new DatabaseSync(path);
+  db.exec('ALTER TABLE job_stages DROP COLUMN generation');
+  db.close();
+  const migrated = new SqliteStore(path);
+  t.after(() => migrated.close());
+  assert.equal(migrated.stages(1)[0].state, 'failed');
+  assert.equal(migrated.stages(1)[0].error, 'Preserved failure');
+  assert.equal(migrated.stages(1)[0].generation, 0);
+  migrated.resetStage(1, 'crawl');
+  migrated.failStage(1, 'crawl', 'Stale failure', true, 0);
+  assert.equal(migrated.stages(1)[0].state, 'pending');
+  migrated.failStage(1, 'crawl', 'Current failure', true, 1);
+  assert.equal(migrated.stages(1)[0].state, 'failed');
 });
