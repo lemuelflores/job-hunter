@@ -99,6 +99,8 @@ SQLite is authoritative for job data and processing state. Redis coordinates wor
 
 Listings use scan-first cards: role/company/location lead, independent location and stack assessment rows place labels/statuses on the left and summaries/evidence on the right, native `details` elements disclose supporting evidence, and a footer groups the external listing link and review actions. Assessment columns stack on mobile. Component styles use BEM block, element, and modifier classes.
 
+Optimistic status changes apply only while their save requests are pending. Successful saves reload server state rather than retaining local overrides that could hide changes from another tab. Restoring a listing with pending checks shows the explicit `repair` command; status changes do not enqueue processing.
+
 **Technologies:** Plain HTML, CSS, JavaScript, browser Fetch API.
 
 **Deployment:** Served by the application at `http://127.0.0.1:3000`. Build copies the HTML into `dist/web/index.html`; applying UI changes requires rebuilding and restarting the server.
@@ -117,6 +119,8 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 `src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. `fetchJobs` in `src/discovery/discover-jobs.ts` validates and canonicalizes URLs through `src/discovery/job-url.ts` before passing accepted results to SQLite and scheduling unfinished jobs found in those results. SQLite persists the supplied URLs and deduplicates by URL; it does not own ATS URL rules. Fetching does not assess jobs.
 
+Valibot validates search response containers and pagination; malformed result entries are skipped and invalid optional snippets/positions are omitted. If a later page fails, completed pages still reach persistence and scheduling alongside a reported query failure. Ashby and Lever UUIDs are normalized to lowercase without changing board-name casing.
+
 `src/discovery/worker.ts` uses `FETCH_CRON` (default `0 * * * *`, UTC), with no immediate startup fetch and no overlapping runs. Shutdown waits for the active fetch; scheduled failures are logged without stopping future runs.
 
 **Technologies:** Node.js 22.18+, TypeScript ESM, native Fetch API, node-cron.
@@ -132,6 +136,8 @@ These are execution roles within the same application, sharing source, SQLite, a
 Queues use prefix `job-hunter`, names `crawl`, `location`, and `stack`, payload `{ id }`, and stable per-queue IDs `listing-N`. Crawling saves listing text once and schedules both assessments. `src/review/crawl.ts` routes Ashby, Greenhouse, and Lever URLs to their unauthenticated public APIs. The Ashby adapter selects the exact UUID from the board response and saves its plain description with title, primary/secondary locations, address, workplace type, raw remote flag, employment type, department/team, and compensation metadata when provided. It does not interpret `isRemote` as fully remote; workplace type can still be Hybrid. The Greenhouse adapter requests one job with pay transparency enabled, verifies its returned posting ID, and saves all metadata plus its entity-decoded, HTML-to-text description. Lever requests one posting from the global or EU API matching the listing hostname and verifies its UUID. It saves opaque metadata plus the combined plain description, HTML-to-text lists with headings, closing text, and salary description, excluding duplicate HTML and opening/body fields. Processors consult SQLite before work; completed stages cannot overwrite saved results. Redelivered crawl tasks can enqueue missing assessments without extracting again.
 
 Temporary failures receive three attempts with exponential delays of 60 and 120 seconds. Completed tasks are removed; exhausted tasks remain in Redis and become `failed` in SQLite. Permanent listing-page errors terminate crawling, block dependent assessments, and preserve the page error. HTTP 408, 425, 429, and server errors remain retryable, as do service failures and empty extraction. A valid Ashby board response without the UUID is treated as terminal absence (including unlisted jobs); there is no Firecrawl fallback. Ashby API HTTP/network errors, malformed board responses, and empty descriptions remain retryable service/extraction failures.
+
+Explicit retry removes exhausted Redis delivery before resetting its SQLite stage, increments the stage's retry generation, and enqueues a fresh task with the same stable ID. Failure syncing captures that generation before asynchronous Redis reads and updates only the matching generation, so a stale failed-task read cannot undo a retry. An interrupted replacement enqueue leaves pending work recoverable by `repair`.
 
 Greenhouse and Lever API 404/410 responses are terminal and block both assessments. Other HTTP/network errors, malformed responses, mismatched IDs, and empty converted descriptions remain retryable. There is no Firecrawl fallback for either provider. Firecrawl remains available for unmatched hosts, but discovery currently accepts only these three ATS providers.
 
@@ -179,7 +185,9 @@ Responses are not cached. Request validation and persistence remain server-side;
 **Key schemas:**
 
 - `jobs`: listing identity, search metadata, text, location/stack results, and user status.
-- `job_stages`: one row per listing/stage, keyed by `(job_id, stage)`, with state and error.
+- `job_stages`: one row per listing/stage, keyed by `(job_id, stage)`, with state, error, and retry generation.
+
+Scheduling queries return only listing IDs and URLs. Summary queries exclude saved listing text at the SQL boundary, stage-readiness checks do not copy descriptions into JavaScript, and unfinished counts are computed in SQLite.
 
 Separate state dimensions must not be conflated:
 
@@ -227,6 +235,8 @@ Legacy job columns remain to preserve historical values and existing database ob
 
 Web, Firecrawl API, and Redis host ports are published on `127.0.0.1` only. Compose uses dependency health checks for relevant worker dependencies, restart policies, bounded JSON-file logs, and shutdown grace periods (two minutes for app services, three for review workers). The scraper services have resource limits.
 
+App containers use `${UID:-1000}:${GID:-1000}` to keep bind-mounted database and credential writes under the local user's identity. Both worker services require healthy Redis; review startup does not depend on Firecrawl health because supported providers use direct APIs.
+
 **CI/CD pipeline:** No checked-in `.github` workflow directory; build, checks, tests, and deployment are invoked manually through package scripts and Compose.
 
 **Monitoring and logging:** Console lifecycle/error output and Docker logs; Compose health checks cover Firecrawl API and Redis. No dedicated metrics, tracing, or alerting stack is configured.
@@ -264,7 +274,8 @@ Tests are grouped by the behavior they verify, not every dependency they use:
 - `sqlite.integration.test.mjs`: persistence, transactions, stage-state transitions, and migrations, without running processors.
 - `cli.test.mjs`: command routing, arguments, help, and application-relative paths; `web.test.mjs`: HTTP behavior, server lifecycle, and pure UI assessment logic.
 - `api-clients.test.mjs`: Ashby, Greenhouse, Lever, and Firecrawl request/response contracts, HTTP failures, timeout and cancellation with mocked network responses. `ashby.test.mjs`, `greenhouse.test.mjs`, `lever.test.mjs`, and `firecrawl.test.mjs`: extraction policy and rendering; `crawl.test.mjs`: strategy routing and no direct-API fallback. `auth.test.mjs` and `chatgpt.test.mjs`: authentication and model adapters; `llm.test.mjs`: provider selection.
-- `bullmq.integration.mjs`: real Redis delivery, retries, repair, and recovery, separately from the default suite.
+- `google.test.mjs`: search response validation, pagination, and preservation of completed pages after failures.
+- `bullmq.test.mjs`: deterministic retry/failure-sync races and replacement-enqueue recovery; `bullmq.integration.mjs`: real Redis delivery, retries, repair, hidden-listing restoration, and recovery, separately from the default suite.
 
 Real SQLite is appropriate in HTTP and workflow integration tests; those suites assert their public behavior rather than duplicating database or adapter contracts.
 
