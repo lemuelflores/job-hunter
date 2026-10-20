@@ -22,10 +22,10 @@ const location = {
 };
 const stack = { status: 'match', reason: 'Laravel role', evidence: 'Laravel' };
 const services = {
-  scrapeListing: async () => 'US Laravel role',
   reviewJob: async () => location,
   reviewStack: async () => stack,
 };
+const scrapeListing = async () => 'US Laravel role';
 const result = (id) => ({
   url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
   title: 'Engineer',
@@ -124,22 +124,26 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       const blocked = new Promise((resolve) => {
         release = resolve;
       });
-      workers = await startWorkers(store, queues, {
-        ...services,
-        scrapeListing: async () => {
+      workers = await startWorkers(
+        store,
+        queues,
+        {
+          ...services,
+          reviewJob: async () => {
+            started = true;
+            await blocked;
+            return location;
+          },
+          reviewStack: async () => {
+            stackCalls++;
+            return stack;
+          },
+        },
+        async () => {
           scrapes++;
           return 'US Laravel role';
         },
-        reviewJob: async () => {
-          started = true;
-          await blocked;
-          return location;
-        },
-        reviewStack: async () => {
-          stackCalls++;
-          return stack;
-        },
-      });
+      );
       try {
         // Act: enqueue duplicates and a second listing while location remains blocked.
         await Promise.all(
@@ -165,11 +169,15 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       // Act: redeliver all completed stages to workers that reject duplicate service calls.
       for (const stage of ['crawl', 'location', 'stack'])
         await queues.enqueue(stage, 1);
-      workers = await startWorkers(store, queues, {
-        scrapeListing: async () => assert.fail('duplicate scrape'),
-        reviewJob: async () => assert.fail('duplicate location'),
-        reviewStack: async () => assert.fail('duplicate stack'),
-      });
+      workers = await startWorkers(
+        store,
+        queues,
+        {
+          reviewJob: async () => assert.fail('duplicate location'),
+          reviewStack: async () => assert.fail('duplicate stack'),
+        },
+        async () => assert.fail('duplicate scrape'),
+      );
       await until(async () =>
         (
           await Promise.all(
@@ -192,13 +200,18 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       // Arrange: make only the location service fail for a fresh listing.
       store.saveResults([result(3)]);
       let calls = 0;
-      workers = await startWorkers(store, queues, {
-        ...services,
-        reviewJob: async () => {
-          calls++;
-          throw new Error('model offline');
+      workers = await startWorkers(
+        store,
+        queues,
+        {
+          ...services,
+          reviewJob: async () => {
+            calls++;
+            throw new Error('model offline');
+          },
         },
-      });
+        scrapeListing,
+      );
       // Act: run the pipeline until location exhausts its attempts.
       await queues.enqueue('crawl', 3);
       await until(
@@ -232,7 +245,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
         0,
       );
       // Act: resume with a healthy location service.
-      workers = await startWorkers(store, queues, services);
+      workers = await startWorkers(store, queues, services, scrapeListing);
       await until(() => store.getJob(3).eligibility === 'ineligible');
       // Assert: the recovered location check preserves stack results and saved text.
       for (const key of [
@@ -253,7 +266,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       // Arrange: leave one listing with saved text but no assessment delivery.
       store.saveResults([result(4), result(5)]);
       store.saveListingText(4, 'Saved before interrupted enqueue');
-      workers = await startWorkers(store, queues, services);
+      workers = await startWorkers(store, queues, services, scrapeListing);
       // Act: review just one unfinished listing using the running consumers.
       const outcome = await reviewJobs(store, queues, 1);
       // Assert: review reuses the checkpoint and leaves the unselected listing alone.
@@ -306,7 +319,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       });
       await queuesReady(queues);
       // Act: start consumers against the recovered queue.
-      workers = await startWorkers(store, queues, services);
+      workers = await startWorkers(store, queues, services, scrapeListing);
       // Assert: waiting work reaches both saved assessments.
       await until(
         () =>
@@ -345,10 +358,9 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       const store=new SqliteStore(${JSON.stringify(path)});
       const queues=new JobQueues(${JSON.stringify(url)},'isolated-job-hunter');
       await startWorkers(store,queues,{
-        scrapeListing:async()=>new Promise(()=>{}),
         reviewJob:async()=>{process.send('active');return new Promise(()=>{});},
         reviewStack:async()=>(${JSON.stringify(stack)}),
-      });
+      },async()=>new Promise(()=>{}));
       process.send('ready');
     `;
       child = spawn(process.execPath, ['--input-type=module', '-e', code], {
@@ -371,7 +383,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       child.kill('SIGKILL');
       await exited;
       child = undefined;
-      workers = await startWorkers(store, queues, services);
+      workers = await startWorkers(store, queues, services, scrapeListing);
       await queues.repair(store);
       await until(() => store.pendingCount() === 0, 100_000);
       // Assert: stalled work completes without losing the saved crawl checkpoint.
@@ -409,6 +421,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
         },
       },
       controller.signal,
+      scrapeListing,
     ).then(() => {
       stopped = true;
     });
@@ -429,6 +442,59 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
     // Assert: draining preserves the active consumer's completed assessment.
     assert.equal(store.getJob(id).stack_status, 'match');
   });
+
+  await t.test(
+    'workers skip missing, hidden and rejected listings in every stage',
+    async () => {
+      store.saveResults([result(11), result(12)]);
+      store.setReviewStatus('11', 'hidden');
+      store.setReviewStatus('12', 'rejected');
+      const before = [11, 12].map((id) => ({
+        job: store.getJob(id),
+        stages: store.stages(id),
+      }));
+      const calls = [];
+      workers = await startWorkers(
+        store,
+        queues,
+        {
+          reviewJob: async () => {
+            calls.push('location');
+            return location;
+          },
+          reviewStack: async () => {
+            calls.push('stack');
+            return stack;
+          },
+        },
+        async () => {
+          calls.push('crawl');
+          return 'Unexpected extraction';
+        },
+      );
+      for (const stage of ['crawl', 'location', 'stack'])
+        for (const id of [11, 12, 999]) await queues.enqueue(stage, id);
+      await until(async () =>
+        (
+          await Promise.all(
+            Object.values(queues.queues).map((queue) =>
+              queue.getJobCounts('active', 'wait', 'failed'),
+            ),
+          )
+        ).every((counts) => !counts.active && !counts.wait && !counts.failed),
+      );
+      assert.deepEqual(calls, []);
+      assert.deepEqual(
+        [11, 12].map((id) => ({
+          job: store.getJob(id),
+          stages: store.stages(id),
+        })),
+        before,
+      );
+      await Promise.all(workers.map((worker) => worker.close()));
+      workers = [];
+    },
+  );
 
   await t.test(
     'unavailable Redis fails producers instead of hanging the CLI',

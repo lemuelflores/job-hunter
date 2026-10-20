@@ -1,48 +1,40 @@
 import { Worker } from 'bullmq';
 import type { JobQueues } from '../bullmq.js';
-import { type SqliteStore, STAGES, type Stage } from '../sqlite.js';
+import {
+  type Listing,
+  type SqliteStore,
+  STAGES,
+  type Stage,
+} from '../sqlite.js';
 import { crawlJob } from './crawl.js';
 import type { ListingExtractor } from './extraction.js';
-import { createLlm } from './llm/index.js';
 import type { LlmProvider } from './llm/types.js';
 import { checkLocation } from './location-check.js';
 import { checkTech } from './tech-check.js';
 
-export interface ReviewServices {
-  reviewJob: LlmProvider['reviewJob'];
-  reviewStack: LlmProvider['reviewStack'];
-  scrapeListing?: ListingExtractor;
-}
-
-export async function processStage(
-  store: SqliteStore,
-  stage: Stage,
-  id: number,
-  enqueue: (stage: Stage, id: number) => Promise<unknown>,
-  services: ReviewServices = createLlm(),
-  signal?: AbortSignal,
-) {
-  signal?.throwIfAborted();
-  const job = store.getJob(id);
-  if (job?.status !== 'active') return;
-  if (stage === 'crawl') {
-    return crawlJob(store, job, enqueue, services.scrapeListing, signal);
-  }
-  if (stage === 'location') {
-    return checkLocation(store, job, services.reviewJob, signal);
-  }
-  return checkTech(store, job, services.reviewStack, signal);
-}
-
 export async function startWorkers(
   store: SqliteStore,
   queues: JobQueues,
-  services: ReviewServices,
+  llm: Pick<LlmProvider, 'reviewJob' | 'reviewStack'>,
+  scrapeListing?: ListingExtractor,
   signal?: AbortSignal,
 ) {
+  const processors: Record<Stage, (job: Listing) => Promise<void>> = {
+    crawl: (job) =>
+      crawlJob(
+        store,
+        job,
+        (stage, id) => queues.enqueue(stage, id),
+        scrapeListing,
+        signal,
+      ),
+    location: (job) => checkLocation(store, job, llm.reviewJob, signal),
+    stack: (job) => checkTech(store, job, llm.reviewStack, signal),
+  };
   const workers: Worker[] = [];
   try {
     for (const stage of STAGES) {
+      const process = processors[stage];
       const queue = queues.queues[stage];
       await queue.setGlobalConcurrency(1);
       const worker = new Worker(
@@ -52,14 +44,10 @@ export async function startWorkers(
           if (!Number.isSafeInteger(id) || id < 1)
             throw new Error('Invalid listing ID');
           try {
-            await processStage(
-              store,
-              stage,
-              id,
-              (s, key) => queues.enqueue(s, key),
-              services,
-              signal,
-            );
+            signal?.throwIfAborted();
+            const job = store.getJob(id);
+            if (job?.status !== 'active') return;
+            await process(job);
           } catch (error) {
             store.failStage(
               id,
@@ -104,10 +92,11 @@ export async function startWorkers(
 export async function workJobs(
   store: SqliteStore,
   queues: JobQueues,
-  services: ReviewServices,
+  llm: Pick<LlmProvider, 'reviewJob' | 'reviewStack'>,
   signal: AbortSignal,
+  scrapeListing?: ListingExtractor,
 ) {
-  const workers = await startWorkers(store, queues, services);
+  const workers = await startWorkers(store, queues, llm, scrapeListing);
   try {
     console.info(`[worker] Started ${STAGES.join(', ')} consumers`);
     if (!signal.aborted)

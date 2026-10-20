@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fetchAshbyListing } from '../dist/review/ashby.js';
+import { crawlJob } from '../dist/review/crawl.js';
 import { PageError } from '../dist/review/extraction.js';
-import { processStage } from '../dist/review/worker.js';
+import { checkLocation } from '../dist/review/location-check.js';
+import { checkTech } from '../dist/review/tech-check.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
 // Arrange: share canonical listing results.
@@ -25,6 +27,22 @@ const services = {
   reviewJob: async () => decision,
   reviewStack: async () => stack,
 };
+
+// Exercise stage workflows directly; real worker delivery is covered by the Redis suite.
+function runStage(
+  store,
+  stage,
+  id,
+  enqueue,
+  { scrapeListing, reviewJob, reviewStack },
+) {
+  const job = store.getJob(id);
+  return {
+    crawl: () => crawlJob(store, job, enqueue, scrapeListing),
+    location: () => checkLocation(store, job, reviewJob),
+    stack: () => checkTech(store, job, reviewStack),
+  }[stage]();
+}
 
 test('Ashby API text reaches both assessments and redelivery reuses the saved input', async (t) => {
   const store = new SqliteStore(':memory:');
@@ -65,10 +83,10 @@ test('Ashby API text reaches both assessments and redelivery reuses the saved in
   };
   const enqueued = [];
   const enqueue = async (stage) => enqueued.push(stage);
-  await processStage(store, 'crawl', 1, enqueue, fake);
+  await runStage(store, 'crawl', 1, enqueue, fake);
   assert.deepEqual(enqueued, ['location', 'stack']);
   for (const stage of ['crawl', 'location', 'stack', 'crawl'])
-    await processStage(store, stage, 1, enqueue, fake);
+    await runStage(store, stage, 1, enqueue, fake);
   assert.equal(requests, 1);
   assert.deepEqual(inputs, {
     location: store.getJob(1).listing_text,
@@ -100,7 +118,7 @@ test('missing Ashby UUID blocks assessments; invalid API responses leave crawl p
         }),
     };
     const run = () =>
-      processStage(
+      runStage(
         store,
         'crawl',
         1,
@@ -154,19 +172,19 @@ test('crawl checkpoints text before fan-out; redelivery and duplicate assessment
     },
   };
   // Act: crawl the listing and fan out both assessments.
-  await processStage(store, 'crawl', 1, enqueue, fake);
+  await runStage(store, 'crawl', 1, enqueue, fake);
   // Assert: both assessment stages are scheduled.
   assert.deepEqual(enqueued, ['location', 'stack']);
   // Act: redeliver the crawl stage.
-  await processStage(store, 'crawl', 1, enqueue, fake);
+  await runStage(store, 'crawl', 1, enqueue, fake);
   // Assert: redelivery reuses the saved listing text.
   assert.equal(scrapes, 1);
   // Act: complete stack assessment before location assessment.
-  await processStage(store, 'stack', 1, enqueue, fake);
+  await runStage(store, 'stack', 1, enqueue, fake);
   // Assert: stack completion leaves location pending.
   assert.equal(store.getJob(1).eligibility, 'pending');
   // Arrange: finish location assessment and forbid subsequent service calls.
-  await processStage(store, 'location', 1, enqueue, fake);
+  await runStage(store, 'location', 1, enqueue, fake);
   const saved = JSON.stringify(store.getJob(1));
   const forbidden = {
     scrapeListing: async () => assert.fail('rescrape'),
@@ -175,7 +193,7 @@ test('crawl checkpoints text before fan-out; redelivery and duplicate assessment
   };
   // Act: redeliver every completed stage.
   for (const stage of ['crawl', 'location', 'stack'])
-    await processStage(store, stage, 1, enqueue, forbidden);
+    await runStage(store, stage, 1, enqueue, forbidden);
   // Assert: saved decisions remain unchanged.
   assert.equal(JSON.stringify(store.getJob(1)), saved);
 });
@@ -208,7 +226,7 @@ test('each reviewer receives its listing URL and saved text and saves to the sam
     };
     // Act: run this listing through every pipeline stage.
     for (const stage of ['crawl', 'location', 'stack'])
-      await processStage(store, stage, id, async () => {}, fake);
+      await runStage(store, stage, id, async () => {}, fake);
   }
   for (const id of [1, 2]) {
     // Assert: each listing retains its own location and stack decisions.
@@ -223,14 +241,14 @@ test('crawl redelivery repairs a partial fan-out without scraping or reassessing
   const delivered = [];
   // Act / Assert: interrupt fan-out when the stack enqueue fails.
   await assert.rejects(
-    processStage(
+    runStage(
       store,
       'crawl',
       1,
       async (stage, id) => {
         if (stage === 'stack') throw new Error('Redis unavailable');
         delivered.push(stage);
-        await processStage(store, stage, id, async () => {}, services);
+        await runStage(store, stage, id, async () => {}, services);
       },
       services,
     ),
@@ -242,13 +260,13 @@ test('crawl redelivery repairs a partial fan-out without scraping or reassessing
   // Arrange: retain the saved decision for comparison after redelivery.
   const saved = store.getJob(1);
   // Act: redeliver crawl with rescraping forbidden and working fan-out.
-  await processStage(
+  await runStage(
     store,
     'crawl',
     1,
     async (stage, id) => {
       delivered.push(stage);
-      await processStage(store, stage, id, async () => {}, services);
+      await runStage(store, stage, id, async () => {}, services);
     },
     {
       ...services,
@@ -285,7 +303,7 @@ test('permanent crawl errors save the page error and block both assessments', as
     },
   };
   // Act: process the crawl stage.
-  await processStage(
+  await runStage(
     store,
     'crawl',
     1,
@@ -318,7 +336,7 @@ test('redelivering terminal or blocked stages makes no external calls', async (t
   };
   // Act: redeliver each stage.
   for (const stage of ['crawl', 'location', 'stack'])
-    await processStage(
+    await runStage(
       store,
       stage,
       1,
@@ -342,7 +360,7 @@ test('temporary crawl errors propagate to queue retry handling', async (t) => {
   };
   // Act / Assert: the processor propagates the original error without enqueueing.
   await assert.rejects(
-    processStage(
+    runStage(
       store,
       'crawl',
       1,
@@ -363,7 +381,7 @@ test('a reset crawl checkpoints recovered text and schedules both assessments', 
   store.resetStage(1, 'crawl');
   const enqueued = [];
   // Act: deliver the healthy crawl.
-  await processStage(
+  await runStage(
     store,
     'crawl',
     1,
@@ -386,7 +404,7 @@ test('location rejection does not block technology assessment; either evaluation
   for (const failing of ['location', 'stack']) {
     // Arrange: checkpoint listing text and make only this assessment fail.
     const store = fixture(t);
-    await processStage(store, 'crawl', 1, enqueue, independentServices);
+    await runStage(store, 'crawl', 1, enqueue, independentServices);
     const fake = {
       ...independentServices,
       [failing === 'location' ? 'reviewJob' : 'reviewStack']: async () => {
@@ -395,14 +413,14 @@ test('location rejection does not block technology assessment; either evaluation
     };
     // Act / Assert: surface the selected assessment's temporary failure.
     await assert.rejects(
-      processStage(store, failing, 1, enqueue, fake),
+      runStage(store, failing, 1, enqueue, fake),
       /temporary/,
     );
     // Arrange: persist the failure and select the unaffected assessment.
     store.failStage(1, failing, 'temporary', true);
     const other = failing === 'location' ? 'stack' : 'location';
     // Act: run the other assessment despite the failed stage.
-    await processStage(store, other, 1, enqueue, fake);
+    await runStage(store, other, 1, enqueue, fake);
     // Assert: the unaffected assessment completes independently.
     assert.equal(
       store.stages(1).find((s) => s.stage === other).state,
@@ -412,7 +430,7 @@ test('location rejection does not block technology assessment; either evaluation
     const before = store.getJob(1);
     store.resetStage(1, failing);
     // Act: retry the failed assessment with healthy independentServices.
-    await processStage(store, failing, 1, enqueue, independentServices);
+    await runStage(store, failing, 1, enqueue, independentServices);
     // Assert: retry preserves the other decision and completes both assessments.
     const after = store.getJob(1);
     for (const key of other === 'location'
@@ -432,8 +450,8 @@ test('an unfinished location request does not block technology assessment or cra
     release = resolve;
   });
   // Arrange: checkpoint text before starting the blocked location request.
-  await processStage(store, 'crawl', 1, enqueue, independentServices);
-  const location = processStage(store, 'location', 1, enqueue, {
+  await runStage(store, 'crawl', 1, enqueue, independentServices);
+  const location = runStage(store, 'location', 1, enqueue, {
     ...independentServices,
     reviewJob: async () => {
       await blocked;
@@ -442,8 +460,8 @@ test('an unfinished location request does not block technology assessment or cra
   });
   try {
     // Act: process unrelated stages while location remains blocked.
-    await processStage(store, 'stack', 1, enqueue, independentServices);
-    await processStage(store, 'crawl', 2, enqueue, independentServices);
+    await runStage(store, 'stack', 1, enqueue, independentServices);
+    await runStage(store, 'crawl', 2, enqueue, independentServices);
     // Assert: stack and the next crawl finish while location remains pending.
     assert.equal(store.getJob(1).eligibility, 'pending');
     assert.equal(store.getJob(1).stack_status, 'match');
