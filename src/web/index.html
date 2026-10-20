@@ -487,22 +487,8 @@
         parent.append(node);
         return node;
       };
-      const formatDate = (value) => {
-        if (!value) return null;
-        const date = new Date(value);
-        return Number.isNaN(date.getTime())
-          ? null
-          : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(
-              date,
-            );
-      };
-      const displayCompany = (job) => {
-        const company =
-          typeof job.company === 'string' ? job.company.trim() : '';
-        if (company) return company;
-        const board = typeof job.board === 'string' ? job.board.trim() : '';
-        return board || null;
-      };
+      const displayCompany = (job) =>
+        (typeof job.company === 'string' ? job.company.trim() : '') || null;
       const displayLocation = (job) =>
         (typeof job.location === 'string' ? job.location.trim() : '') ||
         'Not provided';
@@ -547,18 +533,6 @@
           `Location: ${displayLocation(job)}`,
           'job-card__metadata-item',
         );
-        if (job.isRemote)
-          addText(meta, 'span', 'Remote', 'job-card__metadata-item');
-        if (job.ats && job.ats !== 'generic')
-          addText(meta, 'span', String(job.ats), 'job-card__metadata-item');
-        const published = formatDate(job.publishedAt);
-        if (published)
-          addText(
-            meta,
-            'span',
-            `Posted ${published}`,
-            'job-card__metadata-item',
-          );
       };
       const renderAssessments = (card, job) => {
         const panels = document.createElement('div');

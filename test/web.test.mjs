@@ -243,11 +243,6 @@ test('UI cards group statuses, reasons and expandable evidence without interpret
     [{ company: null, location: null }, 'Company not provided', 'Not provided'],
     [{ company: 42, location: 42 }, 'Company not provided', 'Not provided'],
     [{ company: ' Example ', location: ' Worldwide ' }, 'Example', 'Worldwide'],
-    [
-      { board: ' Example board ', eligibility: 'pending' },
-      'Example board',
-      'Not provided',
-    ],
     [{ eligibility: 'error' }, 'Company not provided', 'Not provided'],
     [
       { eligibility: 'unclear', location: 'Europe' },
