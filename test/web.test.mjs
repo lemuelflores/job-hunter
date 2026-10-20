@@ -128,6 +128,36 @@ test('failed browser saves restore the card without leaving a stale override', a
   assert.deepEqual(ui.keys(), ['1']);
 });
 
+test('restoring unfinished listings explains explicit repair without starting processing', async () => {
+  for (const state of ['pending', 'complete']) {
+    let status = 'hidden';
+    const requests = [];
+    const ui = browser(async (path, options) => {
+      requests.push(path);
+      if (options?.method === 'POST') {
+        status = JSON.parse(options.body).status;
+        return Response.json({ ok: true });
+      }
+      return Response.json({
+        jobs: path.endsWith(`=${status}`)
+          ? [{ reviewKey: '1', status, stages: [{ stage: 'crawl', state }] }]
+          : [],
+      });
+    });
+    await ui.show('hidden');
+    await ui.change('1', 'active');
+    assert.equal(
+      ui.notice.textContent.includes('pnpm job-hunter repair'),
+      state === 'pending',
+    );
+    assert.deepEqual(requests, [
+      '/api/jobs?status=hidden',
+      '/api/jobs/status',
+      '/api/jobs?status=hidden',
+    ]);
+  }
+});
+
 test('UI labels every stack state and distinguishes skipped assessments', () => {
   // Arrange: pair each assessment state with its user-facing label.
   const labels = {

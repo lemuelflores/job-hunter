@@ -521,6 +521,28 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
   );
 
   await t.test(
+    'explicit repair resumes a restored listing after hidden delivery was skipped',
+    async () => {
+      store.setReviewStatus('11', 'active');
+      assert.ok(store.stages(11).every((stage) => stage.state === 'pending'));
+      for (const stage of ['crawl', 'location', 'stack'])
+        assert.equal(
+          await queues.queues[stage].getJob('listing-11'),
+          undefined,
+        );
+      workers = await startWorkers(store, queues, services, scrapeListing);
+      await queues.repair(store);
+      await until(() =>
+        store.stages(11).every((stage) => stage.state === 'complete'),
+      );
+      assert.equal(store.getJob(11).eligibility, 'ineligible');
+      assert.equal(store.getJob(11).stack_status, 'match');
+      await Promise.all(workers.map((worker) => worker.close()));
+      workers = [];
+    },
+  );
+
+  await t.test(
     'unavailable Redis fails producers instead of hanging the CLI',
     async () => {
       // Arrange: target a local port with no Redis listener.

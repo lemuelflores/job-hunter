@@ -851,6 +851,14 @@
             throw new Error(body.error || 'Could not save that change.');
           pending.delete(reviewKey);
           await load();
+          if (
+            !persistentError &&
+            status === 'active' &&
+            job.stages?.some((stage) => stage.state === 'pending')
+          )
+            setNotice(
+              'Restored with unfinished checks. Run pnpm job-hunter repair to restore missing queue work.',
+            );
         } catch (error) {
           restoreStatus(reviewKey, from, job, error);
         }
