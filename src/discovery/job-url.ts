@@ -6,6 +6,7 @@ function normalizeAshby(url: URL, parts: string[]): string | null {
   if (parts.length !== 2) return null;
   // Ashby listing IDs use UUIDs, not arbitrary names or numeric IDs.
   if (!UUID.test(parts[1])) return null;
+  url.pathname = `/${parts[0]}/${parts[1].toLowerCase()}`;
   return url.href;
 }
 
@@ -15,6 +16,7 @@ function normalizeLever(url: URL, parts: string[]): string | null {
   if (parts.length !== 2) return null;
   // Lever listing IDs use UUIDs, not arbitrary names or numeric IDs.
   if (!UUID.test(parts[1])) return null;
+  url.pathname = `/${parts[0]}/${parts[1].toLowerCase()}`;
   return url.href;
 }
 

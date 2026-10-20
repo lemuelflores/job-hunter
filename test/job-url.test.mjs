@@ -14,6 +14,10 @@ test('listing URLs accept supported shapes and strip tracking', () => {
     const url = `https://${host}/example/${uuid}`;
     // Act / Assert: strip tracking while retaining the canonical listing URL.
     assert.equal(normalizeJobUrl(`${url}?utm_source=google#details`), url);
+    assert.equal(
+      normalizeJobUrl(`https://${host}/example/${uuid.toUpperCase()}`),
+      url,
+    );
   }
   for (const host of ['boards.greenhouse.io', 'job-boards.greenhouse.io']) {
     // Arrange: use either supported Greenhouse hostname.

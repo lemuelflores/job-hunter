@@ -164,3 +164,28 @@ test('discovery saves and schedules completed search pages despite a later failu
   assert.equal(store.getJob(4).snippet, 'Valid text');
   assert.equal(store.getJob(5).snippet, '');
 });
+
+test('discovery deduplicates UUID casing without changing board casing or saved decisions', async (t) => {
+  const store = fixture(t);
+  const uuid = '12345678-abcd-abcd-abcd-123456789abc';
+  const url = `https://jobs.ashbyhq.com/Example/${uuid}`;
+  const saved = { ...result(1), url };
+  const search = async () => ({
+    results: [saved, { ...saved, url: url.replace(uuid, uuid.toUpperCase()) }],
+    failures: [],
+  });
+  assert.equal(
+    (await fetchJobs(store, search, undefined, async () => {})).added,
+    1,
+  );
+  store.saveListingText(4, 'Saved listing');
+  store.review(4, 'eligible', 'Saved decision');
+  const before = store.getJob(4);
+  assert.equal(
+    (await fetchJobs(store, search, undefined, async () => {})).added,
+    0,
+  );
+  assert.equal(store.getJob(4).url, url);
+  assert.equal(store.getJob(4).reason, before.reason);
+  assert.equal(store.getJob(4).listing_text, before.listing_text);
+});
