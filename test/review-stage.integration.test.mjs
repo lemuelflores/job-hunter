@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fetchAshbyListing } from '../dist/review/ashby.js';
-import { crawlJob } from '../dist/review/crawl.js';
+import { startCrawlWorker } from '../dist/review/crawl.js';
 import { PageError } from '../dist/review/extraction.js';
-import { checkLocation } from '../dist/review/location-check.js';
-import { checkTech } from '../dist/review/tech-check.js';
+import { startLocationWorker } from '../dist/review/location-check.js';
+import { startTechWorker } from '../dist/review/tech-check.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
 // Arrange: share canonical listing results.
@@ -28,20 +28,28 @@ const services = {
   reviewStack: async () => stack,
 };
 
-// Exercise stage workflows directly; real worker delivery is covered by the Redis suite.
-function runStage(
+// Exercise registered callbacks; real worker delivery is covered by the Redis suite.
+async function runStage(
   store,
   stage,
   id,
   enqueue,
   { scrapeListing, reviewJob, reviewStack },
 ) {
-  const job = store.getJob(id);
-  return {
-    crawl: () => crawlJob(store, job, enqueue, scrapeListing),
-    location: () => checkLocation(store, job, reviewJob),
-    stack: () => checkTech(store, job, reviewStack),
+  const queues = {
+    enqueue,
+    startWorker: (receivedStore, receivedStage, process) => {
+      assert.equal(receivedStore, store);
+      assert.equal(receivedStage, stage);
+      return process;
+    },
+  };
+  const process = await {
+    crawl: () => startCrawlWorker(store, queues, scrapeListing),
+    location: () => startLocationWorker(store, queues, reviewJob),
+    stack: () => startTechWorker(store, queues, reviewStack),
   }[stage]();
+  return process(store.getJob(id));
 }
 
 test('Ashby API text reaches both assessments and redelivery reuses the saved input', async (t) => {

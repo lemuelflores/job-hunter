@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import type { Worker } from 'bullmq';
 import {
   type ArgsDef,
   defineCommand,
@@ -150,18 +151,36 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       run: async () => {
         const profile = await loadProfile();
         const llm = createLlm();
-        const { workJobs } = await import('./review/worker.js');
-        await workJobs(
-          await database(),
-          await jobQueues(),
-          {
-            reviewJob: (url, options) =>
-              llm.reviewJob(url, { ...options, location: profile.location }),
-            reviewStack: (url, options) =>
-              llm.reviewStack(url, { ...options, skills: profile.skills }),
-          },
-          processingSignal(),
+        const { startCrawlWorker } = await import('./review/crawl.js');
+        const { startLocationWorker } = await import(
+          './review/location-check.js'
         );
+        const { startTechWorker } = await import('./review/tech-check.js');
+        const store = await database();
+        const queues = await jobQueues();
+        const signal = processingSignal();
+        const workers: Worker[] = [];
+        try {
+          workers.push(await startCrawlWorker(store, queues));
+          workers.push(
+            await startLocationWorker(store, queues, (url, options) =>
+              llm.reviewJob(url, { ...options, location: profile.location }),
+            ),
+          );
+          workers.push(
+            await startTechWorker(store, queues, (url, options) =>
+              llm.reviewStack(url, { ...options, skills: profile.skills }),
+            ),
+          );
+          console.info(`[worker] Started ${STAGES.join(', ')} consumers`);
+          if (!signal.aborted)
+            await new Promise<void>((resolve) =>
+              signal.addEventListener('abort', () => resolve(), { once: true }),
+            );
+        } finally {
+          await Promise.all(workers.map((worker) => worker.close()));
+          console.info('[worker] Stopped');
+        }
       },
     }),
     repair: defineCommand({

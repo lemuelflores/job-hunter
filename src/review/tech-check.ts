@@ -1,17 +1,26 @@
-import type { Listing, SqliteStore } from '../sqlite.js';
+import type { JobQueues } from '../bullmq.js';
+import type { SqliteStore } from '../sqlite.js';
 import type { LlmProvider } from './llm/types.js';
 
-export async function checkTech(
+export function startTechWorker(
   store: SqliteStore,
-  job: Listing,
+  queues: JobQueues,
   review: LlmProvider['reviewStack'],
   signal?: AbortSignal,
 ) {
-  if (!store.needsStage(job.id, 'stack') || job.listing_text === null) return;
-  const decision = await review(job.url, {
+  return queues.startWorker(
+    store,
+    'stack',
+    async (job) => {
+      if (!store.needsStage(job.id, 'stack') || job.listing_text === null)
+        return;
+      const decision = await review(job.url, {
+        signal,
+        listingText: job.listing_text,
+      });
+      signal?.throwIfAborted();
+      store.reviewStack(job.id, decision);
+    },
     signal,
-    listingText: job.listing_text,
-  });
-  signal?.throwIfAborted();
-  store.reviewStack(job.id, decision);
+  );
 }

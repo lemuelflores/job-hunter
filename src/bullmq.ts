@@ -1,6 +1,11 @@
-import { createNodeRedisClient, Queue, RedisConnection } from 'bullmq';
+import { createNodeRedisClient, Queue, RedisConnection, Worker } from 'bullmq';
 import { createClient } from 'redis';
-import { type SqliteStore, STAGES, type Stage } from './sqlite.js';
+import {
+  type Listing,
+  type SqliteStore,
+  STAGES,
+  type Stage,
+} from './sqlite.js';
 
 RedisConnection.clientFactory = (options) => {
   const producer = options.enableOfflineQueue === false;
@@ -53,6 +58,57 @@ export class JobQueues {
         return [stage, queue];
       }),
     ) as Record<Stage, Queue>;
+  }
+
+  async startWorker(
+    store: SqliteStore,
+    stage: Stage,
+    process: (job: Listing) => Promise<void>,
+    signal?: AbortSignal,
+  ) {
+    await this.queues[stage].setGlobalConcurrency(1);
+    const worker = new Worker(
+      stage,
+      async (task) => {
+        const id = task.data.id;
+        if (!Number.isSafeInteger(id) || id < 1)
+          throw new Error('Invalid listing ID');
+        try {
+          signal?.throwIfAborted();
+          const job = store.getJob(id);
+          if (job?.status !== 'active') return;
+          await process(job);
+        } catch (error) {
+          store.failStage(
+            id,
+            stage,
+            error instanceof Error ? error.message : String(error),
+            task.attemptsMade + 1 >= (task.opts.attempts ?? 3),
+          );
+          throw error;
+        }
+      },
+      {
+        prefix: this.prefix,
+        connection: { url: this.url },
+        concurrency: 1,
+      },
+    );
+    worker.on('error', (error) =>
+      console.error(`[worker] ${stage}: ${error.message}`),
+    );
+    worker.on('failed', (task, error) => {
+      console.error(
+        `[worker] ${stage} listing ${task?.data.id}: ${error.message}`,
+      );
+      if (task)
+        void this.syncFailures(store, task.data.id).catch((failure) =>
+          console.error(
+            `[worker] Cannot save queue failure: ${failure instanceof Error ? failure.message : String(failure)}`,
+          ),
+        );
+    });
+    return worker;
   }
 
   async enqueue(stage: Stage, id: number) {

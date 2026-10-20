@@ -184,3 +184,51 @@ test('CLI auth routes through the provider and removes signal listeners on succe
   );
   assert.equal(await main(['auth', '--limit', '1']), 1);
 });
+
+test('review-worker closes started consumers before queues on shutdown and startup failure', async (t) => {
+  const { root, cli } = await fixture(t);
+  await writeFile(
+    join(root, 'dist/bullmq.js'),
+    `export class JobQueues {
+      async close() { console.log('queues closed'); }
+    }`,
+  );
+  for (const [file, name] of [
+    ['crawl', 'startCrawlWorker'],
+    ['location-check', 'startLocationWorker'],
+    ['tech-check', 'startTechWorker'],
+  ]) {
+    await writeFile(
+      join(root, `dist/review/${file}.js`),
+      `export async function ${name}() {
+        console.log('${file} started');
+        ${file === 'tech-check' ? "setImmediate(() => process.emit('SIGTERM'));" : ''}
+        return { async close() {
+          await new Promise(resolve => setTimeout(resolve, 10));
+          console.log('${file} closed');
+        } };
+      }`,
+    );
+  }
+  const stopped = cli('review-worker');
+  assert.equal(stopped.status, 0, stopped.stderr);
+  for (const file of ['crawl', 'location-check', 'tech-check']) {
+    assert.match(stopped.stdout, new RegExp(`${file} started`));
+    assert.match(stopped.stdout, new RegExp(`${file} closed`));
+    assert.ok(
+      stopped.stdout.indexOf(`${file} closed`) <
+        stopped.stdout.indexOf('queues closed'),
+    );
+  }
+  assert.match(stopped.stdout, /\[worker\] Stopped/);
+
+  await writeFile(
+    join(root, 'dist/review/location-check.js'),
+    `export async function startLocationWorker() { throw new Error('startup failed'); }`,
+  );
+  const failed = cli('review-worker');
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /startup failed/);
+  assert.match(failed.stdout, /crawl closed[\s\S]*queues closed/);
+  assert.doesNotMatch(failed.stdout, /tech-check started/);
+});

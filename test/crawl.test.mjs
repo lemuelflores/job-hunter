@@ -1,10 +1,22 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { crawlJob } from '../dist/review/crawl.js';
+import { startCrawlWorker } from '../dist/review/crawl.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
 const id = '12345678-abcd-abcd-abcd-123456789abc';
 const ashbyUrl = `https://jobs.ashbyhq.com/example/${id}`;
+
+async function runCrawl(store, enqueue = async () => {}) {
+  const process = await startCrawlWorker(store, {
+    enqueue,
+    startWorker: (receivedStore, stage, process) => {
+      assert.equal(receivedStore, store);
+      assert.equal(stage, 'crawl');
+      return process;
+    },
+  });
+  return process(store.getJob(1));
+}
 
 function fixture(t, url) {
   const store = new SqliteStore(':memory:');
@@ -32,7 +44,7 @@ test('Ashby extraction uses its public API, never Firecrawl', async (t) => {
       ],
     });
   });
-  await crawlJob(store, store.getJob(1), async () => {});
+  await runCrawl(store);
   assert.equal(requests, 1);
   assert.ok(store.getJob(1).listing_text.includes('Laravel services'));
 });
@@ -51,9 +63,7 @@ test('missing listings and API failures do not fall back to Firecrawl', async (t
         return response;
       });
       const run = () =>
-        crawlJob(store, store.getJob(1), async () =>
-          assert.fail('unexpected enqueue'),
-        );
+        runCrawl(store, async () => assert.fail('unexpected enqueue'));
       if (error) {
         await assert.rejects(run(), error);
         assert.equal(
@@ -91,7 +101,7 @@ test('Lever and Greenhouse extraction uses Firecrawl', async (t) => {
           data: { markdown: 'Existing text' },
         });
       });
-      await crawlJob(store, store.getJob(1), async () => {});
+      await runCrawl(store);
       assert.equal(store.getJob(1).listing_text, 'Existing text');
     });
   }

@@ -7,8 +7,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { JobQueues } from '../dist/bullmq.js';
+import { startCrawlWorker } from '../dist/review/crawl.js';
+import { startLocationWorker } from '../dist/review/location-check.js';
 import { reviewJobs } from '../dist/review/review-jobs.js';
-import { startWorkers, workJobs } from '../dist/review/worker.js';
+import { startTechWorker } from '../dist/review/tech-check.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
 // Shared fixtures keep external services deterministic while Redis delivery stays real.
@@ -26,6 +28,19 @@ const services = {
   reviewStack: async () => stack,
 };
 const scrapeListing = async () => 'US Laravel role';
+
+async function startWorkers(store, queues, llm, scrape) {
+  const workers = [];
+  try {
+    workers.push(await startCrawlWorker(store, queues, scrape));
+    workers.push(await startLocationWorker(store, queues, llm.reviewJob));
+    workers.push(await startTechWorker(store, queues, llm.reviewStack));
+    return workers;
+  } catch (error) {
+    await Promise.all(workers.map((worker) => worker.close()));
+    throw error;
+  }
+}
 const result = (id) => ({
   url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
   title: 'Engineer',
@@ -349,18 +364,25 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
       store.saveResults([result(8), result(9)]);
       store.saveListingText(8, 'Checkpoint before model interruption');
       const transport = new URL('../dist/bullmq.js', import.meta.url).href;
-      const worker = new URL('../dist/review/worker.js', import.meta.url).href;
+      const crawl = new URL('../dist/review/crawl.js', import.meta.url).href;
+      const locationCheck = new URL(
+        '../dist/review/location-check.js',
+        import.meta.url,
+      ).href;
+      const techCheck = new URL('../dist/review/tech-check.js', import.meta.url)
+        .href;
       const persistence = new URL('../dist/sqlite.js', import.meta.url).href;
       const code = `
       import {JobQueues} from ${JSON.stringify(transport)};
-      import {startWorkers} from ${JSON.stringify(worker)};
+      import {startCrawlWorker} from ${JSON.stringify(crawl)};
+      import {startLocationWorker} from ${JSON.stringify(locationCheck)};
+      import {startTechWorker} from ${JSON.stringify(techCheck)};
       import {SqliteStore} from ${JSON.stringify(persistence)};
       const store=new SqliteStore(${JSON.stringify(path)});
       const queues=new JobQueues(${JSON.stringify(url)},'isolated-job-hunter');
-      await startWorkers(store,queues,{
-        reviewJob:async()=>{process.send('active');return new Promise(()=>{});},
-        reviewStack:async()=>(${JSON.stringify(stack)}),
-      },async()=>new Promise(()=>{}));
+      await startCrawlWorker(store,queues,async()=>new Promise(()=>{}));
+      await startLocationWorker(store,queues,async()=>{process.send('active');return new Promise(()=>{});});
+      await startTechWorker(store,queues,async()=>(${JSON.stringify(stack)}));
       process.send('ready');
     `;
       child = spawn(process.execPath, ['--input-type=module', '-e', code], {
@@ -402,14 +424,13 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
     // Arrange: block an active stack check and observe when worker shutdown resolves.
     store.saveResults([result(10)]);
     const id = store.unfinished().find((job) => job.url === result(10).url).id;
-    const controller = new AbortController();
     let release,
       started = false,
       stopped = false;
     const blocked = new Promise((resolve) => {
       release = resolve;
     });
-    const running = workJobs(
+    workers = await startWorkers(
       store,
       queues,
       {
@@ -420,24 +441,27 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
           return stack;
         },
       },
-      controller.signal,
       scrapeListing,
-    ).then(() => {
-      stopped = true;
-    });
+    );
+    let closing;
     try {
       // Act: request shutdown while the stack consumer is still blocked.
       await queues.enqueue('crawl', id);
       await until(() => started);
-      controller.abort();
+      closing = Promise.all(workers.map((worker) => worker.close())).then(
+        () => {
+          stopped = true;
+        },
+      );
       await delay(25);
       // Assert: shutdown waits for active work rather than abandoning it.
       assert.equal(stopped, false);
     } finally {
       // Cleanup: release the consumer even when an assertion fails, then drain it.
       release();
-      controller.abort();
-      await running;
+      await closing;
+      await Promise.all(workers.map((worker) => worker.close()));
+      workers = [];
     }
     // Assert: draining preserves the active consumer's completed assessment.
     assert.equal(store.getJob(id).stack_status, 'match');

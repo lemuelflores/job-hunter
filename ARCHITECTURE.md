@@ -17,14 +17,13 @@ job-hunter/
 │   │   └── google.ts          # Query construction, search types, Autom.dev requests
 │   ├── review/
 │   │   ├── auth.ts            # Provider sign-in and cancellation lifecycle
-│   │   ├── worker.ts          # Crawl/location/stack consumers and stage dispatch
 │   │   ├── review-jobs.ts     # Enqueue unfinished listings and wait for outcomes
 │   │   ├── stages.ts          # Shared processing-stage names and type
-│   │   ├── crawl.ts           # Select extraction strategy, save text, enqueue checks
+│   │   ├── crawl.ts           # Crawl consumer, extraction, persistence, enqueue checks
 │   │   ├── extraction.ts      # Provider-neutral extraction contract and page errors
 │   │   ├── ashby.ts           # Board API client, posting selection, text rendering
-│   │   ├── location-check.ts  # Run and save location eligibility assessment
-│   │   ├── tech-check.ts      # Run and save technology-fit assessment
+│   │   ├── location-check.ts  # Location consumer, assessment, persistence
+│   │   ├── tech-check.ts      # Stack consumer, assessment, persistence
 │   │   ├── firecrawl.ts       # Scrape API client, Markdown and page-error handling
 │   │   └── llm/
 │   │       ├── types.ts       # Provider contract and assessment types
@@ -126,7 +125,7 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 **Name:** Independent crawl, location, and stack consumers.
 
-**Description:** `src/review/worker.ts` constructs consumers with stage-specific handlers for `crawl.ts`, `location-check.ts`, and `tech-check.ts` in the same directory; `src/bullmq.ts` owns shared queue delivery and recovery. Worker setup receives the LLM assessment methods and an optional listing extractor separately. Shared delivery handling validates listing IDs, skips missing or inactive listings, and persists failures. One `review-worker` process hosts three consumers. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
+**Description:** `src/review/crawl.ts`, `location-check.ts`, and `tech-check.ts` each expose one consumer starter with stage processing inline in its worker callback; `src/bullmq.ts` owns shared worker creation, queue delivery, and recovery. Each assessment consumer receives only its LLM method; the crawl consumer accepts an optional listing extractor. Shared delivery handling validates listing IDs, skips missing or inactive listings, and persists failures. The CLI starts all three consumers in one `review-worker` process and closes started consumers on shutdown or partial startup failure. Shutdown drains active tasks rather than cancelling their external calls. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
 
 Queues use prefix `job-hunter`, names `crawl`, `location`, and `stack`, payload `{ id }`, and stable per-queue IDs `listing-N`. Crawling saves listing text once and schedules both assessments. `src/review/crawl.ts` routes Ashby URLs to the unauthenticated public posting API and Lever/Greenhouse to Firecrawl. The Ashby adapter selects the exact UUID from the board response and saves its plain description with title, primary/secondary locations, address, workplace type, raw remote flag, employment type, department/team, and compensation metadata when provided. It does not interpret `isRemote` as fully remote; workplace type can still be Hybrid. Processors consult SQLite before work; completed stages cannot overwrite saved results. Redelivered crawl tasks can enqueue missing assessments without extracting again.
 
