@@ -45,6 +45,100 @@ test('UI labels every stack state and distinguishes skipped assessments', () => 
   assert.equal(stackLabel({}), 'Not checked');
 });
 
+test('UI cards group statuses, reasons and expandable evidence without interpreting listing HTML', () => {
+  const element = (tag) => ({
+    tag,
+    children: [],
+    dataset: {},
+    attributes: {},
+    append(...nodes) {
+      this.children.push(...nodes);
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    },
+    addEventListener() {},
+  });
+  const scripts = [...UI_HTML.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+  const { renderJob } = runInNewContext(
+    `${scripts[0][1]}\n${scripts[1][1].replace(/load\(\);\s*\}\)\(\);\s*$/, 'return { renderJob }; })();')}`,
+    {
+      URL,
+      document: {
+        createElement: element,
+        getElementById: () => element('div'),
+        querySelectorAll: () => [],
+      },
+    },
+  );
+  const descendants = (node) => [node, ...node.children.flatMap(descendants)];
+  const job = {
+    reviewKey: '1',
+    title: '<img src=x onerror=alert(1)>',
+    company: 'Example',
+    location: 'Worldwide',
+    eligibility: 'eligible',
+    reason: 'Remote from your location',
+    evidence: 'Work from anywhere',
+    stack_status: 'partial_match',
+    stack_reason: 'Some core skills match',
+    stack_evidence: 'TypeScript and Go',
+    url: 'https://example.com/job',
+    stages: [{ stage: 'stack', state: 'pending', error: 'Temporary failure' }],
+  };
+  const card = renderJob(job);
+  const nodes = descendants(card);
+  assert.equal(card.className, 'job-card');
+  assert.equal(card.attributes['aria-labelledby'], 'job-title-1');
+  assert.equal(nodes.find((node) => node.tag === 'h2').textContent, job.title);
+  assert.ok(nodes.some((node) => node.textContent === 'Location: Worldwide'));
+  assert.ok(nodes.some((node) => node.className === 'job-card__error'));
+  const panels = nodes.filter((node) => node.className === 'assessment');
+  assert.equal(panels.length, 2);
+  for (const [index, reason, evidence, status] of [
+    [0, job.reason, job.evidence, 'eligible'],
+    [1, job.stack_reason, job.stack_evidence, 'partial-match'],
+  ]) {
+    const contents = descendants(panels[index]);
+    assert.ok(contents.some((node) => node.textContent === reason));
+    assert.ok(
+      contents.some((node) => node.className?.endsWith(`__status--${status}`)),
+    );
+    const details = contents.find((node) => node.tag === 'details');
+    assert.equal(details.attributes.open, undefined);
+    assert.equal(details.children[0].tag, 'summary');
+    assert.equal(details.children[1].textContent, evidence);
+  }
+  const link = nodes.find((node) => node.tag === 'a');
+  assert.equal(link.href, job.url);
+  assert.equal(link.rel, 'noopener noreferrer');
+  assert.deepEqual(
+    nodes
+      .filter((node) => node.tag === 'button')
+      .map((node) => node.textContent),
+    ['Hide', 'Reject'],
+  );
+  const pending = descendants(
+    renderJob({ reviewKey: '2', url: 'javascript:alert(1)' }, true),
+  );
+  assert.equal(
+    pending.some((node) => node.tag === 'a'),
+    false,
+  );
+  assert.equal(pending.filter((node) => node.tag === 'details').length, 0);
+  assert.equal(
+    pending.filter(
+      (node) => node.textContent === 'No assessment available yet.',
+    ).length,
+    2,
+  );
+  assert.ok(
+    pending
+      .filter((node) => node.tag === 'button')
+      .every((node) => node.disabled),
+  );
+});
+
 test('UI assessment filters work independently and in combination', () => {
   // Arrange: cover every stack state and mixed location results.
   const states = [

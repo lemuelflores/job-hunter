@@ -31,7 +31,7 @@
         sans-serif;
     }
     main {
-      width: min(100% - 40px, 820px);
+      width: min(100% - 40px, 1040px);
       margin: 0 auto;
       padding: 56px 0 80px;
     }
@@ -49,7 +49,7 @@
       border-top: 1px solid var(--line);
       border-bottom: 1px solid var(--line);
     }
-    nav {
+    .toolbar__tabs {
       display: flex;
       gap: 4px;
       padding: 4px;
@@ -60,7 +60,7 @@
     button {
       -webkit-tap-highlight-color: transparent;
     }
-    nav button {
+    .toolbar__tab {
       border: 0;
       border-radius: 7px;
       padding: 8px 11px;
@@ -70,10 +70,10 @@
       cursor: pointer;
       white-space: nowrap;
     }
-    nav button:hover {
+    .toolbar__tab:hover {
       color: var(--ink);
     }
-    nav button[aria-pressed="true"] {
+    .toolbar__tab[aria-pressed="true"] {
       background: var(--card);
       color: var(--ink);
       box-shadow: 0 1px 3px #1d242114;
@@ -85,7 +85,7 @@
       color: var(--muted);
       font-size: 13px;
     }
-    select {
+    .filter__select {
       max-width: 100%;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -95,20 +95,20 @@
       font: inherit;
       cursor: pointer;
     }
-    #notice {
+    .notice {
       min-height: 24px;
       margin: 16px 0;
       color: var(--muted);
       font-size: 13px;
     }
-    #notice.error {
+    .notice--error {
       color: var(--danger);
     }
     .job-list {
       display: grid;
       gap: 24px;
     }
-    .job {
+    .job-card {
       min-width: 0;
       overflow-wrap: anywhere;
       border: 1px solid var(--line);
@@ -117,13 +117,13 @@
       background: var(--card);
       box-shadow: 0 4px 18px #27352c04;
     }
-    .job-top {
+    .job-card__header {
       display: flex;
       justify-content: space-between;
       align-items: start;
       gap: 16px;
     }
-    .job h2 {
+    .job-card__title {
       margin: 0;
       text-wrap: pretty;
       font-size: 23px;
@@ -131,95 +131,116 @@
       line-height: 1.3;
       letter-spacing: -0.025em;
     }
-    .company {
+    .job-card__company {
       margin: 6px 0 0;
       color: var(--muted);
       font-size: 15px;
     }
-    .meta {
+    .job-card__metadata {
       display: flex;
       flex-wrap: wrap;
       gap: 6px 16px;
-      margin: 16px 0 22px;
+      margin: 12px 0 20px;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 13px;
     }
-    .meta span {
+    .job-card__metadata-item {
       display: inline-flex;
       align-items: center;
       gap: 5px;
     }
-    .score {
+    .assessment__status {
       flex: none;
       border: 1px solid var(--line);
       border-radius: 999px;
       padding: 4px 10px;
       background: #edf0ed;
       color: var(--muted);
-      font-size: 11px;
+      font-size: 12px;
       font-weight: 700;
       text-transform: capitalize;
     }
-    .badges {
+    .job-card__assessments {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .assessment {
+      min-width: 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f8faf6;
+    }
+    .assessment__header {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 12px;
     }
-    .score[data-eligibility="eligible"],
-    .score[data-stack-status="match"] {
+    .assessment__status--eligible,
+    .assessment__status--match {
       border-color: #c4dfd0;
       background: var(--accent-soft);
       color: var(--accent);
     }
-    .score[data-eligibility="unclear"],
-    .score[data-stack-status="partial_match"],
-    .score[data-stack-status="potential_match"],
-    .score[data-stack-status="unclear"] {
+    .assessment__status--unclear,
+    .assessment__status--partial-match,
+    .assessment__status--potential-match {
       border-color: #eadcb6;
       background: #fcf4df;
       color: #795a19;
     }
-    .score[data-eligibility="ineligible"] {
+    .assessment__status--ineligible {
       background: #f4ece8;
       color: #855141;
     }
-    .score.error {
+    .assessment__status--error {
       background: #fce8e8;
       color: var(--danger);
     }
-    .job h3 {
-      margin: 0 0 6px;
-      color: var(--muted);
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
+    .assessment__title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 650;
     }
-    .assessment p {
+    .assessment__reason {
       margin: 0;
       max-width: 68ch;
     }
-    .assessment + .assessment,
-    .evidence + .assessment {
-      margin-top: 18px;
+    .assessment__reason--empty {
+      color: var(--muted);
     }
-    .evidence {
-      margin-top: 18px;
-      padding: 14px 18px;
+    .assessment__evidence {
+      margin-top: 14px;
+    }
+    .assessment__toggle {
+      width: fit-content;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .assessment__quote {
+      margin: 12px 0 0;
+      padding: 10px 14px;
       border-left: 2px solid #b5cfc0;
       border-radius: 0 8px 8px 0;
       background: #f3f6f0;
-    }
-    blockquote {
-      margin: 0;
       color: #43594f;
-      font:
-        17px / 1.65 Georgia,
-        "Times New Roman",
-        serif;
+      font-size: 14px;
       white-space: pre-line;
     }
-    .actions {
+    .job-card__error {
+      padding: 10px 14px;
+      border-left: 3px solid var(--danger);
+      background: #fce8e8;
+      color: var(--danger);
+      font-size: 13px;
+    }
+    .job-card__actions {
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -228,12 +249,13 @@
       padding-top: 16px;
       border-top: 1px solid var(--line);
     }
-    .actions-right {
+    .job-card__review-actions {
       display: flex;
+      flex-wrap: wrap;
       gap: 8px;
       margin-left: auto;
     }
-    .view {
+    .job-card__link {
       color: var(--accent);
       font-size: 14px;
       font-weight: 650;
@@ -254,13 +276,14 @@
       border-color: #aab9b0;
       background: #f7faf7;
     }
-    .button.reject {
+    .button--danger {
       color: var(--danger);
     }
     .button:focus-visible,
-    nav button:focus-visible,
-    select:focus-visible,
-    a:focus-visible {
+    .toolbar__tab:focus-visible,
+    .filter__select:focus-visible,
+    a:focus-visible,
+    .assessment__toggle:focus-visible {
       outline: 3px solid #8fc6ae;
       outline-offset: 3px;
     }
@@ -275,7 +298,7 @@
       text-align: center;
       color: var(--muted);
     }
-    .empty strong {
+    .empty__title {
       display: block;
       margin-bottom: 4px;
       color: var(--ink);
@@ -292,7 +315,7 @@
         flex-direction: column;
         gap: 12px;
       }
-      nav {
+      .toolbar__tabs {
         width: fit-content;
         max-width: 100%;
         overflow: auto;
@@ -300,23 +323,19 @@
       .filter {
         justify-content: space-between;
       }
-      .job {
+      .job-card {
         padding: 20px 18px 16px;
       }
-      .job-top {
-        flex-direction: column;
-        gap: 10px;
-      }
-      .job h2 {
+      .job-card__title {
         font-size: 21px;
       }
       .job-list {
         gap: 16px;
       }
-      .evidence {
-        padding: 12px 14px;
+      .job-card__assessments {
+        grid-template-columns: 1fr;
       }
-      .actions {
+      .job-card__actions {
         flex-wrap: wrap;
       }
     }
@@ -326,20 +345,35 @@
     <main>
       <h1>Job listings</h1>
       <div class="toolbar">
-        <nav aria-label="Job status">
-          <button type="button" data-status="active" aria-pressed="true">
+        <nav class="toolbar__tabs" aria-label="Job status">
+          <button
+            class="toolbar__tab"
+            type="button"
+            data-status="active"
+            aria-pressed="true"
+          >
             Active
           </button>
-          <button type="button" data-status="hidden" aria-pressed="false">
+          <button
+            class="toolbar__tab"
+            type="button"
+            data-status="hidden"
+            aria-pressed="false"
+          >
             Hidden
           </button>
-          <button type="button" data-status="rejected" aria-pressed="false">
+          <button
+            class="toolbar__tab"
+            type="button"
+            data-status="rejected"
+            aria-pressed="false"
+          >
             Rejected
           </button>
         </nav>
         <label class="filter"
           >Location eligibility
-          <select id="eligibility">
+          <select id="eligibility" class="filter__select">
             <option value="all">All</option>
             <option value="eligible">Eligible</option>
             <option value="pending">Pending</option>
@@ -350,7 +384,7 @@
         >
         <label class="filter"
           >Stack assessment
-          <select id="stack">
+          <select id="stack" class="filter__select">
             <option value="all">All</option>
             <option value="not_checked">Not checked / Skipped</option>
             <option value="pending">Pending</option>
@@ -362,7 +396,7 @@
           </select></label
         >
       </div>
-      <div id="notice" role="status" aria-live="polite"></div>
+      <div id="notice" class="notice" role="status" aria-live="polite"></div>
       <section
         id="jobs"
         class="job-list"
@@ -418,7 +452,7 @@
 
       const setNotice = (message, error = false) => {
         noticeEl.textContent = message;
-        noticeEl.className = error ? 'error' : '';
+        noticeEl.className = error ? 'notice notice--error' : 'notice';
       };
       const setError = (message) => {
         persistentError = message;
@@ -459,37 +493,21 @@
       };
       const jobBusy = (job) => pending.has(String(job.reviewKey));
       const renderHeading = (card, job) => {
-        const top = document.createElement('div');
-        top.className = 'job-top';
+        const top = document.createElement('header');
+        top.className = 'job-card__header';
         card.append(top);
         const heading = document.createElement('div');
         top.append(heading);
-        addText(heading, 'h2', job.title || 'Untitled role');
-        const company = displayCompany(job);
-        if (company) addText(heading, 'p', company, 'company');
-        renderBadges(top, job);
-      };
-      const renderBadges = (top, job) => {
-        const badges = document.createElement('div');
-        badges.className = 'badges';
-        top.append(badges);
-        if (job.eligibility) {
-          const badge = addText(
-            badges,
-            'span',
-            `Location: ${job.eligibility}`,
-            job.eligibility === 'error' ? 'score error' : 'score',
-          );
-          badge.dataset.eligibility = job.eligibility;
-        }
-        const stackStatus = job.stack_status || 'not_checked';
-        const stackBadge = addText(
-          badges,
-          'span',
-          `Stack: ${stackLabel(job)}`,
-          stackStatus === 'error' ? 'score error' : 'score',
+        const title = addText(
+          heading,
+          'h2',
+          job.title || 'Untitled role',
+          'job-card__title',
         );
-        stackBadge.dataset.stackStatus = stackStatus;
+        title.id = `job-title-${job.reviewKey}`;
+        card.setAttribute('aria-labelledby', title.id);
+        const company = displayCompany(job);
+        if (company) addText(heading, 'p', company, 'job-card__company');
       };
       const renderMetadata = (card, job) => {
         for (const stage of job.stages || []) {
@@ -498,69 +516,94 @@
             card,
             'p',
             `${stage.stage}: ${stage.state} — ${stage.error}`,
-            'error',
+            'job-card__error',
           );
         }
         const meta = document.createElement('div');
-        meta.className = 'meta';
+        meta.className = 'job-card__metadata';
         card.append(meta);
-        if (job.location) addText(meta, 'span', `⌖ ${job.location}`);
-        if (job.isRemote) addText(meta, 'span', 'Remote');
+        addText(
+          meta,
+          'span',
+          `Location: ${job.location || 'Not provided'}`,
+          'job-card__metadata-item',
+        );
+        if (job.isRemote)
+          addText(meta, 'span', 'Remote', 'job-card__metadata-item');
         if (job.ats && job.ats !== 'generic')
-          addText(meta, 'span', String(job.ats));
+          addText(meta, 'span', String(job.ats), 'job-card__metadata-item');
         const published = formatDate(job.publishedAt);
-        if (published) addText(meta, 'span', `Posted ${published}`);
+        if (published)
+          addText(
+            meta,
+            'span',
+            `Posted ${published}`,
+            'job-card__metadata-item',
+          );
       };
       const renderAssessments = (card, job) => {
-        if (job.reason) {
-          const assessment = document.createElement('div');
+        const panels = document.createElement('div');
+        panels.className = 'job-card__assessments';
+        card.append(panels);
+        for (const [title, status, label, reason, evidence] of [
+          [
+            'Location eligibility',
+            job.eligibility || 'pending',
+            job.eligibility || 'pending',
+            job.reason,
+            job.evidence,
+          ],
+          [
+            'Stack match',
+            job.stack_status || 'not_checked',
+            stackLabel(job),
+            job.stack_reason,
+            job.stack_evidence,
+          ],
+        ]) {
+          const assessment = document.createElement('section');
           assessment.className = 'assessment';
-          card.append(assessment);
+          panels.append(assessment);
+          const header = document.createElement('div');
+          header.className = 'assessment__header';
+          assessment.append(header);
+          addText(header, 'h3', title, 'assessment__title');
+          addText(
+            header,
+            'span',
+            label,
+            `assessment__status assessment__status--${status.replaceAll('_', '-')}`,
+          );
           addText(
             assessment,
-            'h3',
-            job.eligibility === 'error'
-              ? 'Location assessment error'
-              : 'Location assessment',
+            'p',
+            reason || 'No assessment available yet.',
+            reason
+              ? 'assessment__reason'
+              : 'assessment__reason assessment__reason--empty',
           );
-          addText(assessment, 'p', job.reason);
-        }
-        if (job.evidence) {
-          const evidence = document.createElement('div');
-          evidence.className = 'evidence';
-          card.append(evidence);
-          addText(evidence, 'h3', 'Location evidence from the listing');
-          addText(evidence, 'blockquote', job.evidence);
-        }
-        if (job.stack_reason) {
-          const assessment = document.createElement('div');
-          assessment.className = 'assessment';
-          card.append(assessment);
-          addText(
-            assessment,
-            'h3',
-            job.stack_status === 'error'
-              ? 'Stack assessment error'
-              : 'Stack assessment',
-          );
-          addText(assessment, 'p', job.stack_reason);
-        }
-        if (job.stack_evidence) {
-          const evidence = document.createElement('div');
-          evidence.className = 'evidence';
-          card.append(evidence);
-          addText(evidence, 'h3', 'Stack evidence from the listing');
-          addText(evidence, 'blockquote', job.stack_evidence);
+          if (evidence) {
+            const details = document.createElement('details');
+            details.className = 'assessment__evidence';
+            assessment.append(details);
+            addText(
+              details,
+              'summary',
+              'Listing evidence',
+              'assessment__toggle',
+            );
+            addText(details, 'blockquote', evidence, 'assessment__quote');
+          }
         }
       };
       const renderActions = (card, job, isPending) => {
-        const actions = document.createElement('div');
-        actions.className = 'actions';
+        const actions = document.createElement('footer');
+        actions.className = 'job-card__actions';
         card.append(actions);
         const externalUrl = safeUrl(job.url);
         if (externalUrl) {
           const link = document.createElement('a');
-          link.className = 'view';
+          link.className = 'job-card__link';
           link.href = externalUrl;
           link.target = '_blank';
           link.rel = 'noopener noreferrer';
@@ -568,7 +611,7 @@
           actions.append(link);
         }
         const right = document.createElement('div');
-        right.className = 'actions-right';
+        right.className = 'job-card__review-actions';
         actions.append(right);
         if (currentStatus === 'active') {
           const disabled = isPending || jobBusy(job);
@@ -576,7 +619,7 @@
           const reject = actionButton(
             'Reject',
             'rejected',
-            'button reject',
+            'button button--danger',
             disabled,
           );
           right.append(hide, reject);
@@ -594,7 +637,7 @@
       const renderJob = (job, isPending = false) => {
         const card = document.createElement('article');
         renderedJobs.set(card, JSON.stringify(job));
-        card.className = 'job';
+        card.className = 'job-card';
         card.dataset.reviewKey = String(job.reviewKey || '');
         card.dataset.pending = String(isPending);
         renderHeading(card, job);
@@ -638,7 +681,7 @@
       const reconcileCards = (jobs) => {
         const existing = new Map(
           [...jobsEl.children]
-            .filter((node) => node.className === 'job')
+            .filter((node) => node.classList.contains('job-card'))
             .map((node) => [node.dataset.reviewKey, node]),
         );
         const desiredKeys = new Set(jobs.map(([job]) => String(job.reviewKey)));
@@ -672,6 +715,7 @@
           empty,
           'strong',
           status === 'active' ? 'Nothing here yet' : `No ${status} jobs`,
+          'empty__title',
         );
         addText(
           empty,
@@ -767,7 +811,7 @@
         );
       };
       const updateStatus = async (button, status) => {
-        const card = button.closest('.job');
+        const card = button.closest('.job-card');
         const reviewKey = card?.dataset.reviewKey;
         if (!reviewKey || pending.has(reviewKey)) return;
         const job = knownJobs.get(reviewKey);

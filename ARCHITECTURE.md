@@ -94,6 +94,8 @@ SQLite is authoritative for job data and processing state. Redis coordinates wor
 
 **Description:** `src/web/index.html` displays saved listings, eligibility and stack assessments, filtering, and active/hidden/rejected review states. Users can change an individual listing's state. Browser state and rendering live in the same document; there is no frontend framework or bundler. `src/web/server.ts` loads the colocated HTML for the HTTP server.
 
+Listings use scan-first cards: role/company/location lead, independent location and stack panels pair each status with its explanation, native `details` elements disclose supporting evidence, and a footer groups the external listing link and review actions. Assessment panels sit side by side on desktop and stack on mobile. Component styles use BEM block, element, and modifier classes.
+
 **Technologies:** Plain HTML, CSS, JavaScript, browser Fetch API.
 
 **Deployment:** Served by the application at `http://127.0.0.1:3000`. Build copies the HTML into `dist/web/index.html`; applying UI changes requires rebuilding and restarting the server.
