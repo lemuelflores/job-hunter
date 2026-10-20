@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { jobUrl } from '../dist/discovery/job-url.js';
+import { normalizeJobUrl } from '../dist/discovery/job-url.js';
 
 test('listing URLs accept supported shapes and strip tracking', () => {
   // Arrange: use a valid UUID listing identifier across supported hosts.
@@ -13,13 +13,13 @@ test('listing URLs accept supported shapes and strip tracking', () => {
     // Arrange: construct this provider's canonical listing URL.
     const url = `https://${host}/example/${uuid}`;
     // Act / Assert: strip tracking while retaining the canonical listing URL.
-    assert.equal(jobUrl(`${url}?utm_source=google#details`), url);
+    assert.equal(normalizeJobUrl(`${url}?utm_source=google#details`), url);
   }
   for (const host of ['boards.greenhouse.io', 'job-boards.greenhouse.io']) {
     // Arrange: use either supported Greenhouse hostname.
     // Act / Assert: normalize to the canonical URL.
     assert.equal(
-      jobUrl(`https://${host}/example/jobs/1?tracking=x`),
+      normalizeJobUrl(`https://${host}/example/jobs/1?tracking=x`),
       'https://job-boards.greenhouse.io/example/jobs/1',
     );
   }
@@ -40,6 +40,6 @@ test('listing URLs reject unsupported hosts, paths and unsafe components', () =>
     `https://jobs.lever.co/ex%ZZample/${uuid}`,
   ]) {
     // Act / Assert: reject each unsafe or unsupported listing URL.
-    assert.equal(jobUrl(url), null, url);
+    assert.equal(normalizeJobUrl(url), null, url);
   }
 });

@@ -5,7 +5,7 @@ import {
   buildQueryMatrix,
   runParallelGoogleSearchesDetailed,
 } from './google.js';
-import { jobUrl } from './job-url.js';
+import { normalizeJobUrl } from './job-url.js';
 
 export async function fetchJobs(
   store: SqliteStore,
@@ -27,7 +27,7 @@ export async function fetchJobs(
     { concurrency: 5, num: 100 },
   );
   const results = searched.results.flatMap((result) => {
-    const url = jobUrl(result.url);
+    const url = normalizeJobUrl(result.url);
     return url ? [{ ...result, url }] : [];
   });
   const added = store.saveResults(results);

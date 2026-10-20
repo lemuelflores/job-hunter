@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import { jobUrl } from '../discovery/job-url.js';
+import { normalizeJobUrl } from '../discovery/job-url.js';
 import { type ExtractionOptions, PageError } from './extraction.js';
 
 const BoardResponse = v.object({
@@ -38,7 +38,7 @@ export async function fetchAshbyListing(
   url: string,
   options: ExtractionOptions = {},
 ): Promise<string> {
-  const validated = jobUrl(url);
+  const validated = normalizeJobUrl(url);
   if (!validated) throw new Error('Invalid Ashby listing URL');
   const parsed = new URL(validated);
   if (parsed.hostname !== 'jobs.ashbyhq.com')
@@ -48,7 +48,7 @@ export async function fetchAshbyListing(
   const data = await fetchBoard(decodeURIComponent(board), options);
   const requestedId = id.toLowerCase();
   const matches = data.jobs.filter((candidate, index) => {
-    const canonical = jobUrl(candidate.jobUrl);
+    const canonical = normalizeJobUrl(candidate.jobUrl);
     const postingUrl = canonical ? new URL(canonical) : null;
     const [postingBoard, postingId] =
       postingUrl?.pathname.slice(1).split('/') ?? [];
