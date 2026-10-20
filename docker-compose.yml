@@ -12,6 +12,7 @@ x-service: &service
 x-app: &app
   <<: *service
   image: node:22-bookworm-slim
+  user: "${UID:-1000}:${GID:-1000}"
   working_dir: /app
   entrypoint: [node, dist/cli.js]
   init: true
