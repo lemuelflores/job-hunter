@@ -4,6 +4,7 @@ import { fetchAshbyListing } from './ashby.js';
 import { type ListingExtractor, PageError } from './extraction.js';
 import { scrapeListing as firecrawlListing } from './firecrawl.js';
 import { fetchGreenhouseListing } from './greenhouse.js';
+import { fetchLeverListing } from './lever.js';
 
 export function startCrawlWorker(
   store: SqliteStore,
@@ -30,6 +31,12 @@ export function startCrawlWorker(
             )
           ) {
             text = await fetchGreenhouseListing(job.url, { signal });
+          } else if (
+            ['jobs.lever.co', 'jobs.eu.lever.co'].includes(
+              new URL(job.url).hostname,
+            )
+          ) {
+            text = await fetchLeverListing(job.url, { signal });
           } else {
             text = await firecrawlListing(job.url, { signal });
           }

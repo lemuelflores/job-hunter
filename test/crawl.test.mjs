@@ -165,24 +165,82 @@ test('Greenhouse failures never fall back to Firecrawl', async (t) => {
   }
 });
 
-test('Lever extraction uses Firecrawl', async (t) => {
+test('Lever extraction uses its regional API and schedules both assessments', async (t) => {
   for (const url of [
     `https://jobs.lever.co/example/${id}`,
     `https://jobs.eu.lever.co/example/${id}`,
   ]) {
     await t.test(url, async (t) => {
       const store = fixture(t, url);
+      const enqueued = [];
+      let requests = 0;
       t.mock.method(globalThis, 'fetch', async (endpoint, init) => {
-        assert.ok(endpoint.endsWith('/v2/scrape'));
-        assert.equal(init.method, 'POST');
-        assert.equal(JSON.parse(init.body).url, url);
+        requests++;
+        assert.equal(
+          endpoint,
+          url
+            .replace('jobs.', 'api.')
+            .replace('/example/', '/v0/postings/example/'),
+        );
+        assert.equal(init.redirect, 'error');
         return Response.json({
-          success: true,
-          data: { markdown: 'Existing text' },
+          id,
+          descriptionPlain: 'Lever text',
+          lists: [],
         });
       });
+      await runCrawl(store, async (stage, id) => enqueued.push([stage, id]));
+      assert.match(store.getJob(1).listing_text, /Description:\nLever text$/);
+      assert.equal(requests, 1);
+      assert.deepEqual(enqueued, [
+        ['location', 1],
+        ['stack', 1],
+      ]);
       await runCrawl(store);
-      assert.equal(store.getJob(1).listing_text, 'Existing text');
+      assert.equal(requests, 1);
+    });
+  }
+});
+
+test('Lever failures never fall back to Firecrawl', async (t) => {
+  for (const [name, response, error] of [
+    ['absent', new Response('', { status: 404 }), null],
+    ['gone', new Response('', { status: 410 }), null],
+    [
+      'malformed',
+      Response.json({ id, descriptionPlain: null, lists: [] }),
+      /Invalid Lever/,
+    ],
+    ['unavailable', new Response('', { status: 503 }), /Lever API HTTP 503/],
+  ]) {
+    await t.test(name, async (t) => {
+      const store = fixture(t, `https://jobs.lever.co/example/${id}`);
+      let requests = 0;
+      t.mock.method(globalThis, 'fetch', async (endpoint) => {
+        requests++;
+        assert.ok(endpoint.startsWith('https://api.lever.co/v0/postings/'));
+        return response;
+      });
+      const run = () =>
+        runCrawl(store, async () => assert.fail('unexpected enqueue'));
+      if (error) {
+        await assert.rejects(run(), error);
+        assert.ok(store.stages(1).every(({ state }) => state === 'pending'));
+      } else {
+        await run();
+        assert.equal(
+          store.stages(1).find(({ stage }) => stage === 'crawl').state,
+          'terminal',
+        );
+        assert.ok(
+          store
+            .stages(1)
+            .filter(({ stage }) => stage !== 'crawl')
+            .every(({ state }) => state === 'blocked'),
+        );
+      }
+      assert.equal(requests, 1);
+      assert.equal(store.getJob(1).listing_text, null);
     });
   }
 });

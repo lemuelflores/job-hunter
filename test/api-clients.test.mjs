@@ -4,6 +4,46 @@ import { ValiError } from 'valibot';
 import { fetchBoard } from '../dist/review/ashby.js';
 import { scrapePage } from '../dist/review/firecrawl.js';
 import { fetchJob } from '../dist/review/greenhouse.js';
+import { fetchPosting } from '../dist/review/lever.js';
+
+const leverId = '12345678-abcd-abcd-abcd-123456789abc';
+
+test('Lever client encodes the site, selects its region and preserves metadata', async () => {
+  const posting = {
+    id: leverId,
+    descriptionPlain: '',
+    lists: [],
+    extra: { nested: [null, true] },
+  };
+  for (const region of ['global', 'eu']) {
+    assert.deepEqual(
+      await fetchPosting('Example Board', leverId, region, {
+        fetch: async (endpoint, init) => {
+          assert.equal(
+            endpoint,
+            `https://api${region === 'eu' ? '.eu' : ''}.lever.co/v0/postings/Example%20Board/${leverId}`,
+          );
+          assert.equal(init.redirect, 'error');
+          return Response.json(posting);
+        },
+      }),
+      posting,
+    );
+  }
+  for (const id of ['', '../123', `${leverId}?mode=html`, null, 123])
+    await assert.rejects(
+      fetchPosting('example', id, 'global', {
+        fetch: async () => assert.fail('unexpected fetch'),
+      }),
+      ValiError,
+    );
+  await assert.rejects(
+    fetchPosting('example', leverId, 'invalid', {
+      fetch: async () => assert.fail('unexpected fetch'),
+    }),
+    ValiError,
+  );
+});
 
 test('Greenhouse client encodes the board and preserves opaque metadata', async () => {
   const posting = {
@@ -134,6 +174,38 @@ test('Firecrawl client sends Markdown options and returns data without extractio
 });
 
 for (const { name, call, input, body, invalidInputs, invalidBodies } of [
+  {
+    name: 'Lever',
+    call: (site, options) => fetchPosting(site, leverId, 'global', options),
+    input: 'example',
+    body: { id: leverId, descriptionPlain: '', lists: [] },
+    invalidInputs: [],
+    invalidBodies: [
+      null,
+      {},
+      { id: 'invalid', descriptionPlain: '', lists: [] },
+      { id: leverId, descriptionPlain: null, lists: [] },
+      { id: leverId, descriptionPlain: '' },
+      { id: leverId, descriptionPlain: '', lists: null },
+      {
+        id: leverId,
+        descriptionPlain: '',
+        lists: [{ text: 'Requirements', content: 42 }],
+      },
+      {
+        id: leverId,
+        descriptionPlain: '',
+        lists: [{ text: null, content: '' }],
+      },
+      { id: leverId, descriptionPlain: '', lists: [], additionalPlain: null },
+      {
+        id: leverId,
+        descriptionPlain: '',
+        lists: [],
+        salaryDescriptionPlain: 42,
+      },
+    ],
+  },
   {
     name: 'Greenhouse',
     call: (board, options) => fetchJob(board, '123', options),

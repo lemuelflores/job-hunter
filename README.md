@@ -108,7 +108,7 @@ Jobs and login tokens stay in this checkout (`jobs.sqlite` and `.auth.json`). Ke
 
 ## Under the hood
 
-TypeScript, SQLite, BullMQ/Redis, and a plain HTML/CSS/JS UI. Autom.dev provides Google results, public Ashby and Greenhouse APIs read their listings, self-hosted Firecrawl reads Lever pages, and ChatGPT checks location and stack independently.
+TypeScript, SQLite, BullMQ/Redis, and a plain HTML/CSS/JS UI. Autom.dev provides Google results, public Ashby, Greenhouse, and Lever APIs read their listings, and ChatGPT checks location and stack independently. The existing Firecrawl stack remains provisioned but is not used for these supported listings.
 
 One worker handles crawling and both checks. Saved listing text is reused, each result saves as it finishes, and temporary failures get up to three attempts.
 
