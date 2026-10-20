@@ -1,58 +1,72 @@
-export class PageError extends Error {
-  readonly retryable: boolean;
+import * as v from 'valibot';
+import { type ExtractionOptions, PageError } from './extraction.js';
 
-  constructor(status: number, message = '') {
-    super(
-      message.trim()
-        ? `Page returned ${status} status: “${message.trim().slice(0, 4500)}”`
-        : `Page returned ${status} status`,
-    );
-    this.retryable = [408, 425, 429].includes(status) || status >= 500;
-  }
-}
+const PageUrl = v.pipe(
+  v.string(),
+  v.url(),
+  v.check((url) => url.startsWith('http://') || url.startsWith('https://')),
+);
+const ScrapeResponse = v.object({
+  success: v.boolean(),
+  data: v.optional(
+    v.object({
+      markdown: v.optional(v.string()),
+      metadata: v.optional(
+        v.object({
+          statusCode: v.optional(v.number()),
+          error: v.optional(v.unknown()),
+        }),
+      ),
+    }),
+  ),
+});
 
-export async function scrapeListing(
+export type FirecrawlScrape = v.InferOutput<typeof ScrapeResponse>;
+
+export async function scrapePage(
   url: string,
-  options: {
-    fetch?: typeof fetch;
-    signal?: AbortSignal;
-  } = {},
-): Promise<string> {
+  options: ExtractionOptions = {},
+): Promise<FirecrawlScrape> {
+  const pageUrl = v.parse(PageUrl, url, {
+    message: 'Invalid Firecrawl page URL',
+  });
   const timeout = AbortSignal.timeout(75_000);
-  console.info(`[firecrawl] Scraping: ${url}`);
   const response = await (options.fetch ?? fetch)(
     `${(process.env.FIRECRAWL_URL ?? 'http://127.0.0.1:3002').replace(/\/$/, '')}/v2/scrape`,
     {
       method: 'POST',
       redirect: 'error',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, formats: ['markdown'], timeout: 60_000 }),
+      body: JSON.stringify({
+        url: pageUrl,
+        formats: ['markdown'],
+        timeout: 60_000,
+      }),
       signal: options.signal
         ? AbortSignal.any([options.signal, timeout])
         : timeout,
     },
   );
   if (!response.ok) throw new Error(`Firecrawl HTTP ${response.status}`);
-  const scrape = (await response.json()) as {
-    success?: boolean;
-    data?: {
-      markdown?: unknown;
-      metadata?: { statusCode?: number; error?: unknown };
-    };
-  };
+  return v.parse(ScrapeResponse, await response.json(), {
+    message: 'Invalid Firecrawl scrape response',
+  });
+}
+
+export async function scrapeListing(
+  url: string,
+  options: ExtractionOptions = {},
+): Promise<string> {
+  console.info(`[firecrawl] Scraping: ${url}`);
+  const scrape = await scrapePage(url, options);
   const status = scrape.data?.metadata?.statusCode ?? 200;
   if (status >= 400) {
-    const message =
-      typeof scrape.data?.markdown === 'string' && scrape.data.markdown.trim()
-        ? scrape.data.markdown
-        : scrape.data?.metadata?.error;
+    const message = scrape.data?.markdown?.trim()
+      ? scrape.data.markdown
+      : scrape.data?.metadata?.error;
     throw new PageError(status, typeof message === 'string' ? message : '');
   }
-  if (
-    !scrape.success ||
-    typeof scrape.data?.markdown !== 'string' ||
-    !scrape.data.markdown.trim()
-  ) {
+  if (!scrape.success || !scrape.data?.markdown?.trim()) {
     throw new Error(
       'Firecrawl extraction failed or returned empty/error-page Markdown',
     );

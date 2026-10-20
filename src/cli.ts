@@ -13,7 +13,6 @@ import {
 import type { JobQueues } from './bullmq.js';
 import { loadProfile } from './profile.js';
 import { authenticate } from './review/auth.js';
-import { scrapeListing } from './review/firecrawl.js';
 import { createLlm } from './review/llm/index.js';
 import { reviewJobs } from './review/review-jobs.js';
 import { STAGES } from './review/stages.js';
@@ -156,7 +155,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
           await database(),
           await jobQueues(),
           {
-            scrapeListing,
             reviewJob: (url, options) =>
               llm.reviewJob(url, { ...options, location: profile.location }),
             reviewStack: (url, options) =>

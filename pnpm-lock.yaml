@@ -20,6 +20,9 @@ importers:
       redis:
         specifier: 6.3.0
         version: 6.3.0
+      valibot:
+        specifier: 1.5.0
+        version: 1.5.0(typescript@5.9.3)
     devDependencies:
       '@biomejs/biome':
         specifier: 2.5.15
@@ -226,6 +229,14 @@ packages:
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
 
+  valibot@1.5.0:
+    resolution: {integrity: sha512-nil6AkP2TChWL43Z5uJ6GTxX01CUA+g8LWUM+N/rB9NBbkUMaUsi9PUNzlUPgoKASgmx9f7eGOYpJ04/fSa6FQ==}
+    peerDependencies:
+      typescript: '>=5'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
 snapshots:
 
   '@biomejs/biome@2.5.15':
@@ -367,3 +378,7 @@ snapshots:
   typescript@5.9.3: {}
 
   undici-types@6.21.0: {}
+
+  valibot@1.5.0(typescript@5.9.3):
+    optionalDependencies:
+      typescript: 5.9.3

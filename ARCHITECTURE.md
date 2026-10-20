@@ -20,10 +20,12 @@ job-hunter/
 │   │   ├── worker.ts          # Crawl/location/stack consumers and stage dispatch
 │   │   ├── review-jobs.ts     # Enqueue unfinished listings and wait for outcomes
 │   │   ├── stages.ts          # Shared processing-stage names and type
-│   │   ├── crawl.ts           # Extract and save listing text, enqueue assessments
+│   │   ├── crawl.ts           # Select extraction strategy, save text, enqueue checks
+│   │   ├── extraction.ts      # Provider-neutral extraction contract and page errors
+│   │   ├── ashby.ts           # Board API client, posting selection, text rendering
 │   │   ├── location-check.ts  # Run and save location eligibility assessment
 │   │   ├── tech-check.ts      # Run and save technology-fit assessment
-│   │   ├── firecrawl.ts       # Markdown extraction client and page errors
+│   │   ├── firecrawl.ts       # Scrape API client, Markdown and page-error handling
 │   │   └── llm/
 │   │       ├── types.ts       # Provider contract and assessment types
 │   │       ├── index.ts       # Provider selection
@@ -59,7 +61,7 @@ job-hunter/
 
 The tree focuses on application code and operational files. Dependencies, tooling metadata, and local scratch artifacts are omitted.
 
-Feature directories own their workflows and workers. `review/` operations load saved listings, call integrations, and persist results; `review/llm/chatgpt/` owns provider-specific prompts, requests, and response validation without database writes. Shared queue delivery and storage remain at the source root. File names use `tech-check`, while the existing queue and database stage remains named `stack`.
+Feature directories own their workflows and workers. `review/` operations load saved listings, call integrations, and persist results; `review/llm/chatgpt/` owns provider-specific prompts, requests, and response validation without database writes. Ashby and Firecrawl are sibling extraction strategies selected within `review/crawl.ts`; neither uses the other. Each provider module co-locates its HTTP client, Valibot response contract, and extraction logic. API functions return structured data; extraction functions call them to select/render a listing and apply page-error policy. Shared request options and page errors live in `review/extraction.ts`. Shared queue delivery and storage remain at the source root. File names use `tech-check`, while the existing queue and database stage remains named `stack`.
 
 ## 2. High-Level System Diagram
 
@@ -73,7 +75,7 @@ SQLite: validated, deduplicated listings and stage state
        |
 BullMQ / Redis: crawl queue
        |
-review-worker --> Firecrawl --> listing Markdown --> SQLite
+review-worker --> Ashby public API / Firecrawl --> listing text --> SQLite
        |
        +--> location queue --> ChatGPT eligibility --> SQLite
        |
@@ -84,7 +86,7 @@ User <--> Browser UI <--> Local HTTP server <--> SQLite
 Firecrawl API <--> Playwright / Redis
 ```
 
-SQLite is authoritative for job data and processing state. Redis coordinates work and carries listing IDs, not copies of listing text or assessment results. Both assessments consume the same saved Markdown and run independently; location rejection does not prevent stack assessment. The browser reads results and changes user review status; it does not run the processing pipeline.
+SQLite is authoritative for job data and processing state. Redis coordinates work and carries listing IDs, not copies of listing text or assessment results. Both assessments consume the same saved listing text and run independently; location rejection does not prevent stack assessment. The browser reads results and changes user review status; it does not run the processing pipeline.
 
 ## 3. Core Components
 
@@ -126,9 +128,9 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 **Description:** `src/review/worker.ts` constructs consumers and dispatches stages to `crawl.ts`, `location-check.ts`, and `tech-check.ts` in the same directory; `src/bullmq.ts` owns shared queue delivery and recovery. One `review-worker` process hosts three consumers. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
 
-Queues use prefix `job-hunter`, names `crawl`, `location`, and `stack`, payload `{ id }`, and stable per-queue IDs `listing-N`. Crawling saves Markdown once and schedules both assessments. Processors consult SQLite before work; completed stages cannot overwrite saved results. Redelivered crawl tasks can enqueue missing assessments without scraping again.
+Queues use prefix `job-hunter`, names `crawl`, `location`, and `stack`, payload `{ id }`, and stable per-queue IDs `listing-N`. Crawling saves listing text once and schedules both assessments. `src/review/crawl.ts` routes Ashby URLs to the unauthenticated public posting API and Lever/Greenhouse to Firecrawl. The Ashby adapter selects the exact UUID from the board response and saves its plain description with title, primary/secondary locations, address, workplace type, raw remote flag, employment type, department/team, and compensation metadata when provided. It does not interpret `isRemote` as fully remote; workplace type can still be Hybrid. Processors consult SQLite before work; completed stages cannot overwrite saved results. Redelivered crawl tasks can enqueue missing assessments without extracting again.
 
-Temporary failures receive three attempts with exponential delays of 60 and 120 seconds. Completed tasks are removed; exhausted tasks remain in Redis and become `failed` in SQLite. Permanent listing-page errors terminate crawling, block dependent assessments, and preserve the page error. HTTP 408, 425, 429, and server errors remain retryable, as do service failures and empty extraction.
+Temporary failures receive three attempts with exponential delays of 60 and 120 seconds. Completed tasks are removed; exhausted tasks remain in Redis and become `failed` in SQLite. Permanent listing-page errors terminate crawling, block dependent assessments, and preserve the page error. HTTP 408, 425, 429, and server errors remain retryable, as do service failures and empty extraction. A valid Ashby board response without the UUID is treated as terminal absence (including unlisted jobs); there is no Firecrawl fallback. Ashby API HTTP/network errors, malformed board responses, and empty descriptions remain retryable service/extraction failures.
 
 Recovery commands are explicit:
 
@@ -139,7 +141,7 @@ Recovery commands are explicit:
 
 Workers drain active tasks during graceful shutdown. BullMQ recovers stalled delivery after crashes. SQLite and Redis are not a distributed transaction, and a crash after an external response but before its save can repeat that external call.
 
-**Technologies:** BullMQ 6.3.17, redis 6.3.0 via BullMQ's node-redis adapter, Node built-in SQLite, Firecrawl, ChatGPT.
+**Technologies:** BullMQ 6.3.17, redis 6.3.0 via BullMQ's node-redis adapter, Node built-in SQLite, Ashby public posting API, Firecrawl, ChatGPT, Valibot. The Ashby client validates the jobs array, posting URLs, and string types for title and plain description when present. Valibot loose objects preserve other posting attributes as opaque metadata, including nulls and additional provider fields; nested metadata is not schema-validated. The adapter saves all posting metadata as JSON except the separately appended plain description and excluded HTML description, following the benchmark's send-all approach. The board name comes from an already validated listing URL and is encoded, not revalidated by the client. The adapter owns supported listing identity checks, board/UUID matching, nonblank selected description checks, and terminal absence policy. The Firecrawl client validates the success flag and optional Markdown/page-metadata structure; its adapter owns page-error classification and nonblank text checks. Malformed responses fail retryably rather than becoming terminal absence. Both extraction adapters share provider-neutral options and page-error classification in `src/review/extraction.ts`.
 
 **Deployment:** Compose `review-worker` or host `review-worker` command.
 
@@ -169,7 +171,7 @@ Responses are not cached. Request validation and persistence remain server-side;
 
 **Type:** SQLite through Node's built-in `DatabaseSync`.
 
-**Purpose:** Owns canonical URLs, discovery metadata, saved Markdown, assessments, user review status, and stage state. `SqliteStore` creates/migrates the schema and saves each result and its stage completion in one transaction. Rediscovery updates `last_seen` without resetting saved decisions.
+**Purpose:** Owns canonical URLs, discovery metadata, saved listing text, assessments, user review status, and stage state. `SqliteStore` creates/migrates the schema and saves each result and its stage completion in one transaction. Rediscovery updates `last_seen` without resetting saved decisions.
 
 **Key schemas:**
 
@@ -205,12 +207,13 @@ Legacy job columns remain to preserve historical values and existing database ob
 | Service | Purpose | Integration method |
 | --- | --- | --- |
 | Autom.dev | Google search for supported ATS listings | HTTPS GET with `x-api-key` from `AUTOM_API_KEY` |
-| Ashby, Lever, Greenhouse | Source job listings | Google discovery and Firecrawl extraction of validated HTTPS URLs |
+| Ashby | Source job listings | Google discovery; unauthenticated GET `https://api.ashbyhq.com/posting-api/job-board/{board}?includeCompensation=true`, exact UUID selection |
+| Lever, Greenhouse | Source job listings | Google discovery and Firecrawl extraction of validated HTTPS URLs |
 | Self-hosted Firecrawl | Extract listing Markdown | HTTP POST `/v2/scrape`; `FIRECRAWL_URL` defaults to `http://127.0.0.1:3002` |
 | OpenAI authentication | ChatGPT subscription sign-in and token refresh | OAuth using the public Codex client and loopback callback on port 1455 |
 | ChatGPT subscription backend | Independent location and stack assessments | HTTPS POST to undocumented `backend-api/codex/responses`, SSE streaming, strict JSON-schema output |
 
-`src/review/llm/types.ts` defines the provider contract. `createLlm` currently supports only `MODEL_PROVIDER=chatgpt`; unsupported values fail explicitly. `MODEL_NAME` defaults to `gpt-6-luna` and `MODEL_EFFORT` to `medium`. Assessment functions require saved listing text and validate returned decisions before persistence.
+`src/review/llm/types.ts` defines the provider contract. `createLlm` currently supports only `MODEL_PROVIDER=chatgpt`; unsupported values fail explicitly. `MODEL_NAME` defaults to `gpt-6-luna` and `MODEL_EFFORT` to `medium`. Assessment functions require saved listing text and validate returned decisions before persistence. Ashby requests retrieve the entire board without caching, with a 75-second timeout and caller cancellation; other listings retain Firecrawl Markdown extraction.
 
 ## 6. Deployment & Infrastructure
 
@@ -256,7 +259,7 @@ Tests are grouped by the behavior they verify, not every dependency they use:
 - `review-jobs.test.mjs`: review selection, waiting, and outcomes; `review-stage.integration.test.mjs`: stage orchestration with real SQLite and fake external services.
 - `sqlite.integration.test.mjs`: persistence, transactions, stage-state transitions, and migrations, without running processors.
 - `cli.test.mjs`: command routing, arguments, help, and application-relative paths; `web.test.mjs`: HTTP behavior, server lifecycle, and pure UI assessment logic.
-- `auth.test.mjs`, `chatgpt.test.mjs`, and `firecrawl.test.mjs`: provider adapters with mocked network responses; `llm.test.mjs`: provider selection.
+- `api-clients.test.mjs`: Ashby and Firecrawl request/response contracts, HTTP failures, timeout and cancellation with mocked network responses. `ashby.test.mjs` and `firecrawl.test.mjs`: extraction policy and rendering; `crawl.test.mjs`: strategy routing and no Ashby fallback. `auth.test.mjs` and `chatgpt.test.mjs`: authentication and model adapters; `llm.test.mjs`: provider selection.
 - `bullmq.integration.mjs`: real Redis delivery, retries, repair, and recovery, separately from the default suite.
 
 Real SQLite is appropriate in HTTP and workflow integration tests; those suites assert their public behavior rather than duplicating database or adapter contracts.
@@ -288,14 +291,14 @@ No committed feature roadmap is asserted here. Existing architectural limits to 
 
 **Primary contact/team:** Not declared in the package manifest; use the repository's maintainer/contact channels.
 
-**Date of last update:** 2026-10-20.
+**Date of last update:** 2026-10-21.
 
 ## 11. Glossary / Acronyms
 
 - **ATS:** Applicant tracking system; the hosted job boards targeted by discovery.
 - **Autom.dev:** API provider used to retrieve Google search results.
 - **BullMQ:** Redis-backed task queue used for independent processing stages.
-- **Crawl:** Extract and persist listing Markdown through Firecrawl.
+- **Crawl:** Extract and persist listing text through Ashby's public API or Firecrawl.
 - **Eligibility:** Assessment of whether the candidate can perform the job remotely from their residence.
 - **Stack assessment:** Independent comparison of a role's core technologies with configured skill groups.
 - **Stage:** One processing unit: `crawl`, `location`, or `stack`.

@@ -2,7 +2,7 @@
 
 A personal tool for finding remote jobs that hire where you live and fit your tech stack.
 
-Google search → Firecrawl scraping → ChatGPT location and stack checks.
+Google search → Read job descriptions → ChatGPT location and stack checks.
 
 Set your roles, skills, and location, then let it run. It finds listings on Ashby, Lever, and Greenhouse, reads the job descriptions, and checks location and stack fit so you don't have to open every listing yourself.
 
@@ -108,9 +108,11 @@ Jobs and login tokens stay in this checkout (`jobs.sqlite` and `.auth.json`). Ke
 
 ## Under the hood
 
-TypeScript, SQLite, BullMQ/Redis, and a plain HTML/CSS/JS UI. Autom.dev provides Google results, self-hosted Firecrawl reads the pages, and ChatGPT checks location and stack independently.
+TypeScript, SQLite, BullMQ/Redis, and a plain HTML/CSS/JS UI. Autom.dev provides Google results, Ashby's public posting API reads Ashby listings, self-hosted Firecrawl reads Lever/Greenhouse pages, and ChatGPT checks location and stack independently.
 
 One worker handles crawling and both checks. Saved listing text is reused, each result saves as it finishes, and temporary failures get up to three attempts.
+
+Ashby extraction selects the exact listing UUID from the board's documented `jobUrl` values and saves the description together with location, workplace, employment, and compensation metadata. A successful board response without that UUID marks crawling terminal and blocks both checks; API errors, malformed posting URLs, and empty descriptions use normal retries. There is no Firecrawl fallback for Ashby. Previously saved text and assessments are unchanged.
 
 Searches use Autom credits. ChatGPT access uses an unofficial subscription endpoint, so upstream changes may break it.
 

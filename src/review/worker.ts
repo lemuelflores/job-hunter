@@ -2,7 +2,7 @@ import { Worker } from 'bullmq';
 import type { JobQueues } from '../bullmq.js';
 import { type SqliteStore, STAGES, type Stage } from '../sqlite.js';
 import { crawlJob } from './crawl.js';
-import { scrapeListing } from './firecrawl.js';
+import type { ListingExtractor } from './extraction.js';
 import { createLlm } from './llm/index.js';
 import type { LlmProvider } from './llm/types.js';
 import { checkLocation } from './location-check.js';
@@ -11,7 +11,7 @@ import { checkTech } from './tech-check.js';
 export interface ReviewServices {
   reviewJob: LlmProvider['reviewJob'];
   reviewStack: LlmProvider['reviewStack'];
-  scrapeListing: typeof scrapeListing;
+  scrapeListing?: ListingExtractor;
 }
 
 export async function processStage(
@@ -19,7 +19,7 @@ export async function processStage(
   stage: Stage,
   id: number,
   enqueue: (stage: Stage, id: number) => Promise<unknown>,
-  services: ReviewServices = { ...createLlm(), scrapeListing },
+  services: ReviewServices = createLlm(),
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PageError } from '../dist/review/firecrawl.js';
+import { fetchAshbyListing } from '../dist/review/ashby.js';
+import { PageError } from '../dist/review/extraction.js';
 import { processStage } from '../dist/review/worker.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
@@ -24,6 +25,108 @@ const services = {
   reviewJob: async () => decision,
   reviewStack: async () => stack,
 };
+
+test('Ashby API text reaches both assessments and redelivery reuses the saved input', async (t) => {
+  const store = new SqliteStore(':memory:');
+  t.after(() => store.close());
+  const id = '12345678-abcd-abcd-abcd-123456789abc';
+  const url = `https://jobs.ashbyhq.com/example/${id}`;
+  store.saveResults([{ ...result(1), url }]);
+  let requests = 0;
+  const inputs = {};
+  const fake = {
+    scrapeListing: (url, options) =>
+      fetchAshbyListing(url, {
+        ...options,
+        fetch: async () => {
+          requests++;
+          return Response.json({
+            jobs: [
+              {
+                jobUrl: url,
+                title: 'Engineer',
+                location: 'Manila',
+                descriptionPlain: 'Laravel services',
+              },
+            ],
+          });
+        },
+      }),
+    reviewJob: async (receivedUrl, options) => {
+      assert.equal(receivedUrl, url);
+      inputs.location = options.listingText;
+      return decision;
+    },
+    reviewStack: async (receivedUrl, options) => {
+      assert.equal(receivedUrl, url);
+      inputs.stack = options.listingText;
+      return stack;
+    },
+  };
+  const enqueued = [];
+  const enqueue = async (stage) => enqueued.push(stage);
+  await processStage(store, 'crawl', 1, enqueue, fake);
+  assert.deepEqual(enqueued, ['location', 'stack']);
+  for (const stage of ['crawl', 'location', 'stack', 'crawl'])
+    await processStage(store, stage, 1, enqueue, fake);
+  assert.equal(requests, 1);
+  assert.deepEqual(inputs, {
+    location: store.getJob(1).listing_text,
+    stack: store.getJob(1).listing_text,
+  });
+  assert.ok(store.stages(1).every(({ state }) => state === 'complete'));
+});
+
+test('missing Ashby UUID blocks assessments; invalid API responses leave crawl pending', async (t) => {
+  for (const body of [
+    { jobs: [] },
+    { jobs: null },
+    { jobs: [{ id: 'undocumented-id-only' }] },
+  ]) {
+    const store = new SqliteStore(':memory:');
+    t.after(() => store.close());
+    store.saveResults([
+      {
+        ...result(1),
+        url: 'https://jobs.ashbyhq.com/example/12345678-abcd-abcd-abcd-123456789abc',
+      },
+    ]);
+    const fake = {
+      ...services,
+      scrapeListing: (url, options) =>
+        fetchAshbyListing(url, {
+          ...options,
+          fetch: async () => Response.json(body),
+        }),
+    };
+    const run = () =>
+      processStage(
+        store,
+        'crawl',
+        1,
+        async () => assert.fail('unexpected enqueue'),
+        fake,
+      );
+    if (body.jobs === null || body.jobs.length) {
+      await assert.rejects(run(), /Invalid Ashby/);
+      assert.ok(store.stages(1).every(({ state }) => state === 'pending'));
+    } else {
+      await run();
+      assert.equal(
+        store.stages(1).find(({ stage }) => stage === 'crawl').state,
+        'terminal',
+      );
+      assert.ok(
+        store
+          .stages(1)
+          .filter(({ stage }) => stage !== 'crawl')
+          .every(({ state }) => state === 'blocked'),
+      );
+      await run();
+    }
+    assert.equal(store.getJob(1).listing_text, null);
+  }
+});
 
 // Arrange: seed three pending listings in an isolated store with automatic cleanup.
 function fixture(t) {
