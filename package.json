@@ -18,12 +18,15 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
+    "@types/html-to-text": "^9.0.4",
     "@types/node": "^22.20.1",
     "typescript": "^5.8.0"
   },
   "dependencies": {
     "bullmq": "6.3.17",
     "citty": "^0.2.2",
+    "entities": "^8.1.0",
+    "html-to-text": "^10.0.1",
     "node-cron": "^4.6.0",
     "redis": "6.3.0",
     "valibot": "1.5.0"

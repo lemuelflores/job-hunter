@@ -3,6 +3,7 @@ import type { SqliteStore } from '../sqlite.js';
 import { fetchAshbyListing } from './ashby.js';
 import { type ListingExtractor, PageError } from './extraction.js';
 import { scrapeListing as firecrawlListing } from './firecrawl.js';
+import { fetchGreenhouseListing } from './greenhouse.js';
 
 export function startCrawlWorker(
   store: SqliteStore,
@@ -23,6 +24,12 @@ export function startCrawlWorker(
             text = await scrape(job.url, { signal });
           } else if (new URL(job.url).hostname === 'jobs.ashbyhq.com') {
             text = await fetchAshbyListing(job.url, { signal });
+          } else if (
+            ['job-boards.greenhouse.io', 'boards.greenhouse.io'].includes(
+              new URL(job.url).hostname,
+            )
+          ) {
+            text = await fetchGreenhouseListing(job.url, { signal });
           } else {
             text = await firecrawlListing(job.url, { signal });
           }

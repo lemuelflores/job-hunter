@@ -3,6 +3,39 @@ import { test } from 'node:test';
 import { ValiError } from 'valibot';
 import { fetchBoard } from '../dist/review/ashby.js';
 import { scrapePage } from '../dist/review/firecrawl.js';
+import { fetchJob } from '../dist/review/greenhouse.js';
+
+test('Greenhouse client encodes the board and preserves opaque metadata', async () => {
+  const posting = {
+    id: 123,
+    content: '&lt;p&gt;Build services&lt;/p&gt;',
+    title: 'Engineer',
+    location: { name: 'Remote' },
+    metadata: null,
+    pay_input_ranges: [{ min_cents: 5000000, currency_type: 'USD' }],
+    extra: { nested: [null, true] },
+  };
+  assert.deepEqual(
+    await fetchJob('Example Board', '123', {
+      fetch: async (endpoint, init) => {
+        assert.equal(
+          endpoint,
+          'https://boards-api.greenhouse.io/v1/boards/Example%20Board/jobs/123?pay_transparency=true',
+        );
+        assert.equal(init.redirect, 'error');
+        return Response.json(posting);
+      },
+    }),
+    posting,
+  );
+  for (const id of ['', '../123', '123?questions=true', '1.5', null, 123])
+    await assert.rejects(
+      fetchJob('example', id, {
+        fetch: async () => assert.fail('unexpected fetch'),
+      }),
+      ValiError,
+    );
+});
 
 test('Ashby client encodes the board and preserves opaque posting metadata', async () => {
   const posting = {
@@ -102,6 +135,23 @@ test('Firecrawl client sends Markdown options and returns data without extractio
 
 for (const { name, call, input, body, invalidInputs, invalidBodies } of [
   {
+    name: 'Greenhouse',
+    call: (board, options) => fetchJob(board, '123', options),
+    input: 'example',
+    body: { id: 123, content: '' },
+    invalidInputs: [],
+    invalidBodies: [
+      null,
+      {},
+      { id: '123', content: 'Listing' },
+      { id: 1.5, content: 'Listing' },
+      { id: 0, content: 'Listing' },
+      { id: 123, content: null },
+      { id: 123, content: 42 },
+      { id: 123 },
+    ],
+  },
+  {
     name: 'Ashby',
     call: fetchBoard,
     input: 'example',
@@ -172,7 +222,9 @@ for (const { name, call, input, body, invalidInputs, invalidBodies } of [
         call(input, {
           fetch: async () => new Response('private error', { status }),
         }),
-        { message: `${name}${name === 'Ashby' ? ' API' : ''} HTTP ${status}` },
+        {
+          message: `${name}${name !== 'Firecrawl' ? ' API' : ''} HTTP ${status}`,
+        },
       );
     }
     const failure = new Error('network unavailable');

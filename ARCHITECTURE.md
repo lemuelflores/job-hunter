@@ -22,6 +22,7 @@ job-hunter/
 │   │   ├── crawl.ts           # Crawl consumer, extraction, persistence, enqueue checks
 │   │   ├── extraction.ts      # Provider-neutral extraction contract and page errors
 │   │   ├── ashby.ts           # Board API client, posting selection, text rendering
+│   │   ├── greenhouse.ts      # Single-job API client, HTML-to-text extraction
 │   │   ├── location-check.ts  # Location consumer, assessment, persistence
 │   │   ├── tech-check.ts      # Stack consumer, assessment, persistence
 │   │   ├── firecrawl.ts       # Scrape API client, Markdown and page-error handling
@@ -60,7 +61,7 @@ job-hunter/
 
 The tree focuses on application code and operational files. Dependencies, tooling metadata, and local scratch artifacts are omitted.
 
-Feature directories own their workflows and workers. `review/` operations load saved listings, call integrations, and persist results; `review/llm/chatgpt/` owns provider-specific prompts, requests, and response validation without database writes. Ashby and Firecrawl are sibling extraction strategies selected within `review/crawl.ts`; neither uses the other. Each provider module co-locates its HTTP client, Valibot response contract, and extraction logic. API functions return structured data; extraction functions call them to select/render a listing and apply page-error policy. Shared request options and page errors live in `review/extraction.ts`. Shared queue delivery and storage remain at the source root. File names use `tech-check`, while the existing queue and database stage remains named `stack`.
+Feature directories own their workflows and workers. `review/` operations load saved listings, call integrations, and persist results; `review/llm/chatgpt/` owns provider-specific prompts, requests, and response validation without database writes. Ashby, Greenhouse, and Firecrawl are sibling extraction strategies selected within `review/crawl.ts`; none uses another. Each provider module co-locates its HTTP client, Valibot response contract, and extraction logic. API functions return structured data; extraction functions call them to select/render a listing and apply page-error policy. Shared request options and page errors live in `review/extraction.ts`. Shared queue delivery and storage remain at the source root. File names use `tech-check`, while the existing queue and database stage remains named `stack`.
 
 ## 2. High-Level System Diagram
 
@@ -74,7 +75,7 @@ SQLite: validated, deduplicated listings and stage state
        |
 BullMQ / Redis: crawl queue
        |
-review-worker --> Ashby public API / Firecrawl --> listing text --> SQLite
+review-worker --> Ashby / Greenhouse public APIs / Firecrawl --> listing text --> SQLite
        |
        +--> location queue --> ChatGPT eligibility --> SQLite
        |
@@ -127,9 +128,11 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 **Description:** `src/review/crawl.ts`, `location-check.ts`, and `tech-check.ts` each expose one consumer starter with stage processing inline in its worker callback; `src/bullmq.ts` owns shared worker creation, queue delivery, and recovery. Each assessment consumer receives only its LLM method; the crawl consumer accepts an optional listing extractor. Shared delivery handling validates listing IDs, skips missing or inactive listings, and persists failures. The CLI starts all three consumers in one `review-worker` process and closes started consumers on shutdown or partial startup failure. Shutdown drains active tasks rather than cancelling their external calls. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
 
-Queues use prefix `job-hunter`, names `crawl`, `location`, and `stack`, payload `{ id }`, and stable per-queue IDs `listing-N`. Crawling saves listing text once and schedules both assessments. `src/review/crawl.ts` routes Ashby URLs to the unauthenticated public posting API and Lever/Greenhouse to Firecrawl. The Ashby adapter selects the exact UUID from the board response and saves its plain description with title, primary/secondary locations, address, workplace type, raw remote flag, employment type, department/team, and compensation metadata when provided. It does not interpret `isRemote` as fully remote; workplace type can still be Hybrid. Processors consult SQLite before work; completed stages cannot overwrite saved results. Redelivered crawl tasks can enqueue missing assessments without extracting again.
+Queues use prefix `job-hunter`, names `crawl`, `location`, and `stack`, payload `{ id }`, and stable per-queue IDs `listing-N`. Crawling saves listing text once and schedules both assessments. `src/review/crawl.ts` routes Ashby and Greenhouse URLs to their unauthenticated public APIs and Lever to Firecrawl. The Ashby adapter selects the exact UUID from the board response and saves its plain description with title, primary/secondary locations, address, workplace type, raw remote flag, employment type, department/team, and compensation metadata when provided. It does not interpret `isRemote` as fully remote; workplace type can still be Hybrid. The Greenhouse adapter requests one job with pay transparency enabled, verifies its returned posting ID, and saves all metadata plus its entity-decoded, HTML-to-text description. Processors consult SQLite before work; completed stages cannot overwrite saved results. Redelivered crawl tasks can enqueue missing assessments without extracting again.
 
 Temporary failures receive three attempts with exponential delays of 60 and 120 seconds. Completed tasks are removed; exhausted tasks remain in Redis and become `failed` in SQLite. Permanent listing-page errors terminate crawling, block dependent assessments, and preserve the page error. HTTP 408, 425, 429, and server errors remain retryable, as do service failures and empty extraction. A valid Ashby board response without the UUID is treated as terminal absence (including unlisted jobs); there is no Firecrawl fallback. Ashby API HTTP/network errors, malformed board responses, and empty descriptions remain retryable service/extraction failures.
+
+Greenhouse API 404/410 responses are terminal and block both assessments. Other HTTP/network errors, malformed responses, mismatched IDs, and empty converted descriptions remain retryable. There is no Firecrawl fallback for Greenhouse.
 
 Recovery commands are explicit:
 
@@ -140,7 +143,7 @@ Recovery commands are explicit:
 
 Workers drain active tasks during graceful shutdown. BullMQ recovers stalled delivery after crashes. SQLite and Redis are not a distributed transaction, and a crash after an external response but before its save can repeat that external call.
 
-**Technologies:** BullMQ 6.3.17, redis 6.3.0 via BullMQ's node-redis adapter, Node built-in SQLite, Ashby public posting API, Firecrawl, ChatGPT, Valibot. The Ashby client validates the jobs array, posting URLs, and string types for title and plain description when present. Valibot loose objects preserve other posting attributes as opaque metadata, including nulls and additional provider fields; nested metadata is not schema-validated. The adapter saves all posting metadata as JSON except the separately appended plain description and excluded HTML description, following the benchmark's send-all approach. The board name comes from an already validated listing URL and is encoded, not revalidated by the client. The adapter owns supported listing identity checks, board/UUID matching, nonblank selected description checks, and terminal absence policy. The Firecrawl client validates the success flag and optional Markdown/page-metadata structure; its adapter owns page-error classification and nonblank text checks. Malformed responses fail retryably rather than becoming terminal absence. Both extraction adapters share provider-neutral options and page-error classification in `src/review/extraction.ts`.
+**Technologies:** BullMQ 6.3.17, redis 6.3.0 via BullMQ's node-redis adapter, Node built-in SQLite, Ashby and Greenhouse public APIs, Firecrawl, ChatGPT, Valibot, entities, html-to-text. The Ashby client validates the jobs array, posting URLs, and string types for title and plain description when present. Valibot loose objects preserve other posting attributes as opaque metadata, including nulls and additional provider fields; nested metadata is not schema-validated. The adapter saves all posting metadata as JSON except the separately appended plain description and excluded HTML description, following the benchmark's send-all approach. The board name comes from an already validated listing URL and is encoded, not revalidated by the client. The adapter owns supported listing identity checks, board/UUID matching, nonblank selected description checks, and terminal absence policy. The Greenhouse client validates the numeric request ID and response ID/content types, preserves opaque metadata, and exposes HTTP failures without applying extraction policy. Its adapter decodes the outer HTML entity layer with entities and converts the HTML with html-to-text, retaining paragraphs, lists, and link destinations. The Firecrawl client validates the success flag and optional Markdown/page-metadata structure; its adapter owns page-error classification and nonblank text checks. Malformed responses fail retryably rather than becoming terminal absence. All extraction adapters share provider-neutral options and page-error classification in `src/review/extraction.ts`.
 
 **Deployment:** Compose `review-worker` or host `review-worker` command.
 
@@ -207,12 +210,13 @@ Legacy job columns remain to preserve historical values and existing database ob
 | --- | --- | --- |
 | Autom.dev | Google search for supported ATS listings | HTTPS GET with `x-api-key` from `AUTOM_API_KEY` |
 | Ashby | Source job listings | Google discovery; unauthenticated GET `https://api.ashbyhq.com/posting-api/job-board/{board}?includeCompensation=true`, exact UUID selection |
-| Lever, Greenhouse | Source job listings | Google discovery and Firecrawl extraction of validated HTTPS URLs |
+| Greenhouse | Source job listings | Google discovery; unauthenticated GET `https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{job_id}?pay_transparency=true` |
+| Lever | Source job listings | Google discovery and Firecrawl extraction of validated HTTPS URLs |
 | Self-hosted Firecrawl | Extract listing Markdown | HTTP POST `/v2/scrape`; `FIRECRAWL_URL` defaults to `http://127.0.0.1:3002` |
 | OpenAI authentication | ChatGPT subscription sign-in and token refresh | OAuth using the public Codex client and loopback callback on port 1455 |
 | ChatGPT subscription backend | Independent location and stack assessments | HTTPS POST to undocumented `backend-api/codex/responses`, SSE streaming, strict JSON-schema output |
 
-`src/review/llm/types.ts` defines the provider contract. `createLlm` currently supports only `MODEL_PROVIDER=chatgpt`; unsupported values fail explicitly. `MODEL_NAME` defaults to `gpt-6-luna` and `MODEL_EFFORT` to `medium`. Assessment functions require saved listing text and validate returned decisions before persistence. Ashby requests retrieve the entire board without caching, with a 75-second timeout and caller cancellation; other listings retain Firecrawl Markdown extraction.
+`src/review/llm/types.ts` defines the provider contract. `createLlm` currently supports only `MODEL_PROVIDER=chatgpt`; unsupported values fail explicitly. `MODEL_NAME` defaults to `gpt-6-luna` and `MODEL_EFFORT` to `medium`. Assessment functions require saved listing text and validate returned decisions before persistence. Ashby requests retrieve the entire board without caching; Greenhouse requests retrieve a single posting. Both use a 75-second timeout and caller cancellation. Lever listings retain Firecrawl Markdown extraction.
 
 ## 6. Deployment & Infrastructure
 
@@ -258,7 +262,7 @@ Tests are grouped by the behavior they verify, not every dependency they use:
 - `review-jobs.test.mjs`: review selection, waiting, and outcomes; `review-stage.integration.test.mjs`: stage orchestration with real SQLite and fake external services.
 - `sqlite.integration.test.mjs`: persistence, transactions, stage-state transitions, and migrations, without running processors.
 - `cli.test.mjs`: command routing, arguments, help, and application-relative paths; `web.test.mjs`: HTTP behavior, server lifecycle, and pure UI assessment logic.
-- `api-clients.test.mjs`: Ashby and Firecrawl request/response contracts, HTTP failures, timeout and cancellation with mocked network responses. `ashby.test.mjs` and `firecrawl.test.mjs`: extraction policy and rendering; `crawl.test.mjs`: strategy routing and no Ashby fallback. `auth.test.mjs` and `chatgpt.test.mjs`: authentication and model adapters; `llm.test.mjs`: provider selection.
+- `api-clients.test.mjs`: Ashby, Greenhouse, and Firecrawl request/response contracts, HTTP failures, timeout and cancellation with mocked network responses. `ashby.test.mjs`, `greenhouse.test.mjs`, and `firecrawl.test.mjs`: extraction policy and rendering; `crawl.test.mjs`: strategy routing and no Ashby/Greenhouse fallback. `auth.test.mjs` and `chatgpt.test.mjs`: authentication and model adapters; `llm.test.mjs`: provider selection.
 - `bullmq.integration.mjs`: real Redis delivery, retries, repair, and recovery, separately from the default suite.
 
 Real SQLite is appropriate in HTTP and workflow integration tests; those suites assert their public behavior rather than duplicating database or adapter contracts.
@@ -297,7 +301,7 @@ No committed feature roadmap is asserted here. Existing architectural limits to 
 - **ATS:** Applicant tracking system; the hosted job boards targeted by discovery.
 - **Autom.dev:** API provider used to retrieve Google search results.
 - **BullMQ:** Redis-backed task queue used for independent processing stages.
-- **Crawl:** Extract and persist listing text through Ashby's public API or Firecrawl.
+- **Crawl:** Extract and persist listing text through Ashby's or Greenhouse's public API, or Firecrawl.
 - **Eligibility:** Assessment of whether the candidate can perform the job remotely from their residence.
 - **Stack assessment:** Independent comparison of a role's core technologies with configured skill groups.
 - **Stage:** One processing unit: `crawl`, `location`, or `stack`.

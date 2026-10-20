@@ -84,11 +84,91 @@ test('missing listings and API failures do not fall back to Firecrawl', async (t
   }
 });
 
-test('Lever and Greenhouse extraction uses Firecrawl', async (t) => {
+test('Greenhouse uses its direct API and schedules both assessments', async (t) => {
+  for (const host of ['job-boards.greenhouse.io', 'boards.greenhouse.io']) {
+    await t.test(host, async (t) => {
+      const store = fixture(t, `https://${host}/example/jobs/123`);
+      const enqueued = [];
+      let requests = 0;
+      t.mock.method(globalThis, 'fetch', async (endpoint) => {
+        requests++;
+        assert.equal(
+          endpoint,
+          'https://boards-api.greenhouse.io/v1/boards/example/jobs/123?pay_transparency=true',
+        );
+        return Response.json({
+          id: 123,
+          content: '&lt;p&gt;Laravel services&lt;/p&gt;',
+        });
+      });
+      await runCrawl(store, async (stage, id) => enqueued.push([stage, id]));
+      assert.equal(requests, 1);
+      assert.match(
+        store.getJob(1).listing_text,
+        /Description:\nLaravel services$/,
+      );
+      assert.deepEqual(enqueued, [
+        ['location', 1],
+        ['stack', 1],
+      ]);
+    });
+  }
+});
+
+test('Greenhouse failures never fall back to Firecrawl', async (t) => {
+  for (const [name, response, error] of [
+    ['absent', new Response('', { status: 404 }), null],
+    ['gone', new Response('', { status: 410 }), null],
+    [
+      'malformed',
+      Response.json({ id: 123, content: null }),
+      /Invalid Greenhouse/,
+    ],
+    [
+      'unavailable',
+      new Response('', { status: 503 }),
+      /Greenhouse API HTTP 503/,
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const store = fixture(
+        t,
+        'https://job-boards.greenhouse.io/example/jobs/123',
+      );
+      let requests = 0;
+      t.mock.method(globalThis, 'fetch', async (endpoint) => {
+        requests++;
+        assert.ok(endpoint.startsWith('https://boards-api.greenhouse.io/'));
+        return response;
+      });
+      const run = () =>
+        runCrawl(store, async () => assert.fail('unexpected enqueue'));
+      if (error) {
+        await assert.rejects(run(), error);
+        assert.ok(store.stages(1).every(({ state }) => state === 'pending'));
+      } else {
+        await run();
+        assert.equal(
+          store.stages(1).find(({ stage }) => stage === 'crawl').state,
+          'terminal',
+        );
+        assert.ok(
+          store
+            .stages(1)
+            .filter(({ stage }) => stage !== 'crawl')
+            .every(({ state }) => state === 'blocked'),
+        );
+      }
+      assert.equal(requests, 1);
+      assert.equal(store.getJob(1).listing_text, null);
+    });
+  }
+});
+
+test('Lever extraction uses Firecrawl', async (t) => {
   for (const url of [
     `https://jobs.lever.co/example/${id}`,
     `https://jobs.eu.lever.co/example/${id}`,
-    'https://job-boards.greenhouse.io/example/jobs/123',
   ]) {
     await t.test(url, async (t) => {
       const store = fixture(t, url);
