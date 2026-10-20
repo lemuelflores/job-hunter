@@ -18,6 +18,116 @@ const { stackLabel, matchesAssessments } = runInNewContext(
   ({ stackLabel, matchesAssessments });`,
 );
 
+// Run the browser state transitions with a small DOM double and controlled HTTP.
+function browser(fetch) {
+  const element = () => ({
+    children: [],
+    dataset: {},
+    className: '',
+    value: 'all',
+    append(...nodes) {
+      for (const node of nodes) {
+        node.parent = this;
+        this.children.push(node);
+      }
+    },
+    replaceChildren() {
+      this.children = [];
+    },
+    remove() {
+      this.parent.children = this.parent.children.filter(
+        (node) => node !== this,
+      );
+    },
+    contains() {
+      return false;
+    },
+    get classList() {
+      return { contains: (name) => this.className.split(' ').includes(name) };
+    },
+    querySelector() {
+      return this.children.find((node) =>
+        ['empty', 'list-control button'].includes(node.className),
+      );
+    },
+    querySelectorAll() {
+      return [];
+    },
+    setAttribute() {},
+    addEventListener() {},
+  });
+  const nodes = Object.fromEntries(
+    ['jobs', 'notice', 'eligibility', 'stack'].map((id) => [id, element()]),
+  );
+  const scripts = [...UI_HTML.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+  const ui = runInNewContext(
+    `${scripts[0][1]}\n${scripts[1][1].replace(/load\(\);\s*\}\)\(\);\s*$/, 'return { load, updateStatus, show: (status) => { currentStatus = status; return load(); } }; })();')}`,
+    {
+      URL,
+      AbortController,
+      fetch,
+      document: {
+        createElement: element,
+        getElementById: (id) => nodes[id],
+        querySelectorAll: () => [],
+      },
+    },
+  );
+  return {
+    ...ui,
+    notice: nodes.notice,
+    keys: () =>
+      nodes.jobs.children
+        .filter((node) => node.className === 'job-card')
+        .map((node) => node.dataset.reviewKey),
+    change: (reviewKey, status) =>
+      ui.updateStatus({ closest: () => ({ dataset: { reviewKey } }) }, status),
+  };
+}
+
+test('successful browser saves stop overriding fresh server state in another tab', async () => {
+  let status = 'active';
+  const fetch = async (path, options) => {
+    if (options?.method === 'POST') {
+      status = JSON.parse(options.body).status;
+      return Response.json({ ok: true });
+    }
+    return Response.json({
+      jobs: path.endsWith(`=${status}`) ? [{ reviewKey: '1', status }] : [],
+    });
+  };
+  const first = browser(fetch);
+  const second = browser(fetch);
+  await first.load();
+  await first.change('1', 'hidden');
+  assert.deepEqual(first.keys(), []);
+  await second.show('hidden');
+  await second.change('1', 'active');
+  await first.load();
+  assert.deepEqual(first.keys(), ['1']);
+  await first.change('1', 'hidden');
+  await first.show('hidden');
+  assert.deepEqual(first.keys(), ['1']);
+});
+
+test('failed browser saves restore the card without leaving a stale override', async () => {
+  let status = 'active';
+  const ui = browser(async (path, options) =>
+    options?.method === 'POST'
+      ? Response.json({ error: 'Write failed' }, { status: 500 })
+      : Response.json({
+          jobs: path.endsWith(`=${status}`) ? [{ reviewKey: '1', status }] : [],
+        }),
+  );
+  await ui.load();
+  await ui.change('1', 'hidden');
+  assert.deepEqual(ui.keys(), ['1']);
+  assert.match(ui.notice.textContent, /Write failed/);
+  status = 'hidden';
+  await ui.show('hidden');
+  assert.deepEqual(ui.keys(), ['1']);
+});
+
 test('UI labels every stack state and distinguishes skipped assessments', () => {
   // Arrange: pair each assessment state with its user-facing label.
   const labels = {

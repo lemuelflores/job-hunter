@@ -458,7 +458,6 @@
       let listingState = 'loading';
       let persistentError = '';
       const pending = new Map();
-      const localStatus = new Map();
       const knownJobs = new Map();
       const cache = new Map();
       const renderedJobs = new WeakMap();
@@ -684,12 +683,12 @@
           if (job?.reviewKey) {
             const key = String(job.reviewKey);
             knownJobs.set(key, job);
-            if (!localStatus.has(key) || localStatus.get(key) === status)
+            if (!pending.has(key) || pending.get(key).to === status)
               jobs.set(key, job);
           }
         });
         knownJobs.forEach((job, key) => {
-          if (localStatus.get(key) === status) jobs.set(key, job);
+          if (pending.get(key)?.to === status) jobs.set(key, job);
         });
         return [...jobs.values()]
           .filter((job) =>
@@ -822,9 +821,8 @@
             jobsEl.setAttribute('aria-busy', 'false');
         }
       };
-      const restoreStatus = (reviewKey, previousStatus, from, job, error) => {
+      const restoreStatus = (reviewKey, from, job, error) => {
         pending.delete(reviewKey);
-        localStatus.set(reviewKey, previousStatus);
         const sourceJobs = cache.get(from) || [];
         if (!sourceJobs.some((item) => String(item.reviewKey) === reviewKey))
           cache.set(from, [...sourceJobs, job]);
@@ -840,9 +838,7 @@
         const job = knownJobs.get(reviewKey);
         if (!job) return;
         const from = currentStatus;
-        const previousStatus = localStatus.get(reviewKey) || from;
         pending.set(reviewKey, { from, to: status });
-        localStatus.set(reviewKey, status);
         renderList(currentStatus, cache.get(currentStatus) || [], false);
         try {
           const response = await fetch('/api/jobs/status', {
@@ -854,9 +850,9 @@
           if (!response.ok)
             throw new Error(body.error || 'Could not save that change.');
           pending.delete(reviewKey);
-          renderList(currentStatus, cache.get(currentStatus) || [], false);
+          await load();
         } catch (error) {
-          restoreStatus(reviewKey, previousStatus, from, job, error);
+          restoreStatus(reviewKey, from, job, error);
         }
       };
       tabs.forEach((tab) => {
