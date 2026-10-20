@@ -133,3 +133,34 @@ test('fetch validates and canonicalizes URLs before persistence and scheduling',
   const { last_seen: _afterSeen, ...after } = store.getJob(2);
   assert.deepEqual(after, original);
 });
+
+test('discovery saves and schedules completed search pages despite a later failure', async (t) => {
+  const store = fixture(t);
+  const key = process.env.AUTOM_API_KEY;
+  process.env.AUTOM_API_KEY = 'test';
+  t.after(() => {
+    if (key === undefined) delete process.env.AUTOM_API_KEY;
+    else process.env.AUTOM_API_KEY = key;
+  });
+  t.mock.method(globalThis, 'fetch', async (url) =>
+    url.searchParams.get('page') === '1'
+      ? Response.json({
+          organic_results: [
+            { title: 'Engineer', link: result(5).url, snippet: 'Valid text' },
+            { title: 'Developer', link: result(6).url, snippet: 42 },
+          ],
+          pagination: { has_next_page: true, next: 2 },
+        })
+      : new Response('Unavailable', { status: 503 }),
+  );
+  const scheduled = [];
+  const outcome = await fetchJobs(store, undefined, undefined, async (ids) => {
+    scheduled.push(...ids);
+  });
+  assert.equal(outcome.added, 2);
+  assert.equal(outcome.failures.length, 1);
+  assert.match(outcome.failures[0], /503/);
+  assert.deepEqual(scheduled, [4, 5]);
+  assert.equal(store.getJob(4).snippet, 'Valid text');
+  assert.equal(store.getJob(5).snippet, '');
+});

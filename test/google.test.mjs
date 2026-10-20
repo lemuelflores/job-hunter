@@ -165,3 +165,60 @@ test('pagination honors a smaller requested result limit', async (t) => {
   assert.equal((await googleSearch('remote engineer', { num: 3 })).length, 3);
   assert.equal(calls, 1);
 });
+
+test('later page failures preserve successful results and report the query failure', async (t) => {
+  mock(t, async (url) =>
+    Number(url.searchParams.get('page')) === 1
+      ? Response.json({
+          organic_results: [
+            { title: 'Engineer', link: 'https://example.test/1' },
+          ],
+          pagination: { has_next_page: true, next: 2 },
+        })
+      : new Response('unavailable', { status: 503 }),
+  );
+  const outcome = await runParallelGoogleSearchesDetailed(['remote engineer']);
+  assert.equal(outcome.results.length, 1);
+  assert.equal(outcome.results[0].url, 'https://example.test/1');
+  assert.equal(outcome.failures.length, 1);
+  assert.match(outcome.failures[0].error, /503/);
+});
+
+test('search skips malformed entries and drops invalid optional fields', async (t) => {
+  mock(t, async () =>
+    Response.json({
+      organic_results: [
+        null,
+        [],
+        42,
+        {},
+        { title: ' ', link: 'https://example.test/blank' },
+        {
+          title: 'Engineer',
+          link: 'https://example.test/1',
+          snippet: 42,
+          position: '1',
+        },
+        { title: 'Developer', link: 'https://example.test/2', snippet: null },
+      ],
+    }),
+  );
+  const results = await googleSearch('remote engineer');
+  assert.equal(results.length, 2);
+  assert.ok(results.every((result) => result.snippet === undefined));
+  assert.ok(results.every((result) => result.position === undefined));
+});
+
+test('search rejects malformed response containers and pagination', async (t) => {
+  for (const body of [
+    null,
+    [],
+    { organic_results: {} },
+    { pagination: [] },
+    { pagination: { has_next_page: 'yes' } },
+    { pagination: { next: 1.5 } },
+  ]) {
+    mock(t, async () => Response.json(body));
+    await assert.rejects(googleSearch('remote engineer'), /Invalid Autom.dev/);
+  }
+});

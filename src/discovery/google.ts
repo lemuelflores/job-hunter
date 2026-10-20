@@ -1,3 +1,4 @@
+import * as v from 'valibot';
 import type { Profile, SearchTerms } from '../profile.js';
 
 export interface SearchResult {
@@ -55,18 +56,40 @@ export function buildQueryMatrix(profile: Profile) {
   ];
 }
 
-interface AutomOrganicResult {
-  title?: string;
-  link?: string;
-  snippet?: string | null;
-  source?: string | null;
-  position?: number;
-}
+const OrganicResult = v.object({
+  title: v.string(),
+  link: v.string(),
+  snippet: v.optional(v.unknown()),
+  position: v.optional(v.unknown()),
+});
+const SearchResponse = v.pipe(
+  v.unknown(),
+  v.check((value) => !Array.isArray(value)),
+  v.object({
+    organic_results: v.optional(v.array(v.unknown())),
+    error: v.optional(v.string()),
+    pagination: v.optional(
+      v.pipe(
+        v.unknown(),
+        v.check((value) => !Array.isArray(value)),
+        v.object({
+          next: v.optional(v.pipe(v.number(), v.safeInteger(), v.minValue(1))),
+          has_next_page: v.optional(v.boolean()),
+        }),
+      ),
+    ),
+  }),
+);
 
-interface AutomGoogleSearchResponse {
-  organic_results?: AutomOrganicResult[];
-  error?: string;
-  pagination?: { next?: number; has_next_page?: boolean };
+class GoogleSearchError extends Error {
+  constructor(
+    error: unknown,
+    readonly results: SearchResult[],
+  ) {
+    super(error instanceof Error ? error.message : String(error), {
+      cause: error,
+    });
+  }
 }
 
 function getAutomApiKey(): string {
@@ -95,28 +118,34 @@ async function searchPage(url: URL, apiKey: string) {
       `Autom.dev Google search failed: ${response.status} ${body}`,
     );
   }
-  const data = (await response.json()) as AutomGoogleSearchResponse;
+  const data = v.parse(SearchResponse, await response.json(), {
+    message: 'Invalid Autom.dev search response',
+  });
   if (data.error)
     throw new Error(`Autom.dev Google search failed: ${data.error}`);
   return data;
 }
 
-function pageResults(data: AutomGoogleSearchResponse, query: string) {
-  return (data.organic_results ?? [])
-    .filter(
-      (item): item is AutomOrganicResult & { link: string; title: string } =>
-        typeof item.link === 'string' &&
-        Boolean(item.link.trim()) &&
-        typeof item.title === 'string' &&
-        Boolean(item.title.trim()),
-    )
-    .map((item) => ({
-      title: item.title,
-      url: item.link,
-      snippet: item.snippet ?? undefined,
-      position: item.position,
-      query,
-    }));
+function pageResults(
+  data: v.InferOutput<typeof SearchResponse>,
+  query: string,
+) {
+  return (data.organic_results ?? []).flatMap((item) => {
+    if (!v.is(OrganicResult, item) || !item.title.trim() || !item.link.trim())
+      return [];
+    return [
+      {
+        title: item.title,
+        url: item.link,
+        snippet: typeof item.snippet === 'string' ? item.snippet : undefined,
+        position:
+          typeof item.position === 'number' && Number.isFinite(item.position)
+            ? item.position
+            : undefined,
+        query,
+      },
+    ];
+  });
 }
 
 function appendResults(
@@ -156,15 +185,19 @@ export async function googleSearch(
   const results: SearchResult[] = [];
   const seen = new Set<string>();
   let page = 1;
-  while (results.length < limit) {
-    url.searchParams.set('page', String(page));
-    const data = await searchPage(url, apiKey);
-    const before = results.length;
-    appendResults(results, seen, pageResults(data, query), limit);
-    if (results.length === before || !data.pagination?.has_next_page) break;
-    const next = data.pagination.next ?? page + 1;
-    if (!Number.isSafeInteger(next) || next <= page) break;
-    page = next;
+  try {
+    while (results.length < limit) {
+      url.searchParams.set('page', String(page));
+      const data = await searchPage(url, apiKey);
+      const before = results.length;
+      appendResults(results, seen, pageResults(data, query), limit);
+      if (results.length === before || !data.pagination?.has_next_page) break;
+      const next = data.pagination.next ?? page + 1;
+      if (next <= page) break;
+      page = next;
+    }
+  } catch (error) {
+    throw new GoogleSearchError(error, results);
   }
 
   const preview = results
@@ -201,9 +234,10 @@ export async function runParallelGoogleSearchesDetailed(
       try {
         results.push(...(await googleSearch(query, options)));
       } catch (error) {
+        if (error instanceof GoogleSearchError) results.push(...error.results);
         failures.push({
           query,
-          error: error instanceof Error ? error.message : String(error),
+          error: String(error),
         });
       }
     }
