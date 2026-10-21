@@ -302,6 +302,10 @@ Application configuration/database paths resolve relative to the application dir
 
 Tests are grouped by the behavior they verify, not every dependency they use:
 
+File-backed test fixtures use `tmpdir()` and `join()`, honor the platform's
+temporary-directory configuration (including `TMPDIR`), and remove their own
+temporary directories on completion.
+
 - `profile.test.mjs`: profile validation and loading; `query.test.mjs`: search-expression rendering; `job-url.test.mjs`: listing URL rules.
 - `workflows.test.mjs`: direct discovery URL acceptance/canonicalization, persistence and partial-success outcomes; ATS routing and terminal/transient policy; saved-text handoff through both real model adapters; independent assessments, checkpoint reuse, cancellation, and inactive/missing/readiness guards. Real in-memory SQLite and fixture external HTTP/credentials make outcomes deterministic without queue delivery.
 - `workers.queue.mjs`: queued discovery-to-assessment smoke coverage (including dispatch before partial-search failure), exhausted-delivery bookkeeping, targeted retry/repair, stale failure generations, interrupted replacement enqueue, crawl redelivery fan-out, production review waiting/selection/cancellation, CLI startup/draining/cleanup, and scheduler admission. Each case has isolated temporary SQLite storage and a random queue prefix. Fixture delivery allows one attempt to check exhaustion without exercising BullMQ's retry engine. Run explicitly through `pnpm test:queue` with `TEST_REDIS_URL` (default `redis://127.0.0.1:6380`). Compose's optional `redis-test` service uses the `test` profile, ephemeral storage, and loopback port 6380; the suite removes its namespaces, not the service.

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -35,7 +36,7 @@ async function until(check, description = 'worker outcome') {
 test('queue dispatch, recovery and process lifecycle', {
   timeout: 120_000,
 }, async (t) => {
-  const root = await mkdtemp('/tmp/opencode/job-workers-');
+  const root = await mkdtemp(join(tmpdir(), 'job-workers-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const redisUrl = process.env.TEST_REDIS_URL || 'redis://127.0.0.1:6380';
   const run = randomUUID();

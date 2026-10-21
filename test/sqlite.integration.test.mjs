@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
@@ -71,7 +72,7 @@ test('invalid results and completed-stage guards reject unsafe writes', (t) => {
 
 test('a failed result write rolls back stage completion and permits retry', async (t) => {
   // Arrange: use a second database connection to force result writes to fail.
-  const root = await mkdtemp('/tmp/opencode/job-rollback-');
+  const root = await mkdtemp(join(tmpdir(), 'job-rollback-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const path = join(root, 'jobs.sqlite');
   const store = new SqliteStore(path);
@@ -115,7 +116,7 @@ test('a failed result write rolls back stage completion and permits retry', asyn
 
 test('migration preserves historical decisions, indexes and triggers without implicit backfill', async (t) => {
   // Arrange: build a legacy database with decisions, a custom index, and an audit trigger.
-  const root = await mkdtemp('/tmp/opencode/job-migration-');
+  const root = await mkdtemp(join(tmpdir(), 'job-migration-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const path = join(root, 'jobs.sqlite');
   const db = new DatabaseSync(path);
@@ -202,7 +203,7 @@ test('migration preserves historical decisions, indexes and triggers without imp
 
 test('migration preserves assessment results and snapshots and restores only unfinished stage state', async (t) => {
   // Arrange: preserve historical decisions and snapshots but remove the stage table.
-  const root = await mkdtemp('/tmp/opencode/job-snapshots-');
+  const root = await mkdtemp(join(tmpdir(), 'job-snapshots-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const path = join(root, 'jobs.sqlite');
   let store = new SqliteStore(path);
@@ -287,7 +288,7 @@ test('stage failures remain pending until exhausted and only failed stages can r
 });
 
 test('migration adds retry generations without resetting existing stage failures', async (t) => {
-  const root = await mkdtemp('/tmp/opencode/job-generations-');
+  const root = await mkdtemp(join(tmpdir(), 'job-generations-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const path = join(root, 'jobs.sqlite');
   const original = new SqliteStore(path);
