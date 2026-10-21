@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ValiError } from 'valibot';
-import { fetchBoard } from '../dist/review/ashby.js';
-import { scrapePage } from '../dist/review/firecrawl.js';
-import { fetchJob } from '../dist/review/greenhouse.js';
-import { fetchPosting } from '../dist/review/lever.js';
+import { fetchBoard } from '../dist/review/extraction/ashby.js';
+import { scrapePage } from '../dist/review/extraction/firecrawl.js';
+import { fetchJob } from '../dist/review/extraction/greenhouse.js';
+import { fetchPosting } from '../dist/review/extraction/lever.js';
 
 const leverId = '12345678-abcd-abcd-abcd-123456789abc';
 

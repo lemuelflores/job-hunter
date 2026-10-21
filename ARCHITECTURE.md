@@ -20,13 +20,14 @@ job-hunter/
 │   │   ├── review-jobs.ts     # Enqueue unfinished listings and wait for outcomes
 │   │   ├── stages.ts          # Shared processing-stage names and type
 │   │   ├── crawl.ts           # Direct extraction/persistence and crawl consumer fan-out
-│   │   ├── extraction.ts      # Provider-neutral extraction contract and page errors
-│   │   ├── ashby.ts           # Board API client, posting selection, text rendering
-│   │   ├── greenhouse.ts      # Single-job API client, HTML-to-text extraction
-│   │   ├── lever.ts           # Global/EU posting API client, listing rendering
+│   │   ├── extraction/
+│   │   │   ├── types.ts       # Provider-neutral extraction contract and page errors
+│   │   │   ├── ashby.ts       # Board API client, posting selection, text rendering
+│   │   │   ├── greenhouse.ts  # Single-job API client, HTML-to-text extraction
+│   │   │   ├── lever.ts       # Global/EU posting API client, listing rendering
+│   │   │   └── firecrawl.ts   # Scrape API client, Markdown and page-error handling
 │   │   ├── location-check.ts  # Direct location assessment/persistence and consumer
 │   │   ├── tech-check.ts      # Direct stack assessment/persistence and consumer
-│   │   ├── firecrawl.ts       # Scrape API client, Markdown and page-error handling
 │   │   └── llm/
 │   │       ├── types.ts       # Provider contract and assessment types
 │   │       ├── index.ts       # Provider selection
@@ -62,7 +63,7 @@ job-hunter/
 
 The tree focuses on application code and operational files. Dependencies, tooling metadata, and local scratch artifacts are omitted.
 
-Feature directories own their workflows and workers. `review/` operations load saved listings, call integrations, and persist results; `review/llm/chatgpt/` owns provider-specific prompts, requests, and response validation without database writes. Ashby, Greenhouse, Lever, and Firecrawl are sibling extraction strategies selected within `review/crawl.ts`; none uses another. Each provider module co-locates its HTTP client, Valibot response contract, and extraction logic. API functions return structured data; extraction functions call them to select/render a listing and apply page-error policy. Shared request options and page errors live in `review/extraction.ts`. Shared queue delivery and storage remain at the source root. File names use `tech-check`, while the existing queue and database stage remains named `stack`.
+Feature directories own their workflows and workers. `review/` operations load saved listings, call integrations, and persist results; `review/llm/chatgpt/` owns provider-specific prompts, requests, and response validation without database writes. Ashby, Greenhouse, Lever, and Firecrawl are sibling strategies in `review/extraction/`, selected within `review/crawl.ts`; none uses another. Each provider module co-locates its HTTP client, Valibot response contract, and extraction logic. API functions return structured data; extraction functions call them to select/render a listing and apply page-error policy. Shared request options and page errors live in `review/extraction/types.ts`. Shared queue delivery and storage remain at the source root. File names use `tech-check`, while the existing queue and database stage remains named `stack`.
 
 ## 2. High-Level System Diagram
 
@@ -162,7 +163,7 @@ Recovery commands are explicit:
 
 Workers drain active tasks during graceful shutdown. BullMQ recovers stalled delivery after crashes. SQLite and Redis are not a distributed transaction, and a crash after an external response but before its save can repeat that external call.
 
-**Technologies:** BullMQ 6.3.17, redis 6.3.0 via BullMQ's node-redis adapter, Node built-in SQLite, Ashby and Greenhouse public APIs, Firecrawl, ChatGPT, Valibot, entities, html-to-text. The Ashby client validates the jobs array, posting URLs, and string types for title and plain description when present. Valibot loose objects preserve other posting attributes as opaque metadata, including nulls and additional provider fields; nested metadata is not schema-validated. The adapter saves all posting metadata as JSON except the separately appended plain description and excluded HTML description, following the benchmark's send-all approach. The board name comes from an already validated listing URL and is encoded, not revalidated by the client. The adapter owns supported listing identity checks, board/UUID matching, nonblank selected description checks, and terminal absence policy. The Greenhouse client validates the numeric request ID and response ID/content types, preserves opaque metadata, and exposes HTTP failures without applying extraction policy. Its adapter decodes the outer HTML entity layer with entities and converts the HTML with html-to-text, retaining paragraphs, lists, and link destinations. The Firecrawl client validates the success flag and optional Markdown/page-metadata structure; its adapter owns page-error classification and nonblank text checks. Malformed responses fail retryably rather than becoming terminal absence. All extraction adapters share provider-neutral options and page-error classification in `src/review/extraction.ts`.
+**Technologies:** BullMQ 6.3.17, redis 6.3.0 via BullMQ's node-redis adapter, Node built-in SQLite, Ashby and Greenhouse public APIs, Firecrawl, ChatGPT, Valibot, entities, html-to-text. The Ashby client validates the jobs array, posting URLs, and string types for title and plain description when present. Valibot loose objects preserve other posting attributes as opaque metadata, including nulls and additional provider fields; nested metadata is not schema-validated. The adapter saves all posting metadata as JSON except the separately appended plain description and excluded HTML description, following the benchmark's send-all approach. The board name comes from an already validated listing URL and is encoded, not revalidated by the client. The adapter owns supported listing identity checks, board/UUID matching, nonblank selected description checks, and terminal absence policy. The Greenhouse client validates the numeric request ID and response ID/content types, preserves opaque metadata, and exposes HTTP failures without applying extraction policy. Its adapter decodes the outer HTML entity layer with entities and converts the HTML with html-to-text, retaining paragraphs, lists, and link destinations. The Firecrawl client validates the success flag and optional Markdown/page-metadata structure; its adapter owns page-error classification and nonblank text checks. Malformed responses fail retryably rather than becoming terminal absence. All extraction adapters share provider-neutral options and page-error classification in `src/review/extraction/types.ts`.
 
 **Deployment:** Compose `workers` or host `workers` command.
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PageError } from '../dist/review/extraction.js';
-import { fetchLeverListing } from '../dist/review/lever.js';
+import { fetchLeverListing } from '../dist/review/extraction/lever.js';
+import { PageError } from '../dist/review/extraction/types.js';
 
 const id = '12345678-abcd-abcd-abcd-123456789abc';
 const url = `https://jobs.lever.co/Example%20Board/${id}`;

@@ -1,6 +1,6 @@
 import * as v from 'valibot';
-import { normalizeJobUrl } from '../discovery/job-url.js';
-import { type ExtractionOptions, PageError } from './extraction.js';
+import { normalizeJobUrl } from '../../discovery/job-url.js';
+import { type ExtractionOptions, PageError } from './types.js';
 
 const BoardResponse = v.object({
   jobs: v.array(

@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import { type ExtractionOptions, PageError } from './extraction.js';
+import { type ExtractionOptions, PageError } from './types.js';
 
 const PageUrl = v.pipe(
   v.string(),

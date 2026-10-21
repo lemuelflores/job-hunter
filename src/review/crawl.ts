@@ -1,10 +1,10 @@
 import type { ReviewQueues } from '../bullmq.js';
 import type { SqliteStore } from '../sqlite.js';
-import { fetchAshbyListing } from './ashby.js';
-import { type ListingExtractor, PageError } from './extraction.js';
-import { scrapeListing as firecrawlListing } from './firecrawl.js';
-import { fetchGreenhouseListing } from './greenhouse.js';
-import { fetchLeverListing } from './lever.js';
+import { fetchAshbyListing } from './extraction/ashby.js';
+import { scrapeListing as firecrawlListing } from './extraction/firecrawl.js';
+import { fetchGreenhouseListing } from './extraction/greenhouse.js';
+import { fetchLeverListing } from './extraction/lever.js';
+import { type ListingExtractor, PageError } from './extraction/types.js';
 
 export async function crawlJob(
   store: SqliteStore,

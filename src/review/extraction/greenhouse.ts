@@ -1,8 +1,8 @@
 import { decodeHTML } from 'entities';
 import { convert } from 'html-to-text';
 import * as v from 'valibot';
-import { normalizeJobUrl } from '../discovery/job-url.js';
-import { type ExtractionOptions, PageError } from './extraction.js';
+import { normalizeJobUrl } from '../../discovery/job-url.js';
+import { type ExtractionOptions, PageError } from './types.js';
 
 const JobResponse = v.looseObject({
   id: v.pipe(v.number(), v.safeInteger(), v.minValue(1)),
