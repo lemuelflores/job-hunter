@@ -2,7 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import type { SearchResult } from './discovery/google.js';
 import type { StackDecision } from './review/llm/types.js';
 import { STAGES, type Stage } from './review/stages.js';
-import type { ReviewStatus } from './web/types.js';
+
+export const REVIEW_STATUSES = ['active', 'hidden', 'rejected'] as const;
+export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
 
 export { STAGES, type Stage } from './review/stages.js';
 export interface StageState {
@@ -432,10 +434,7 @@ export class SqliteStore {
   }
 
   setReviewStatus(key: string, status: ReviewStatus): boolean {
-    if (
-      !['active', 'hidden', 'rejected'].includes(status) ||
-      !/^[1-9]\d*$/.test(key)
-    )
+    if (!REVIEW_STATUSES.includes(status) || !/^[1-9]\d*$/.test(key))
       return false;
     return Boolean(
       this.db.prepare('UPDATE jobs SET status=? WHERE id=?').run(status, key)

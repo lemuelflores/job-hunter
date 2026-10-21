@@ -37,10 +37,10 @@ job-hunter/
 │   │           └── tech-check.ts     # Technology prompt and model response validation
 │   ├── web/
 │   │   ├── server.ts          # HTTP server, API, validation, HTML loading
-│   │   ├── types.ts           # Review-status and API types
+│   │   ├── types.ts           # Web API request types
 │   │   └── index.html         # Entire browser UI: HTML, CSS, JavaScript
 │   ├── bullmq.ts              # Shared queue delivery, repair, retry
-│   ├── sqlite.ts              # SQLite schema, migrations, domain transitions
+│   ├── sqlite.ts              # Listing/status contracts, schema, migrations, transitions
 │   └── profile.ts             # Profile types, validation, runtime loading
 ├── test/                      # Node test suites and Redis integration suite
 ├── profile.ts                 # Candidate search/review preferences
@@ -206,6 +206,10 @@ Responses are not cached. Request validation and persistence remain server-side;
 Scheduling queries return only listing IDs and URLs. Summary queries exclude saved listing text at the SQL boundary, stage-readiness checks do not copy descriptions into JavaScript, and unfinished counts are computed in SQLite.
 
 Separate state dimensions must not be conflated:
+
+Persisted review-status values and their type are owned by `sqlite.ts`, beside
+`Listing`; the web request contract consumes that type and the HTTP server uses
+the same values for validation. SQL constraints retain the same accepted values.
 
 | Dimension | Values |
 | --- | --- |

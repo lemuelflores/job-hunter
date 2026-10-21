@@ -5,12 +5,12 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http';
-import type { SqliteStore } from '../sqlite.js';
 import {
   REVIEW_STATUSES,
   type ReviewStatus,
-  type UpdateJobStatusRequest,
-} from './types.js';
+  type SqliteStore,
+} from '../sqlite.js';
+import type { UpdateJobStatusRequest } from './types.js';
 
 export const UI_HTML = readFileSync(
   new URL('./index.html', import.meta.url),
