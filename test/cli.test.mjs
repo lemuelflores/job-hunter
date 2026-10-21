@@ -100,6 +100,7 @@ test('CLI prints global and command help including required retry options', asyn
     'review',
     'review-worker',
     'fetch-worker',
+    'fetch-scheduler',
     'retry',
     'serve',
   ]) {
@@ -118,7 +119,7 @@ test('CLI loads profiles only for commands that need them', async (t) => {
   // Arrange: break the copied profile's syntax.
   const { root, cli } = await fixture(t);
   await writeFile(join(root, 'profile.ts'), 'export default {broken');
-  for (const command of ['fetch', 'review-worker']) {
+  for (const command of ['fetch-worker', 'review-worker']) {
     // Act: invoke a command that requires the profile.
     const invalid = cli(command);
     // Assert: report the profile failure instead of starting work.
@@ -131,10 +132,83 @@ test('CLI loads profiles only for commands that need them', async (t) => {
   // Arrange: remove the profile entirely.
   await rm(join(root, 'profile.ts'));
   // Act: invoke discovery with the missing profile.
-  const missing = cli('fetch');
+  const missing = cli('fetch-worker');
   // Assert: identify the missing profile in the diagnostic.
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /Cannot load profile.ts.*profile.ts/);
+});
+
+test('fetch and fetch-scheduler only enqueue, without loading profile or database', async (t) => {
+  const { root, cli } = await fixture(t);
+  await rm(join(root, 'profile.ts'));
+  await rm(join(root, 'dist/sqlite.js'));
+  await rm(join(root, 'dist/discovery/discover-jobs.js'));
+  await writeFile(
+    join(root, 'dist/bullmq.js'),
+    `export class FetchQueue {
+      async enqueue() { console.log('enqueued'); return { id: '42' }; }
+      async close() { console.log('queue closed'); }
+    }`,
+  );
+  const manual = cli('fetch');
+  assert.equal(manual.status, 0, manual.stderr);
+  assert.match(manual.stdout, /enqueued\n\{"queued":"42"\}\nqueue closed/);
+  await writeFile(
+    join(root, 'dist/discovery/worker.js'),
+    `export async function scheduleFetch(enqueue) { await enqueue(); }`,
+  );
+  const scheduled = cli('fetch-scheduler');
+  assert.equal(scheduled.status, 0, scheduled.stderr);
+  assert.match(scheduled.stdout, /enqueued\nqueue closed/);
+});
+
+test('fetch-worker runs discovery and drains before closing queues', async (t) => {
+  const { root, cli } = await fixture(t);
+  await writeFile(
+    join(root, 'dist/bullmq.js'),
+    `export class JobQueues {
+      async scheduleListing(_store, id) { console.log('review ' + id); }
+      async close() { console.log('reviews closed'); }
+    }
+    export class FetchQueue {
+      async startWorker(fetch) {
+        const active = fetch();
+        setImmediate(() => process.emit('SIGTERM'));
+        return { async close() { await active; console.log('worker drained'); } };
+      }
+      async close() { console.log('fetch queue closed'); }
+    }`,
+  );
+  await writeFile(
+    join(root, 'dist/discovery/discover-jobs.js'),
+    `export async function fetchJobs(store, _search, profile, schedule) {
+      if (!store || !profile) throw new Error('missing dependency');
+      await new Promise(resolve => setTimeout(resolve, 30));
+      await schedule([42]);
+      return { added: 1, pending: 1, failures: [] };
+    }`,
+  );
+  const stopped = cli('fetch-worker');
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(stopped.stdout, /review 42/);
+  assert.match(stopped.stdout, /"added":1/);
+  for (const closed of ['reviews closed', 'fetch queue closed'])
+    assert.ok(
+      stopped.stdout.indexOf('worker drained') < stopped.stdout.indexOf(closed),
+    );
+  await writeFile(
+    join(root, 'dist/bullmq.js'),
+    `export class JobQueues { async close() { console.log('reviews closed'); } }
+    export class FetchQueue {
+      async startWorker() { throw new Error('startup failed'); }
+      async close() { console.log('fetch queue closed'); }
+    }`,
+  );
+  const failed = cli('fetch-worker');
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /startup failed/);
+  assert.match(failed.stdout, /reviews closed/);
+  assert.match(failed.stdout, /fetch queue closed/);
 });
 
 test('CLI help works without the database implementation installed', async (t) => {

@@ -39,7 +39,7 @@ Fetching runs hourly in UTC, starting at the next hour. To get your first result
 pnpm job-hunter fetch
 ```
 
-The review worker picks up new listings automatically. AI assessments can be wrong—check the original listing before applying.
+`fetch` queues a search and returns immediately; keep `fetch-worker` running to execute it. Duplicate requests while a search is queued or running are skipped. The review worker picks up new listings automatically. AI assessments can be wrong—check the original listing before applying.
 
 ## Make it yours
 
@@ -88,9 +88,9 @@ Optional settings in `.env`: `FETCH_CRON` changes the UTC fetch schedule, while 
 ## Usage
 
 ```sh
-docker compose logs -f fetch-worker review-worker  # Follow activity
+docker compose logs -f fetch-scheduler fetch-worker review-worker  # Follow activity
 docker compose down                              # Stop everything
-pnpm job-hunter fetch                            # Search now
+pnpm job-hunter fetch                            # Queue a search now
 pnpm job-hunter jobs                             # List saved jobs
 pnpm job-hunter stack-backfill                   # Queue missing stack checks
 pnpm job-hunter review --limit 10                # Enqueue and wait; review-worker must be running
@@ -98,7 +98,7 @@ pnpm job-hunter repair                          # Restore missing unfinished tas
 pnpm job-hunter retry --stage stack --id 42      # Retry one exhausted stage
 ```
 
-After updating the code, run `pnpm install && pnpm build`, then `docker compose up -d --force-recreate web fetch-worker review-worker`.
+After updating the code, run `pnpm install && pnpm build`, then `docker compose up -d --force-recreate web fetch-scheduler fetch-worker review-worker`.
 
 Keep the worker running when using `review`. If a check fails, its stage and reason appear in the UI. Use `retry` to try that stage again, or `repair` to pick up unfinished work missing from the queue. `stack-backfill` adds missing stack checks, regardless of location eligibility.
 
@@ -114,7 +114,7 @@ One worker handles crawling and both checks. Saved listing text is reused, each 
 
 Ashby extraction selects the exact listing UUID from the board's documented `jobUrl` values and saves the description together with location, workplace, employment, and compensation metadata. A successful board response without that UUID marks crawling terminal and blocks both checks; API errors, malformed posting URLs, and empty descriptions use normal retries. There is no Firecrawl fallback for Ashby. Previously saved text and assessments are unchanged.
 
-Searches use Autom credits. ChatGPT access uses an unofficial subscription endpoint, so upstream changes may break it.
+Searches use Autom credits. Failed searches are logged without automatically retrying the whole run; the next scheduled or manual request can run again. Queued searches wait while the fetch worker is offline, but scheduled ticks are missed while the scheduler is offline. ChatGPT access uses an unofficial subscription endpoint, so upstream changes may break it.
 
 For local development:
 

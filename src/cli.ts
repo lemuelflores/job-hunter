@@ -11,7 +11,7 @@ import {
   renderUsage,
   runCommand,
 } from 'citty';
-import type { JobQueues } from './bullmq.js';
+import type { FetchQueue, JobQueues } from './bullmq.js';
 import { loadProfile } from './profile.js';
 import { authenticate } from './review/auth.js';
 import { createLlm } from './review/llm/index.js';
@@ -63,6 +63,7 @@ function loadEnvironment() {
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   let store: SqliteStore | undefined;
   let queues: JobQueues | undefined;
+  let fetchQueue: FetchQueue | undefined;
   let exitCode = 0;
   const database = async () => {
     if (!store) {
@@ -79,6 +80,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return queues;
   };
   const controller = new AbortController();
+  const discoveryQueue = async () => {
+    if (!fetchQueue) {
+      const { FetchQueue } = await import('./bullmq.js');
+      fetchQueue = new FetchQueue();
+    }
+    return fetchQueue;
+  };
   const stop = () => controller.abort(new Error('Processing interrupted'));
   const processingSignal = () => {
     process.once('SIGINT', stop);
@@ -103,26 +111,55 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }),
     fetch: defineCommand({
       meta: {
-        description: 'Search Google and save new job URLs (no analysis)',
+        description: 'Queue a discovery run (requires fetch-worker)',
       },
       run: async () => {
-        const { fetchJobs } = await import('./discovery/discover-jobs.js');
-        const profile = await loadProfile();
-        report(await fetchJobs(await database(), undefined, profile));
+        const task = await (await discoveryQueue()).enqueue();
+        console.log(JSON.stringify({ queued: task.id }));
+      },
+    }),
+    'fetch-scheduler': defineCommand({
+      meta: { description: 'Queue fetching with FETCH_CRON (hourly, UTC)' },
+      run: async () => {
+        const { scheduleFetch } = await import('./discovery/worker.js');
+        const queue = await discoveryQueue();
+        await scheduleFetch(async () => {
+          await queue.enqueue();
+        });
       },
     }),
     'fetch-worker': defineCommand({
-      meta: { description: 'Schedule fetching with FETCH_CRON (hourly, UTC)' },
+      meta: { description: 'Consume queued discovery runs' },
       run: async () => {
         const { fetchJobs } = await import('./discovery/discover-jobs.js');
         const profile = await loadProfile();
-        const { workFetch } = await import('./discovery/worker.js');
-        await workFetch(async () => {
-          const outcome = await fetchJobs(await database(), undefined, profile);
+        const store = await database();
+        const queues = await jobQueues();
+        const queue = await discoveryQueue();
+        const signal = processingSignal();
+        const worker = await queue.startWorker(async () => {
+          const outcome = await fetchJobs(
+            store,
+            undefined,
+            profile,
+            async (ids) => {
+              for (const id of ids) await queues.scheduleListing(store, id);
+            },
+          );
           console.log(JSON.stringify(outcome));
           if (outcome.failures.length)
             throw new Error(outcome.failures.join('; '));
         });
+        try {
+          console.info('[fetch-worker] Started');
+          if (!signal.aborted)
+            await new Promise<void>((resolve) =>
+              signal.addEventListener('abort', () => resolve(), { once: true }),
+            );
+        } finally {
+          await worker.close();
+          console.info('[fetch-worker] Stopped');
+        }
       },
     }),
     review: defineCommand({
@@ -269,7 +306,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
     try {
-      await queues?.close();
+      await Promise.all([queues?.close(), fetchQueue?.close()]);
     } finally {
       store?.close();
     }

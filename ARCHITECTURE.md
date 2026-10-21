@@ -11,7 +11,7 @@ job-hunter/
 ├── src/
 │   ├── cli.ts                 # Commands, dependency construction, shutdown
 │   ├── discovery/
-│   │   ├── worker.ts          # UTC scheduled discovery
+│   │   ├── worker.ts          # UTC cron producer for queued discovery
 │   │   ├── discover-jobs.ts   # Search, save listings, enqueue reviews
 │   │   ├── job-url.ts         # ATS listing URL validation and normalization
 │   │   └── google.ts          # Query construction, search types, Autom.dev requests
@@ -69,7 +69,11 @@ Feature directories own their workflows and workers. `review/` operations load s
 ```text
 profile.ts + .env
        |
-CLI fetch / scheduled fetch-worker
+CLI fetch / cron fetch-scheduler
+       |
+BullMQ / Redis: fetch queue
+       |
+fetch-worker
        |--> Autom.dev --> Google results
        v
 SQLite: validated, deduplicated listings and stage state
@@ -113,7 +117,7 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 **Name:** Command entry point and fetch worker.
 
-**Description:** `src/cli.ts` loads root-relative configuration, constructs dependencies only for commands that need them, dispatches commands, and closes shared resources. Commands include `auth`, `fetch`, `fetch-worker`, `review`, `review-worker`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`. Feature modules own workflow lifecycles: `src/review/auth.ts` handles sign-in cancellation, `src/review/review-jobs.ts` owns review enqueueing and outcome waiting, and `src/web/server.ts` owns server startup and graceful shutdown.
+**Description:** `src/cli.ts` loads root-relative configuration, constructs dependencies only for commands that need them, dispatches commands, and closes shared resources. Commands include `auth`, `fetch`, `fetch-scheduler`, `fetch-worker`, `review`, `review-worker`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`. Feature modules own workflow lifecycles: `src/review/auth.ts` handles sign-in cancellation, `src/review/review-jobs.ts` owns review enqueueing and outcome waiting, and `src/web/server.ts` owns server startup and graceful shutdown.
 
 `src/discovery/google.ts` builds one combined Google query across Ashby, Lever, and Greenhouse. All title, skill, and search-location terms come from the root profile: array groups are ANDed; canonical names and aliases within a group are ORed. Titles use `intitle:` and skills match page-wide. The builder adds neither a profession nor a remote clause. `searchLocation` controls discovery alternatives; `location` is the candidate's residence for assessment.
 
@@ -123,11 +127,13 @@ Valibot validates search response containers and pagination; malformed result en
 
 Autom error messages are preserved verbatim, with an HTTP-status fallback only for missing or unusable error text. Each search page allows three total attempts: rate-limit `401` responses wait two seconds between attempts, while `500` responses back off for 500 ms then one second. Other statuses are not retried; `404` ends the search as an empty page. Authentication `401` responses are distinguished from rate limits using Autom's error text.
 
-`src/discovery/worker.ts` uses `FETCH_CRON` (default `0 * * * *`, UTC), with no immediate startup fetch and no overlapping runs. Shutdown waits for the active fetch; scheduled failures are logged without stopping future runs.
+`fetch-scheduler` runs `src/discovery/worker.ts` with `FETCH_CRON` (default `0 * * * *`, UTC), with no immediate startup enqueue and no overlapping enqueue calls. Shutdown waits for the active enqueue; enqueue failures are logged without stopping future ticks. Scheduler downtime misses ticks; worker downtime leaves queued work waiting. Neither the scheduler nor manual `fetch` loads the profile, database, or search credentials.
+
+`FetchQueue` in `src/bullmq.ts` owns a separate `fetch` queue with prefix `job-hunter`. Cron and manual `fetch` enqueue one complete discovery run with empty payload and BullMQ simple deduplication ID `fetch`, held until completion or failure. Global and local concurrency are one. `fetch-worker` loads the profile, executes `fetchJobs`, logs its outcome, and schedules listing stages through the existing review queues. It drains active work before closing queues and SQLite. Discovery is not a listing stage and has no `job_stages` row. Each task allows one attempt; partial search failures preserve successful results and mark the run failed without repeating paid searches automatically. Completed tasks are removed and the most recent 20 failures retained; a later trigger can run after either outcome. BullMQ stalled delivery recovery can still repeat external searches after a crash.
 
 **Technologies:** Node.js 22.18+, TypeScript ESM, native Fetch API, node-cron.
 
-**Deployment:** Host CLI or Compose `fetch-worker`, using stock `node:22-bookworm-slim`.
+**Deployment:** Host CLI or Compose `fetch-scheduler` and `fetch-worker`, using stock `node:22-bookworm-slim`.
 
 #### 3.2.2. Review Pipeline
 
@@ -233,11 +239,11 @@ Legacy job columns remain to preserve historical values and existing database ob
 
 **Cloud provider:** None required; intended for a local machine or self-managed host.
 
-**Key services:** Docker Compose runs `web`, `fetch-worker`, `review-worker`, `firecrawl`, `playwright`, and `redis` on a bridge network. Firecrawl starts directly with `node dist/src/index.js` for single-page `/v2/scrape` requests, which run in the API without its NuQ workers, RabbitMQ, or PostgreSQL. Full crawl, batch, and extract workflows are not provisioned. Application services share a read-write checkout bind mount at `/app`, including the database and credentials. There is no application Dockerfile or image build: install dependencies and compile on the host first.
+**Key services:** Docker Compose runs `web`, `fetch-scheduler`, `fetch-worker`, `review-worker`, `firecrawl`, `playwright`, and `redis` on a bridge network. Firecrawl starts directly with `node dist/src/index.js` for single-page `/v2/scrape` requests, which run in the API without its NuQ workers, RabbitMQ, or PostgreSQL. Full crawl, batch, and extract workflows are not provisioned. Application services share a read-write checkout bind mount at `/app`, including the database and credentials. There is no application Dockerfile or image build: install dependencies and compile on the host first.
 
 Web, Firecrawl API, and Redis host ports are published on `127.0.0.1` only. Compose uses dependency health checks for relevant worker dependencies, restart policies, bounded JSON-file logs, and shutdown grace periods (two minutes for app services, three for review workers). The scraper services have resource limits.
 
-App containers use `${UID:-1000}:${GID:-1000}` to keep bind-mounted database and credential writes under the local user's identity. Both worker services require healthy Redis; review startup does not depend on Firecrawl health because supported providers use direct APIs.
+App containers use `${UID:-1000}:${GID:-1000}` to keep bind-mounted database and credential writes under the local user's identity. The scheduler and both worker services require healthy Redis; review startup does not depend on Firecrawl health because supported providers use direct APIs.
 
 **CI/CD pipeline:** No checked-in `.github` workflow directory; build, checks, tests, and deployment are invoked manually through package scripts and Compose.
 

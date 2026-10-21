@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 
-export async function workFetch(
-  fetch: () => Promise<void>,
+export async function scheduleFetch(
+  enqueue: () => Promise<void>,
   expression = process.env.FETCH_CRON || '0 * * * *',
 ): Promise<void> {
   if (!cron.validate(expression))
@@ -9,9 +9,9 @@ export async function workFetch(
   let active: Promise<void> | undefined;
   const run = async () => {
     try {
-      await fetch();
+      await enqueue();
     } catch (error) {
-      console.error('[fetch-worker] Fetch failed:', error);
+      console.error('[fetch-scheduler] Enqueue failed:', error);
     }
   };
   const task = cron.schedule(
@@ -22,7 +22,7 @@ export async function workFetch(
     },
     { noOverlap: true, timezone: 'UTC' },
   );
-  console.error(`[fetch-worker] Scheduled ${expression} (UTC)`);
+  console.error(`[fetch-scheduler] Scheduled ${expression} (UTC)`);
   try {
     await new Promise<void>((done) => {
       const stop = () => {

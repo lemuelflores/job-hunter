@@ -43,12 +43,19 @@ services:
       redis:
         condition: service_healthy
 
-  fetch-worker:
+  fetch-scheduler:
     <<: *app
-    command: [fetch-worker]
+    command: [fetch-scheduler]
     environment:
       FETCH_CRON: ${FETCH_CRON:-0 * * * *}
       REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  fetch-worker:
+    <<: *app
+    command: [fetch-worker]
     depends_on:
       redis:
         condition: service_healthy

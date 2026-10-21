@@ -6,7 +6,7 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { JobQueues } from '../dist/bullmq.js';
+import { FetchQueue, JobQueues } from '../dist/bullmq.js';
 import { startCrawlWorker } from '../dist/review/crawl.js';
 import { startLocationWorker } from '../dist/review/location-check.js';
 import { reviewJobs } from '../dist/review/review-jobs.js';
@@ -127,6 +127,56 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
 
   // Act: exercise delivery and recovery against the same disposable Redis instance.
   // Assert: each subtest checks its persisted results and queue checkpoints below.
+  await t.test(
+    'fetch delivery waits for workers, deduplicates overlap, and allows later runs after failure',
+    async () => {
+      const fetches = new FetchQueue(url, 'isolated-fetch');
+      const otherProducer = new FetchQueue(url, 'isolated-fetch');
+      const consumers = [];
+      let calls = 0;
+      let release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      try {
+        const first = await fetches.enqueue();
+        await otherProducer.enqueue();
+        assert.equal(await fetches.queue.getWaitingCount(), 1);
+        const process = async () => {
+          calls++;
+          await gate;
+          if (calls === 2) throw new Error('partial search failure');
+        };
+        consumers.push(await fetches.startWorker(process));
+        consumers.push(await otherProducer.startWorker(process));
+        await until(() => calls === 1);
+        await Promise.all(
+          Array.from({ length: 5 }, () => otherProducer.enqueue()),
+        );
+        assert.equal(await fetches.queue.getWaitingCount(), 0);
+        assert.equal(await fetches.queue.getActiveCount(), 1);
+        assert.equal(await fetches.queue.getGlobalConcurrency(), 1);
+        release();
+        await until(async () => !(await fetches.queue.getJob(first.id)));
+        const failed = await fetches.enqueue();
+        await until(
+          async () =>
+            (await fetches.queue.getJob(failed.id))?.failedReason ===
+            'partial search failure',
+        );
+        assert.equal((await fetches.queue.getJob(failed.id)).attemptsMade, 1);
+        const next = await fetches.enqueue();
+        await until(
+          async () => calls === 3 && !(await fetches.queue.getJob(next.id)),
+        );
+        assert.equal(calls, 3);
+      } finally {
+        release();
+        await Promise.all(consumers.map((worker) => worker.close()));
+        await Promise.all([fetches.close(), otherProducer.close()]);
+      }
+    },
+  );
   await t.test(
     'deduplicates tasks and lets stack/crawl progress while location is blocked',
     async () => {

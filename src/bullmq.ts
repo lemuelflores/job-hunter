@@ -29,6 +29,52 @@ RedisConnection.clientFactory = (options) => {
   return connection;
 };
 
+export class FetchQueue {
+  readonly queue: Queue;
+
+  constructor(
+    readonly url = process.env.REDIS_URL || 'redis://127.0.0.1:6379',
+    readonly prefix = 'job-hunter',
+  ) {
+    this.queue = new Queue('fetch', {
+      prefix,
+      connection: { url, enableOfflineQueue: false },
+      defaultJobOptions: {
+        attempts: 1,
+        removeOnComplete: true,
+        removeOnFail: 20,
+      },
+    });
+    this.queue.on('error', (error) =>
+      console.error(`[queue] fetch: ${error.message}`),
+    );
+  }
+
+  async enqueue() {
+    return this.queue.add('fetch', {}, { deduplication: { id: 'fetch' } });
+  }
+
+  async startWorker(fetch: () => Promise<void>) {
+    await this.queue.setGlobalConcurrency(1);
+    const worker = new Worker('fetch', fetch, {
+      prefix: this.prefix,
+      connection: { url: this.url },
+      concurrency: 1,
+    });
+    worker.on('error', (error) =>
+      console.error(`[worker] fetch: ${error.message}`),
+    );
+    worker.on('failed', (_task, error) =>
+      console.error(`[worker] Fetch failed: ${error.message}`),
+    );
+    return worker;
+  }
+
+  async close() {
+    await this.queue.close();
+  }
+}
+
 export class JobQueues {
   readonly queues: Record<Stage, Queue>;
   readonly url: string;

@@ -1,18 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout } from 'node:timers/promises';
-import { workFetch } from '../dist/discovery/worker.js';
+import { scheduleFetch } from '../dist/discovery/worker.js';
 
-test('fetch worker rejects invalid cron before fetching', async () => {
+test('fetch scheduler rejects invalid cron before enqueueing', async () => {
   // Arrange: use a fetch callback that must never run for an invalid schedule.
   // Act / Assert: reject the cron expression before invoking discovery.
   await assert.rejects(
-    workFetch(async () => assert.fail(), 'invalid'),
+    scheduleFetch(async () => assert.fail(), 'invalid'),
     /FETCH_CRON/,
   );
 });
 
-test('fetch worker waits for cron, skips overlap, and drains on shutdown', {
+test('fetch scheduler waits for cron, skips overlap, and drains on shutdown', {
   timeout: 8000,
 }, async () => {
   // Arrange: gate the first fetch so overlap and shutdown can be observed.
@@ -27,7 +27,7 @@ test('fetch worker waits for cron, skips overlap, and drains on shutdown', {
   });
   let stopped = false;
   // Act: start a worker scheduled to fetch every second.
-  const worker = workFetch(async () => {
+  const worker = scheduleFetch(async () => {
     calls++;
     started();
     await gate;
@@ -57,7 +57,7 @@ test('fetch worker waits for cron, skips overlap, and drains on shutdown', {
   assert.equal(stopped, true);
 });
 
-test('fetch worker continues scheduling after a failed fetch', {
+test('fetch scheduler continues scheduling after a failed enqueue', {
   timeout: 8000,
 }, async () => {
   // Arrange: observe recovery after the first scheduled fetch fails.
@@ -67,7 +67,7 @@ test('fetch worker continues scheduling after a failed fetch', {
     complete = resolve;
   });
   // Act: start scheduling with a one-time fetch failure.
-  const worker = workFetch(async () => {
+  const worker = scheduleFetch(async () => {
     if (++calls === 1) throw new Error('mock search failure');
     complete();
   }, '* * * * * *');
