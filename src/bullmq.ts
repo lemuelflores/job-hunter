@@ -75,7 +75,7 @@ export class FetchQueue {
   }
 }
 
-export class JobQueues {
+export class ReviewQueues {
   readonly queues: Record<Stage, Queue>;
   readonly url: string;
   readonly prefix: string;

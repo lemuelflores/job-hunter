@@ -1,6 +1,6 @@
 import { loadProfile } from '../../../profile.js';
 import type { ReviewOptions, StackDecision } from '../types.js';
-import { request } from './request.js';
+import { type ChatgptRequest, request } from './request.js';
 
 const stackSchema = {
   type: 'object',
@@ -39,13 +39,14 @@ export function parseStackDecision(text: string): StackDecision {
 export async function reviewStack(
   url: string,
   options: ReviewOptions = {},
+  send: ChatgptRequest = request,
 ): Promise<StackDecision> {
   if (typeof options.listingText !== 'string')
     throw new Error('listingText is required for reviewStack');
   const skills = options.skills ?? (await loadProfile()).skills;
   console.info(`[chatgpt] Checking stack: ${url}`);
   const decision = parseStackDecision(
-    await request(
+    await send(
       options,
       `Evaluate only the job's actual role-required/core technologies against the supplied target skills.
 The target skills array is AND: each group is required for full alignment. Object keys within a group are OR alternatives. Each key is the canonical technology; its values are aliases that always also include the key itself, even if omitted from the values. Aliases count as one concept, never additional required technologies.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { JobQueues } from '../dist/bullmq.js';
+import { ReviewQueues } from '../dist/bullmq.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
 test('retry ignores stale failure reads and removes old delivery before reset', async (t) => {
@@ -27,7 +27,7 @@ test('retry ignores stale failure reads and removes old delivery before reset', 
     },
   };
   let task = old;
-  const queues = Object.create(JobQueues.prototype);
+  const queues = Object.create(ReviewQueues.prototype);
   queues.queues = Object.fromEntries(
     ['crawl', 'location', 'stack'].map((stage) => [
       stage,
@@ -63,7 +63,7 @@ test('repair restores delivery when enqueue fails after a retry reset', async (t
     { url: 'https://example.test/1', title: 'Role', query: 'q' },
   ]);
   store.failStage(1, 'crawl', 'Old failure', true);
-  const queues = Object.create(JobQueues.prototype);
+  const queues = Object.create(ReviewQueues.prototype);
   let unavailable = true;
   let delivered = 0;
   queues.queues = Object.fromEntries(

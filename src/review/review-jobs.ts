@@ -1,10 +1,10 @@
 import timers from 'node:timers/promises';
-import type { JobQueues } from '../bullmq.js';
+import type { ReviewQueues } from '../bullmq.js';
 import type { SqliteStore } from '../sqlite.js';
 
 async function reviewOutcome(
   store: SqliteStore,
-  queues: JobQueues,
+  queues: ReviewQueues,
   id: number,
 ) {
   if (store.getJob(id)?.status !== 'active')
@@ -22,7 +22,7 @@ async function reviewOutcome(
 
 export async function reviewJobs(
   store: SqliteStore,
-  queues: JobQueues,
+  queues: ReviewQueues,
   limit?: number,
   signal?: AbortSignal,
 ) {

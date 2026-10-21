@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout } from 'node:timers/promises';
-import { scheduleFetch } from '../dist/discovery/scheduler.js';
+import { startFetchScheduler } from '../dist/discovery/scheduler.js';
 
 test('fetch scheduler rejects invalid cron before enqueueing', async () => {
-  // Arrange: use a fetch callback that must never run for an invalid schedule.
+  // Arrange: use a queue that must never run for an invalid schedule.
   // Act / Assert: reject the cron expression before invoking discovery.
   await assert.rejects(
-    scheduleFetch(async () => assert.fail(), 'invalid'),
+    startFetchScheduler({ enqueue: async () => assert.fail() }, 'invalid'),
     /FETCH_CRON/,
   );
 });
@@ -27,11 +27,16 @@ test('fetch scheduler waits for cron, skips overlap, and drains on shutdown', {
   });
   let stopped = false;
   // Act: start a worker scheduled to fetch every second.
-  const worker = scheduleFetch(async () => {
-    calls++;
-    started();
-    await gate;
-  }, '* * * * * *').then(() => {
+  const worker = startFetchScheduler(
+    {
+      async enqueue() {
+        calls++;
+        started();
+        await gate;
+      },
+    },
+    '* * * * * *',
+  ).then(() => {
     stopped = true;
   });
   // Assert: startup waits for cron rather than fetching immediately.
@@ -67,10 +72,15 @@ test('fetch scheduler continues scheduling after a failed enqueue', {
     complete = resolve;
   });
   // Act: start scheduling with a one-time fetch failure.
-  const worker = scheduleFetch(async () => {
-    if (++calls === 1) throw new Error('mock search failure');
-    complete();
-  }, '* * * * * *');
+  const worker = startFetchScheduler(
+    {
+      async enqueue() {
+        if (++calls === 1) throw new Error('mock enqueue failure');
+        complete();
+      },
+    },
+    '* * * * * *',
+  );
   try {
     // Act: wait for the next scheduled fetch to succeed.
     await recovered;

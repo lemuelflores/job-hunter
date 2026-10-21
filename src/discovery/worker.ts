@@ -1,4 +1,4 @@
-import type { FetchQueue, JobQueues } from '../bullmq.js';
+import type { FetchQueue, ReviewQueues } from '../bullmq.js';
 import type { Profile } from '../profile.js';
 import type { SqliteStore } from '../sqlite.js';
 import {
@@ -9,7 +9,7 @@ import { normalizeJobUrl } from './job-url.js';
 
 export function startFetchWorker(
   store: SqliteStore,
-  queues: JobQueues,
+  queues: ReviewQueues,
   queue: FetchQueue,
   profile: Profile,
 ) {

@@ -6,7 +6,7 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { FetchQueue, JobQueues } from '../dist/bullmq.js';
+import { FetchQueue, ReviewQueues } from '../dist/bullmq.js';
 import { startCrawlWorker } from '../dist/review/crawl.js';
 import { startLocationWorker } from '../dist/review/location-check.js';
 import { reviewJobs } from '../dist/review/review-jobs.js';
@@ -121,7 +121,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
   );
   const url = `redis://127.0.0.1:${port}`;
   await until(() => docker('exec', container, 'redis-cli', 'ping') === 'PONG');
-  queues = new JobQueues(url, 'isolated-job-hunter');
+  queues = new ReviewQueues(url, 'isolated-job-hunter');
   for (const queue of Object.values(queues.queues))
     queue.defaultJobOptions.backoff.delay = 10;
 
@@ -423,13 +423,13 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
         .href;
       const persistence = new URL('../dist/sqlite.js', import.meta.url).href;
       const code = `
-      import {JobQueues} from ${JSON.stringify(transport)};
+      import {ReviewQueues} from ${JSON.stringify(transport)};
       import {startCrawlWorker} from ${JSON.stringify(crawl)};
       import {startLocationWorker} from ${JSON.stringify(locationCheck)};
       import {startTechWorker} from ${JSON.stringify(techCheck)};
       import {SqliteStore} from ${JSON.stringify(persistence)};
       const store=new SqliteStore(${JSON.stringify(path)});
-      const queues=new JobQueues(${JSON.stringify(url)},'isolated-job-hunter');
+      const queues=new ReviewQueues(${JSON.stringify(url)},'isolated-job-hunter');
       await startCrawlWorker(store,queues,async()=>new Promise(()=>{}));
       await startLocationWorker(store,queues,async()=>{process.send('active');return new Promise(()=>{});});
       await startTechWorker(store,queues,async()=>(${JSON.stringify(stack)}));
@@ -596,7 +596,7 @@ test('isolated Redis delivery, independent consumers, repair, retries and real r
     'unavailable Redis fails producers instead of hanging the CLI',
     async () => {
       // Arrange: target a local port with no Redis listener.
-      const unavailable = new JobQueues(
+      const unavailable = new ReviewQueues(
         'redis://127.0.0.1:1',
         'isolated-unavailable',
       );

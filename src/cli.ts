@@ -11,10 +11,11 @@ import {
   renderUsage,
   runCommand,
 } from 'citty';
-import type { FetchQueue, JobQueues } from './bullmq.js';
-import { loadProfile } from './profile.js';
+import type { FetchQueue, ReviewQueues } from './bullmq.js';
+import { loadProfile, type Profile } from './profile.js';
 import { authenticate } from './review/auth.js';
 import { createLlm } from './review/llm/index.js';
+import type { LlmProvider } from './review/llm/types.js';
 import { reviewJobs } from './review/review-jobs.js';
 import { STAGES } from './review/stages.js';
 import type { SqliteStore } from './sqlite.js';
@@ -60,30 +61,94 @@ function loadEnvironment() {
   }
 }
 
-export async function main(argv = process.argv.slice(2)): Promise<number> {
+export interface CliDependencies {
+  loadProfile(): Promise<Profile>;
+  createLlm(): LlmProvider;
+  createStore(): Promise<SqliteStore>;
+  createReviewQueues(): Promise<ReviewQueues>;
+  createFetchQueue(): Promise<FetchQueue>;
+  startFetchScheduler(queue: FetchQueue): Promise<void>;
+  startFetchWorker(
+    store: SqliteStore,
+    queues: ReviewQueues,
+    queue: FetchQueue,
+    profile: Profile,
+  ): Promise<Worker>;
+  startCrawlWorker(store: SqliteStore, queues: ReviewQueues): Promise<Worker>;
+  startLocationWorker(
+    store: SqliteStore,
+    queues: ReviewQueues,
+    reviewLocation: LlmProvider['reviewJob'],
+  ): Promise<Worker>;
+  startTechWorker(
+    store: SqliteStore,
+    queues: ReviewQueues,
+    reviewStack: LlmProvider['reviewStack'],
+  ): Promise<Worker>;
+}
+
+const defaults: CliDependencies = {
+  loadProfile,
+  createLlm,
+  createStore: async () => {
+    const { SqliteStore } = await import('./sqlite.js');
+    return new SqliteStore(resolve(ROOT, 'jobs.sqlite'));
+  },
+  createReviewQueues: async () => {
+    const { ReviewQueues } = await import('./bullmq.js');
+    return new ReviewQueues();
+  },
+  createFetchQueue: async () => {
+    const { FetchQueue } = await import('./bullmq.js');
+    return new FetchQueue();
+  },
+  startFetchScheduler: async (queue) => {
+    const { startFetchScheduler } = await import('./discovery/scheduler.js');
+    return startFetchScheduler(queue);
+  },
+  startFetchWorker: async (store, queues, queue, profile) => {
+    const { startFetchWorker } = await import('./discovery/worker.js');
+    return startFetchWorker(store, queues, queue, profile);
+  },
+  startCrawlWorker: async (store, queues) => {
+    const { startCrawlWorker } = await import('./review/crawl.js');
+    return startCrawlWorker(store, queues);
+  },
+  startLocationWorker: async (store, queues, reviewLocation) => {
+    const { startLocationWorker } = await import('./review/location-check.js');
+    return startLocationWorker(store, queues, reviewLocation);
+  },
+  startTechWorker: async (store, queues, reviewStack) => {
+    const { startTechWorker } = await import('./review/tech-check.js');
+    return startTechWorker(store, queues, reviewStack);
+  },
+};
+
+export async function main(
+  argv = process.argv.slice(2),
+  dependencies: Partial<CliDependencies> = {},
+): Promise<number> {
+  const deps = { ...defaults, ...dependencies };
   let store: SqliteStore | undefined;
-  let queues: JobQueues | undefined;
+  let queues: ReviewQueues | undefined;
   let fetchQueue: FetchQueue | undefined;
   let exitCode = 0;
   const database = async () => {
     if (!store) {
-      const { SqliteStore } = await import('./sqlite.js');
-      store = new SqliteStore(resolve(ROOT, 'jobs.sqlite'));
+      store = await deps.createStore();
     }
     return store;
   };
-  const jobQueues = async () => {
+  const reviewQueues = async () => {
     if (!queues) {
-      const { JobQueues } = await import('./bullmq.js');
-      queues = new JobQueues();
+      queues = await deps.createReviewQueues();
     }
     return queues;
   };
   const controller = new AbortController();
   const discoveryQueue = async () => {
     if (!fetchQueue) {
-      const { FetchQueue } = await import('./bullmq.js');
-      fetchQueue = new FetchQueue();
+      fetchQueue = await deps.createFetchQueue();
     }
     return fetchQueue;
   };
@@ -100,7 +165,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const subCommands = {
     auth: defineCommand({
       meta: { description: 'Sign in with your ChatGPT subscription' },
-      run: authenticate,
+      run: () => authenticate(deps.createLlm()),
     }),
     jobs: defineCommand({
       meta: { description: 'Print saved active jobs as JSON' },
@@ -121,11 +186,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     scheduler: defineCommand({
       meta: { description: 'Queue fetching with FETCH_CRON (hourly, UTC)' },
       run: async () => {
-        const { scheduleFetch } = await import('./discovery/scheduler.js');
-        const queue = await discoveryQueue();
-        await scheduleFetch(async () => {
-          await queue.enqueue();
-        });
+        await deps.startFetchScheduler(await discoveryQueue());
       },
     }),
     review: defineCommand({
@@ -141,7 +202,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         report(
           await reviewJobs(
             await database(),
-            await jobQueues(),
+            await reviewQueues(),
             limit,
             processingSignal(),
           ),
@@ -151,29 +212,25 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     workers: defineCommand({
       meta: { description: 'Run fetch, crawl, location and stack consumers' },
       run: async () => {
-        const profile = await loadProfile();
-        const llm = createLlm();
-        const { startFetchWorker } = await import('./discovery/worker.js');
-        const { startCrawlWorker } = await import('./review/crawl.js');
-        const { startLocationWorker } = await import(
-          './review/location-check.js'
-        );
-        const { startTechWorker } = await import('./review/tech-check.js');
+        const profile = await deps.loadProfile();
+        const llm = deps.createLlm();
         const store = await database();
-        const queues = await jobQueues();
+        const queues = await reviewQueues();
         const queue = await discoveryQueue();
         const signal = processingSignal();
         const workers: Worker[] = [];
         try {
-          workers.push(await startFetchWorker(store, queues, queue, profile));
-          workers.push(await startCrawlWorker(store, queues));
           workers.push(
-            await startLocationWorker(store, queues, (url, options) =>
+            await deps.startFetchWorker(store, queues, queue, profile),
+          );
+          workers.push(await deps.startCrawlWorker(store, queues));
+          workers.push(
+            await deps.startLocationWorker(store, queues, (url, options) =>
               llm.reviewJob(url, { ...options, location: profile.location }),
             ),
           );
           workers.push(
-            await startTechWorker(store, queues, (url, options) =>
+            await deps.startTechWorker(store, queues, (url, options) =>
               llm.reviewStack(url, { ...options, skills: profile.skills }),
             ),
           );
@@ -194,7 +251,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       meta: { description: 'Restore missing unfinished queue tasks' },
       args: { stage: stageArg },
       run: async ({ args }) => {
-        const queues = await jobQueues();
+        const queues = await reviewQueues();
         console.log(
           JSON.stringify({
             listings: await queues.repair(await database(), args.stage),
@@ -210,7 +267,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       },
       run: async ({ args }) => {
         const id = integer(args.id);
-        const queues = await jobQueues();
+        const queues = await reviewQueues();
         await queues.retry(await database(), args.stage, id);
         console.log(JSON.stringify({ retried: id, stage: args.stage }));
       },
@@ -223,7 +280,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       run: async () => {
         const store = await database();
         const queued = store.queueStackBackfill();
-        const queues = await jobQueues();
+        const queues = await reviewQueues();
         await queues.repair(store);
         console.log(JSON.stringify({ queued }));
       },

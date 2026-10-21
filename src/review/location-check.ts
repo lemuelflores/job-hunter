@@ -1,11 +1,11 @@
-import type { JobQueues } from '../bullmq.js';
+import type { ReviewQueues } from '../bullmq.js';
 import type { SqliteStore } from '../sqlite.js';
 import type { LlmProvider } from './llm/types.js';
 
 export function startLocationWorker(
   store: SqliteStore,
-  queues: JobQueues,
-  review: LlmProvider['reviewJob'],
+  queues: ReviewQueues,
+  reviewLocation: LlmProvider['reviewJob'],
   signal?: AbortSignal,
 ) {
   return queues.startWorker(
@@ -14,7 +14,7 @@ export function startLocationWorker(
     async (job) => {
       if (!store.needsStage(job.id, 'location') || job.listing_text === null)
         return;
-      const decision = await review(job.url, {
+      const decision = await reviewLocation(job.url, {
         signal,
         listingText: job.listing_text,
       });

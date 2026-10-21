@@ -1,7 +1,8 @@
 import cron from 'node-cron';
+import type { FetchQueue } from '../bullmq.js';
 
-export async function scheduleFetch(
-  enqueue: () => Promise<void>,
+export async function startFetchScheduler(
+  queue: FetchQueue,
   expression = process.env.FETCH_CRON || '0 * * * *',
 ): Promise<void> {
   if (!cron.validate(expression))
@@ -9,7 +10,7 @@ export async function scheduleFetch(
   let active: Promise<void> | undefined;
   const run = async () => {
     try {
-      await enqueue();
+      await queue.enqueue();
     } catch (error) {
       console.error('[scheduler] Enqueue failed:', error);
     }

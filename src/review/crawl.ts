@@ -1,4 +1,4 @@
-import type { JobQueues } from '../bullmq.js';
+import type { ReviewQueues } from '../bullmq.js';
 import type { SqliteStore } from '../sqlite.js';
 import { fetchAshbyListing } from './ashby.js';
 import { type ListingExtractor, PageError } from './extraction.js';
@@ -8,7 +8,7 @@ import { fetchLeverListing } from './lever.js';
 
 export function startCrawlWorker(
   store: SqliteStore,
-  queues: JobQueues,
+  queues: ReviewQueues,
   scrape?: ListingExtractor,
   signal?: AbortSignal,
 ) {

@@ -19,7 +19,11 @@ import {
   authenticate,
   getCredentials,
 } from '../dist/review/llm/chatgpt/auth.js';
-import { AuthenticationError } from '../dist/review/llm/index.js';
+import { createRequest } from '../dist/review/llm/chatgpt/request.js';
+import {
+  AuthenticationError,
+  createChatgpt,
+} from '../dist/review/llm/index.js';
 
 // Shared Arrange: synthetic tokens carry only the claims needed by OAuth tests.
 const jwt = (data) =>
@@ -98,8 +102,7 @@ test('browser callback exchanges PKCE code and atomically saves private reusable
   const { root, authPath } = await setup(t);
   let authorize,
     calls = 0;
-  const login = await startLogin(t, {
-    authPath,
+  const provider = createChatgpt({
     fetch: async (url, init) => {
       calls++;
       // Assert: the exchange matches the authorization URL and verifies the PKCE challenge.
@@ -129,6 +132,7 @@ test('browser callback exchanges PKCE code and atomically saves private reusable
       return Response.json(tokenResponse());
     },
   });
+  const login = await startLogin(t, { authPath }, provider.authenticate);
   // Act: inspect the authorization URL emitted when login starts.
   authorize = login.url;
   // Assert: authorization requests a state-protected PKCE flow with offline access.
@@ -347,6 +351,59 @@ test('failed refresh preserves old credentials and redacts provider response', a
   );
   // Assert: failure leaves the previous credentials byte-for-byte intact.
   assert.equal(await readFile(authPath, 'utf8'), original);
+});
+
+test('model transport uses the access token returned by a real credential refresh', async (t) => {
+  const { root } = await setup(t);
+  const authPath = join(root, 'auth.json');
+  await writeFile(
+    authPath,
+    JSON.stringify({
+      openai: { type: 'oauth', access: 'old', refresh: 'refresh', expires: 1 },
+    }),
+  );
+  const calls = [];
+  const request = createRequest({
+    fetch: async (url, init) => {
+      calls.push(url);
+      if (url === 'https://auth.openai.com/oauth/token')
+        return Response.json({
+          access_token: 'new',
+          refresh_token: 'rotated',
+          expires_in: 3600,
+        });
+      assert.equal(init.headers.Authorization, 'Bearer new');
+      return new Response(
+        'data: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: {"type":"response.completed"}\n\n',
+      );
+    },
+  });
+  assert.equal(
+    await request({ authPath }, 'instructions', 'listing text', 'test', {}),
+    'ok',
+  );
+  assert.deepEqual(calls, [
+    'https://auth.openai.com/oauth/token',
+    'https://chatgpt.com/backend-api/codex/responses',
+  ]);
+});
+
+test('expired credentials without a refresh token fail before network access', async (t) => {
+  const { root } = await setup(t);
+  const authPath = join(root, 'auth.json');
+  await writeFile(
+    authPath,
+    JSON.stringify({
+      openai: { type: 'oauth', access: 'test', expires: 1 },
+    }),
+  );
+  await assert.rejects(
+    getCredentials({
+      authPath,
+      fetch: async () => assert.fail('network'),
+    }),
+    /expired/,
+  );
 });
 
 test('missing or corrupt credentials give actionable errors without network calls', async (t) => {

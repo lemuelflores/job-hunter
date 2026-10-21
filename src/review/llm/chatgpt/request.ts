@@ -1,66 +1,82 @@
 import {
   AuthenticationError,
+  type AuthOptions,
   RateLimitError,
   type ReviewOptions,
 } from '../types.js';
-import { getCredentials } from './auth.js';
+import { type Credentials, getCredentials } from './auth.js';
 
-export async function request(
+export interface RequestDependencies {
+  getCredentials?: (options: AuthOptions) => Promise<Credentials>;
+  fetch?: typeof fetch;
+}
+
+export type ChatgptRequest = (
   options: ReviewOptions,
   instructions: string,
   input: string,
   name: string,
   schema: object,
-): Promise<string> {
-  const auth = await getCredentials(options);
-  const effort = options.effort ?? process.env.MODEL_EFFORT ?? 'medium';
-  if (!['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort))
-    throw new Error('Invalid MODEL_EFFORT');
-  const timeout = AbortSignal.timeout(120_000);
-  // shortcut: subscription backend is undocumented; recheck the contract if requests stop working.
-  const response = await (options.fetch ?? fetch)(
-    'https://chatgpt.com/backend-api/codex/responses',
-    {
-      method: 'POST',
-      redirect: 'error',
-      signal: options.signal
-        ? AbortSignal.any([options.signal, timeout])
-        : timeout,
-      headers: {
-        Authorization: `Bearer ${auth.access}`,
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-        ...(auth.accountId ? { 'ChatGPT-Account-Id': auth.accountId } : {}),
-      },
-      body: JSON.stringify({
-        model: (options.model ?? process.env.MODEL_NAME ?? 'gpt-6-luna')
-          .replace(/^openai\//, '')
-          .split('#')[0],
-        reasoning: { effort },
-        instructions,
-        input: [
-          {
-            role: 'user',
-            content: [{ type: 'input_text', text: input }],
-          },
-        ],
-        store: false,
-        stream: true,
-        text: {
-          format: { type: 'json_schema', name, strict: true, schema },
+) => Promise<string>;
+
+export function createRequest({
+  getCredentials: credentials = getCredentials,
+  fetch: fetchRequest = (...args) => fetch(...args),
+}: RequestDependencies = {}): ChatgptRequest {
+  return async function request(options, instructions, input, name, schema) {
+    const send = options.fetch ?? fetchRequest;
+    const auth = await credentials({ ...options, fetch: send });
+    const effort = options.effort ?? process.env.MODEL_EFFORT ?? 'medium';
+    if (!['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort))
+      throw new Error('Invalid MODEL_EFFORT');
+    const timeout = AbortSignal.timeout(120_000);
+    // shortcut: subscription backend is undocumented; recheck the contract if requests stop working.
+    const response = await send(
+      'https://chatgpt.com/backend-api/codex/responses',
+      {
+        method: 'POST',
+        redirect: 'error',
+        signal: options.signal
+          ? AbortSignal.any([options.signal, timeout])
+          : timeout,
+        headers: {
+          Authorization: `Bearer ${auth.access}`,
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          ...(auth.accountId ? { 'ChatGPT-Account-Id': auth.accountId } : {}),
         },
-      }),
-    },
-  );
-  if (response.status === 401 || response.status === 403)
-    throw new AuthenticationError(
-      `ChatGPT HTTP ${response.status}; run job-hunter auth to sign in again`,
+        body: JSON.stringify({
+          model: (options.model ?? process.env.MODEL_NAME ?? 'gpt-6-luna')
+            .replace(/^openai\//, '')
+            .split('#')[0],
+          reasoning: { effort },
+          instructions,
+          input: [
+            {
+              role: 'user',
+              content: [{ type: 'input_text', text: input }],
+            },
+          ],
+          store: false,
+          stream: true,
+          text: {
+            format: { type: 'json_schema', name, strict: true, schema },
+          },
+        }),
+      },
     );
-  if (response.status === 429)
-    throw new RateLimitError('ChatGPT HTTP 429; quota/rate limit reached');
-  if (!response.ok) throw new Error(`ChatGPT HTTP ${response.status}`);
-  return readResponse(response);
+    if ([401, 403].includes(response.status))
+      throw new AuthenticationError(
+        `ChatGPT HTTP ${response.status}; run job-hunter auth to sign in again`,
+      );
+    if (response.status === 429)
+      throw new RateLimitError('ChatGPT HTTP 429; quota/rate limit reached');
+    if (!response.ok) throw new Error(`ChatGPT HTTP ${response.status}`);
+    return readResponse(response);
+  };
 }
+
+export const request = createRequest();
 
 async function readResponse(response: Response): Promise<string> {
   if (!response.body) throw new Error('Empty ChatGPT response');

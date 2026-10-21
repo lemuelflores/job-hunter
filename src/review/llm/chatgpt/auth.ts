@@ -11,7 +11,7 @@ const ISSUER = 'https://auth.openai.com';
 const REDIRECT_URI = 'http://127.0.0.1:1455/auth/callback';
 const SIGN_IN = 'Run job-hunter auth to sign in with ChatGPT';
 
-interface Credentials {
+export interface Credentials {
   type: 'oauth';
   access: string;
   refresh?: string;

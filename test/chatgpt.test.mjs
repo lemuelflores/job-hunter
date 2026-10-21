@@ -1,23 +1,30 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import { loadProfile } from '../dist/profile.js';
 import {
   locationRule,
   parseDecision,
-  reviewJob,
 } from '../dist/review/llm/chatgpt/location-check.js';
-import { request } from '../dist/review/llm/chatgpt/request.js';
+import { createRequest } from '../dist/review/llm/chatgpt/request.js';
 import { parseStackDecision } from '../dist/review/llm/chatgpt/tech-check.js';
+import { createChatgpt } from '../dist/review/llm/index.js';
 import {
   AuthenticationError,
-  createLlm,
   RateLimitError,
-} from '../dist/review/llm/index.js';
+} from '../dist/review/llm/types.js';
 
-const llm = createLlm();
+const getCredentials = mock.fn(async () => ({
+  type: 'oauth',
+  access: 'test-token',
+  accountId: 'test-account',
+}));
+const dependencies = {
+  getCredentials,
+  fetch: async () => assert.fail('unexpected network request'),
+};
+const llm = createChatgpt(dependencies);
+const { reviewJob } = llm;
+const request = createRequest(dependencies);
 
 // Shared Arrange: a valid location decision and completed SSE stream for request fixtures.
 const decision = {
@@ -32,24 +39,6 @@ const events = [
   { type: 'response.output_text.delta', delta: JSON.stringify(decision) },
   { type: 'response.completed' },
 ];
-// Shared Arrange: create isolated, unexpired OAuth credentials and clean up after each test.
-async function setup(t) {
-  const root = await mkdtemp(join(tmpdir(), 'chatgpt-test-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const authPath = join(root, 'auth.json');
-  await writeFile(
-    authPath,
-    JSON.stringify({
-      openai: {
-        type: 'oauth',
-        access: 'test-token',
-        accountId: 'test-account',
-        expires: Date.now() + 60000,
-      },
-    }),
-  );
-  return authPath;
-}
 // Shared fixture: serialize events with CRLF boundaries as an SSE response.
 const stream = (items) =>
   new Response(
@@ -64,9 +53,8 @@ function testEnv(t, values) {
   });
 }
 
-test('direct subscription request uses OAuth and validated JSON', async (t) => {
-  // Arrange: prepare credentials and a multilingual decision for byte-split SSE delivery.
-  const authPath = await setup(t);
+test('direct subscription request uses OAuth and validated JSON', async () => {
+  // Arrange: prepare a multilingual decision for byte-split SSE delivery.
   const unicodeDecision = { ...decision, reason: 'Worldwide — 日本 🌍' };
   const unicodeEvents = [
     {
@@ -77,7 +65,6 @@ test('direct subscription request uses OAuth and validated JSON', async (t) => {
   ];
   // Act: review supplied text through the direct subscription endpoint.
   const value = await reviewJob('https://jobs.example/job', {
-    authPath,
     listingText: 'Worldwide',
     fetch: async (url, init) => {
       // Assert: the outgoing request uses OAuth and a strict location-decision schema.
@@ -116,12 +103,9 @@ test('direct subscription request uses OAuth and validated JSON', async (t) => {
   assert.deepEqual(value, unicodeDecision);
 });
 
-test('review uses the configured applicant location rather than search regions', async (t) => {
-  // Arrange: use valid saved credentials with Germany as the applicant location.
-  const authPath = await setup(t);
+test('review uses the configured applicant location rather than search regions', async () => {
   // Act: review a European remote listing for that applicant.
   await reviewJob('https://jobs.example/job', {
-    authPath,
     location: 'Germany',
     listingText: 'Remote across Europe',
     fetch: async (_url, init) => {
@@ -143,11 +127,9 @@ function itemsText(items) {
   return items.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('');
 }
 
-test('extracted text is supplied without browsing tools', async (t) => {
+test('extracted text is supplied without browsing tools', async () => {
   // Arrange: supply extracted listing text and a completed model response.
-  const authPath = await setup(t);
   const options = {
-    authPath,
     listingText: 'Work anywhere worldwide',
     fetch: async (_url, init) => {
       const body = JSON.parse(init.body);
@@ -186,25 +168,23 @@ test('location decisions reject malformed values', () => {
   }
 });
 
-test('expired credentials fail before network access; location policy remains intact', async (t) => {
-  // Arrange: replace saved credentials with expired tokens that cannot refresh.
-  const authPath = await setup(t);
-  await writeFile(
-    authPath,
-    JSON.stringify({ openai: { type: 'oauth', access: 'test', expires: 1 } }),
-  );
-  // Act / Assert: review fails locally before the injected network guard can run.
+test('credential failures propagate before model network access', async () => {
+  const error = new AuthenticationError('Sign in again');
+  getCredentials.mock.mockImplementationOnce(async () => {
+    throw error;
+  });
   await assert.rejects(
     reviewJob('https://example.test', {
-      authPath,
       listingText: 'Worldwide',
       fetch: async () => {
         assert.fail('network');
       },
     }),
-    /expired/,
+    (actual) => actual === error,
   );
-  // Act / Assert: location policy retains worldwide overrides and explicit residency limits.
+});
+
+test('location policy retains worldwide overrides and explicit residency limits', () => {
   assert.match(
     locationRule('Philippines'),
     /work anywhere worldwide overrides country\/city location tags/,
@@ -215,58 +195,8 @@ test('expired credentials fail before network access; location policy remains in
   );
 });
 
-test('review refreshes expiring credentials and sends the new access token to ChatGPT', async (t) => {
-  // Arrange: save expired but refreshable credentials and record endpoint calls.
-  const authPath = await setup(t);
-  await writeFile(
-    authPath,
-    JSON.stringify({
-      openai: { type: 'oauth', access: 'old', refresh: 'refresh', expires: 1 },
-    }),
-  );
-  const calls = [];
-  // Act / Assert: refresh then review successfully using the newly issued access token.
-  assert.deepEqual(
-    await reviewJob('https://example.test', {
-      authPath,
-      listingText: 'Worldwide',
-      fetch: async (url, init) => {
-        calls.push(url);
-        if (calls.length === 1) {
-          assert.equal(url, 'https://auth.openai.com/oauth/token');
-          return Response.json({
-            access_token: 'new',
-            refresh_token: 'rotated',
-            expires_in: 3600,
-          });
-        }
-        assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
-        assert.equal(init.headers.Authorization, 'Bearer new');
-        return stream(events);
-      },
-    }),
-    decision,
-  );
-  // Assert: the flow requires exactly one refresh and one review request.
-  assert.equal(calls.length, 2);
-});
-
-test('review reports missing credentials as an authentication error', async (t) => {
-  // Arrange: derive a nonexistent credential path from the isolated fixture.
-  const authPath = await setup(t);
-  // Act / Assert: review classifies missing credentials as an authentication error.
-  await assert.rejects(
-    reviewJob('https://example.test', {
-      authPath: join(authPath, 'missing'),
-      listingText: 'Worldwide',
-    }),
-    AuthenticationError,
-  );
-});
-
 test('default review uses supplied text with Luna medium and never scrapes', async (t) => {
   // Arrange: clear model, effort and scraper overrides and record outgoing requests.
-  const authPath = await setup(t);
   testEnv(t, {});
   for (const key of ['MODEL_NAME', 'MODEL_EFFORT', 'FIRECRAWL_URL'])
     delete process.env[key];
@@ -275,7 +205,6 @@ test('default review uses supplied text with Luna medium and never scrapes', asy
   // Act / Assert: default review returns the model decision using supplied listing text.
   assert.deepEqual(
     await reviewJob('https://example.test/job', {
-      authPath,
       signal,
       listingText: 'Work anywhere worldwide',
       fetch: async (url, init) => {
@@ -300,14 +229,12 @@ test('default review uses supplied text with Luna medium and never scrapes', asy
 
 test('model and effort environment settings are used and invalid effort fails before retrieval', async (t) => {
   // Arrange: configure an explicit model and an effort that overrides its suffix.
-  const authPath = await setup(t);
   testEnv(t, {
     MODEL_NAME: 'openai/gpt-6.1-sol#low',
     MODEL_EFFORT: 'high',
   });
   // Act: review using environment-based model settings.
   await reviewJob('https://example.test', {
-    authPath,
     listingText: 'Worldwide',
     fetch: async (_, init) => {
       const body = JSON.parse(init.body);
@@ -322,7 +249,6 @@ test('model and effort environment settings are used and invalid effort fails be
   // Act / Assert: invalid effort fails before any retrieval or model request.
   await assert.rejects(
     reviewJob('https://example.test', {
-      authPath,
       listingText: 'Worldwide',
       fetch: async () => assert.fail('network'),
     }),
@@ -344,14 +270,11 @@ test('both reviewers require supplied listing text without network access', asyn
   }
 });
 
-test('both reviewers validate the completed model response', async (t) => {
-  // Arrange: provide valid credentials but return an empty completed model decision.
-  const authPath = await setup(t);
+test('both reviewers validate the completed model response', async () => {
   // Act / Assert: each reviewer rejects the malformed decision from the shared fixture.
   for (const review of [llm.reviewJob, llm.reviewStack])
     await assert.rejects(
       review('https://example.test', {
-        authPath,
         location: 'Germany',
         skills: [{ Laravel: [] }],
         listingText: 'Worldwide Laravel',
@@ -372,14 +295,52 @@ const stackDecision = {
   evidence: '"Build with Laravel and React"',
 };
 
-test('stack review falls back to the full profile skills', async (t) => {
-  // Arrange: load the expected default skills and valid saved credentials.
-  const authPath = await setup(t);
+test('constructed provider shares its credential loader and transport across both reviewers', async (t) => {
+  const signal = new AbortController().signal;
+  const getCredentials = t.mock.fn(async (options) => {
+    assert.equal(options.authPath, 'credentials.json');
+    assert.equal(options.signal, signal);
+    return { type: 'oauth', access: 'injected-token', accountId: 'account' };
+  });
+  const fetch = t.mock.fn(async (url, init) => {
+    assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
+    assert.equal(init.headers.Authorization, 'Bearer injected-token');
+    assert.equal(init.headers['ChatGPT-Account-Id'], 'account');
+    const { name } = JSON.parse(init.body).text.format;
+    return stream([
+      {
+        type: 'response.output_text.delta',
+        delta: JSON.stringify(name === 'job_review' ? decision : stackDecision),
+      },
+      events[1],
+    ]);
+  });
+  const provider = createChatgpt({ getCredentials, fetch });
+  const options = {
+    authPath: 'credentials.json',
+    signal,
+    location: 'Germany',
+    skills: [{ Laravel: [] }],
+    listingText: 'Worldwide Laravel',
+  };
+  assert.deepEqual(
+    await provider.reviewJob('https://example.test', options),
+    decision,
+  );
+  assert.deepEqual(
+    await provider.reviewStack('https://example.test', options),
+    stackDecision,
+  );
+  assert.equal(getCredentials.mock.calls.length, 2);
+  assert.equal(fetch.mock.calls.length, 2);
+});
+
+test('stack review falls back to the full profile skills', async () => {
+  // Arrange: load the expected default skills.
   const profile = await loadProfile();
   // Act / Assert: omit skills and obtain the validated stack decision using profile defaults.
   assert.deepEqual(
     await llm.reviewStack('https://example.test', {
-      authPath,
       listingText: 'Laravel and React',
       fetch: async (_url, init) => {
         const body = JSON.parse(init.body);
@@ -402,9 +363,8 @@ test('stack review falls back to the full profile skills', async (t) => {
   );
 });
 
-test('stack review sends full canonical groups with a strict separate schema', async (t) => {
+test('stack review sends full canonical groups with a strict separate schema', async () => {
   // Arrange: include required skill groups, canonical alternatives and aliases.
-  const authPath = await setup(t);
   const skills = [
     { Laravel: [] },
     { Vue: ['Vue.js', 'VueJS'], Nuxt: ['Nuxt.js'] },
@@ -412,7 +372,6 @@ test('stack review sends full canonical groups with a strict separate schema', a
   const listingText = 'Build with Laravel and React';
   // Act: review the listing against the explicitly supplied skill expression.
   const result = await llm.reviewStack('https://example.test', {
-    authPath,
     skills,
     listingText,
     fetch: async (url, init) => {
@@ -510,12 +469,7 @@ test('stack decisions strictly reject malformed values and prototype keys', () =
   );
 });
 
-test('shared transport rejects HTTP errors, incomplete streams and invalid effort', async (t) => {
-  // Arrange: use valid credentials with the table's failing HTTP or SSE responses.
-  const authPath = await setup(t);
-  const options = {
-    authPath,
-  };
+test('shared transport rejects HTTP errors, incomplete streams and invalid effort', async () => {
   for (const [response, error] of [
     [new Response('', { status: 401 }), AuthenticationError],
     [new Response('', { status: 403 }), AuthenticationError],
@@ -532,7 +486,6 @@ test('shared transport rejects HTTP errors, incomplete streams and invalid effor
     await assert.rejects(
       request(
         {
-          ...options,
           fetch: async () => response,
         },
         'instructions',
@@ -547,7 +500,6 @@ test('shared transport rejects HTTP errors, incomplete streams and invalid effor
   await assert.rejects(
     request(
       {
-        ...options,
         effort: 'typo',
         fetch: async () => assert.fail('network'),
       },
@@ -560,9 +512,7 @@ test('shared transport rejects HTTP errors, incomplete streams and invalid effor
   );
 });
 
-test('both reviewers preserve caller cancellation in the shared transport', async (t) => {
-  // Arrange: share valid credentials across the two reviewer cases.
-  const authPath = await setup(t);
+test('both reviewers preserve caller cancellation in the shared transport', async () => {
   for (const review of [llm.reviewJob, llm.reviewStack]) {
     // Arrange: give each reviewer a fresh caller-owned signal and cancellation reason.
     const controller = new AbortController();
@@ -570,7 +520,6 @@ test('both reviewers preserve caller cancellation in the shared transport', asyn
     // Act / Assert: cancellation during fetch rejects review with the original reason.
     await assert.rejects(
       review('https://example.test', {
-        authPath,
         location: 'Germany',
         skills: [{ Laravel: [] }],
         listingText: 'Laravel',
