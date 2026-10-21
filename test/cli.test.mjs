@@ -67,6 +67,9 @@ test('CLI rejects unknown commands, unsupported options and invalid arguments', 
     [['fetch', '--limit', '1'], /Unknown option.*--limit/],
     [['unknown'], /Unknown command: unknown/],
     [['worker'], /Unknown command: worker/],
+    [['fetch-worker'], /Unknown command: fetch-worker/],
+    [['review-worker'], /Unknown command: review-worker/],
+    [['fetch-scheduler'], /Unknown command: fetch-scheduler/],
     [['toString'], /Unknown command: toString/],
     [['jobs', 'extra'], /Unexpected argument/],
     [['jobs', '--unexpected'], /Unknown option.*--unexpected/],
@@ -96,14 +99,7 @@ test('CLI prints global and command help including required retry options', asyn
   // Act / Assert: accept global help and an invocation without a command.
   assert.equal(cli('--help').status, 0);
   assert.equal(cli().status, 0);
-  for (const command of [
-    'review',
-    'review-worker',
-    'fetch-worker',
-    'fetch-scheduler',
-    'retry',
-    'serve',
-  ]) {
+  for (const command of ['review', 'workers', 'scheduler', 'retry', 'serve']) {
     // Act: request this command's help page.
     const help = cli(command, '--help');
     // Assert: print command-specific usage without an error.
@@ -119,26 +115,24 @@ test('CLI loads profiles only for commands that need them', async (t) => {
   // Arrange: break the copied profile's syntax.
   const { root, cli } = await fixture(t);
   await writeFile(join(root, 'profile.ts'), 'export default {broken');
-  for (const command of ['fetch-worker', 'review-worker']) {
-    // Act: invoke a command that requires the profile.
-    const invalid = cli(command);
-    // Assert: report the profile failure instead of starting work.
-    assert.equal(invalid.status, 1);
-    assert.match(invalid.stderr, /Cannot load profile.ts/);
-  }
+  // Act: invoke workers, which requires the profile.
+  const invalid = cli('workers');
+  // Assert: report the profile failure instead of starting work.
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /Cannot load profile.ts/);
   // Act / Assert: listing and help do not need a valid profile.
   assert.equal(cli('jobs').status, 0);
   assert.equal(cli('--help').status, 0);
   // Arrange: remove the profile entirely.
   await rm(join(root, 'profile.ts'));
   // Act: invoke discovery with the missing profile.
-  const missing = cli('fetch-worker');
+  const missing = cli('workers');
   // Assert: identify the missing profile in the diagnostic.
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /Cannot load profile.ts.*profile.ts/);
 });
 
-test('fetch and fetch-scheduler only enqueue, without loading profile or database', async (t) => {
+test('fetch and scheduler only enqueue, without loading profile or database', async (t) => {
   const { root, cli } = await fixture(t);
   await rm(join(root, 'profile.ts'));
   await rm(join(root, 'dist/sqlite.js'));
@@ -154,16 +148,29 @@ test('fetch and fetch-scheduler only enqueue, without loading profile or databas
   assert.equal(manual.status, 0, manual.stderr);
   assert.match(manual.stdout, /enqueued\n\{"queued":"42"\}\nqueue closed/);
   await writeFile(
-    join(root, 'dist/discovery/worker.js'),
+    join(root, 'dist/discovery/scheduler.js'),
     `export async function scheduleFetch(enqueue) { await enqueue(); }`,
   );
-  const scheduled = cli('fetch-scheduler');
+  const scheduled = cli('scheduler');
   assert.equal(scheduled.status, 0, scheduled.stderr);
   assert.match(scheduled.stdout, /enqueued\nqueue closed/);
 });
 
-test('fetch-worker runs discovery and drains before closing queues', async (t) => {
+test('workers run discovery and drain before closing queues', async (t) => {
   const { root, cli } = await fixture(t);
+  for (const [file, name] of [
+    ['crawl', 'startCrawlWorker'],
+    ['location-check', 'startLocationWorker'],
+    ['tech-check', 'startTechWorker'],
+  ]) {
+    await writeFile(
+      join(root, `dist/review/${file}.js`),
+      `export async function ${name}() {
+        console.log('${file} started');
+        return { async close() { console.log('${file} closed'); } };
+      }`,
+    );
+  }
   await writeFile(
     join(root, 'dist/bullmq.js'),
     `export class JobQueues {
@@ -188,10 +195,14 @@ test('fetch-worker runs discovery and drains before closing queues', async (t) =
       return { added: 1, pending: 1, failures: [] };
     }`,
   );
-  const stopped = cli('fetch-worker');
+  const stopped = cli('workers');
   assert.equal(stopped.status, 0, stopped.stderr);
   assert.match(stopped.stdout, /review 42/);
   assert.match(stopped.stdout, /"added":1/);
+  for (const file of ['crawl', 'location-check', 'tech-check']) {
+    assert.match(stopped.stdout, new RegExp(`${file} started`));
+    assert.match(stopped.stdout, new RegExp(`${file} closed`));
+  }
   for (const closed of ['reviews closed', 'fetch queue closed'])
     assert.ok(
       stopped.stdout.indexOf('worker drained') < stopped.stdout.indexOf(closed),
@@ -204,9 +215,47 @@ test('fetch-worker runs discovery and drains before closing queues', async (t) =
       async close() { console.log('fetch queue closed'); }
     }`,
   );
-  const failed = cli('fetch-worker');
+  const failed = cli('workers');
   assert.equal(failed.status, 1);
   assert.match(failed.stderr, /startup failed/);
+  assert.match(failed.stdout, /reviews closed/);
+  assert.match(failed.stdout, /fetch queue closed/);
+});
+
+test('discovery consumer reports partial failures to BullMQ after scheduling results', async (t) => {
+  const { root, cli } = await fixture(t);
+  await writeFile(
+    join(root, 'dist/bullmq.js'),
+    `export class JobQueues {
+      async scheduleListing(_store, id) { console.log('review ' + id); }
+      async close() { console.log('reviews closed'); }
+    }
+    export class FetchQueue {
+      async startWorker(fetch) {
+        try { await fetch(); throw new Error('failure not propagated'); }
+        catch (error) {
+          if (error.message !== 'search failed') throw error;
+          console.log('delivery failed: ' + error.message);
+        }
+        throw new Error('stop after delivery');
+      }
+      async close() { console.log('fetch queue closed'); }
+    }`,
+  );
+  await writeFile(
+    join(root, 'dist/discovery/discover-jobs.js'),
+    `export async function fetchJobs(_store, _search, _profile, schedule) {
+      await schedule([42]);
+      return { added: 1, pending: 1, failures: ['search failed'] };
+    }`,
+  );
+  const failed = cli('workers');
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /stop after delivery/);
+  assert.match(
+    failed.stdout,
+    /review 42\n\{"added":1,"pending":1,"failures":\["search failed"\]\}\ndelivery failed: search failed/,
+  );
   assert.match(failed.stdout, /reviews closed/);
   assert.match(failed.stdout, /fetch queue closed/);
 });
@@ -259,12 +308,22 @@ test('CLI auth routes through the provider and removes signal listeners on succe
   assert.equal(await main(['auth', '--limit', '1']), 1);
 });
 
-test('review-worker closes started consumers before queues on shutdown and startup failure', async (t) => {
+test('workers close started consumers before queues on shutdown and startup failure', async (t) => {
   const { root, cli } = await fixture(t);
   await writeFile(
     join(root, 'dist/bullmq.js'),
     `export class JobQueues {
       async close() { console.log('queues closed'); }
+    }
+    export class FetchQueue {
+      async startWorker() {
+        console.log('fetch started');
+        return { async close() {
+          await new Promise(resolve => setTimeout(resolve, 20));
+          console.log('fetch closed');
+        } };
+      }
+      async close() { console.log('fetch queue closed'); }
     }`,
   );
   for (const [file, name] of [
@@ -284,25 +343,30 @@ test('review-worker closes started consumers before queues on shutdown and start
       }`,
     );
   }
-  const stopped = cli('review-worker');
+  const stopped = cli('workers');
   assert.equal(stopped.status, 0, stopped.stderr);
-  for (const file of ['crawl', 'location-check', 'tech-check']) {
+  for (const file of ['fetch', 'crawl', 'location-check', 'tech-check']) {
     assert.match(stopped.stdout, new RegExp(`${file} started`));
     assert.match(stopped.stdout, new RegExp(`${file} closed`));
     assert.ok(
       stopped.stdout.indexOf(`${file} closed`) <
         stopped.stdout.indexOf('queues closed'),
     );
+    assert.ok(
+      stopped.stdout.indexOf(`${file} closed`) <
+        stopped.stdout.indexOf('fetch queue closed'),
+    );
   }
-  assert.match(stopped.stdout, /\[worker\] Stopped/);
+  assert.match(stopped.stdout, /\[workers\] Stopped/);
 
   await writeFile(
     join(root, 'dist/review/location-check.js'),
     `export async function startLocationWorker() { throw new Error('startup failed'); }`,
   );
-  const failed = cli('review-worker');
+  const failed = cli('workers');
   assert.equal(failed.status, 1);
   assert.match(failed.stderr, /startup failed/);
   assert.match(failed.stdout, /crawl closed[\s\S]*queues closed/);
+  assert.match(failed.stdout, /fetch closed[\s\S]*fetch queue closed/);
   assert.doesNotMatch(failed.stdout, /tech-check started/);
 });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout } from 'node:timers/promises';
-import { scheduleFetch } from '../dist/discovery/worker.js';
+import { scheduleFetch } from '../dist/discovery/scheduler.js';
 
 test('fetch scheduler rejects invalid cron before enqueueing', async () => {
   // Arrange: use a fetch callback that must never run for an invalid schedule.

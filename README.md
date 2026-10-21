@@ -39,7 +39,7 @@ Fetching runs hourly in UTC, starting at the next hour. To get your first result
 pnpm job-hunter fetch
 ```
 
-`fetch` queues a search and returns immediately; keep `fetch-worker` running to execute it. Duplicate requests while a search is queued or running are skipped. The review worker picks up new listings automatically. AI assessments can be wrong—check the original listing before applying.
+`fetch` queues a search and returns immediately; keep `workers` running to execute it and review new listings automatically. Duplicate requests while a search is queued or running are skipped. AI assessments can be wrong—check the original listing before applying.
 
 ## Make it yours
 
@@ -80,7 +80,7 @@ The check focuses on technologies used in the role, not bonus skills or passing 
 After editing it, restart the workers:
 
 ```sh
-docker compose restart fetch-worker review-worker
+docker compose restart workers
 ```
 
 Optional settings in `.env`: `FETCH_CRON` changes the UTC fetch schedule, while `MODEL_NAME` and `MODEL_EFFORT` control the reviewer. `MODEL_PROVIDER` defaults to `chatgpt`, the only supported provider. After changing `.env`, run `docker compose up -d`.
@@ -88,17 +88,17 @@ Optional settings in `.env`: `FETCH_CRON` changes the UTC fetch schedule, while 
 ## Usage
 
 ```sh
-docker compose logs -f fetch-scheduler fetch-worker review-worker  # Follow activity
+docker compose logs -f scheduler workers         # Follow activity
 docker compose down                              # Stop everything
 pnpm job-hunter fetch                            # Queue a search now
 pnpm job-hunter jobs                             # List saved jobs
 pnpm job-hunter stack-backfill                   # Queue missing stack checks
-pnpm job-hunter review --limit 10                # Enqueue and wait; review-worker must be running
+pnpm job-hunter review --limit 10                # Enqueue and wait; workers must be running
 pnpm job-hunter repair                          # Restore missing unfinished tasks
 pnpm job-hunter retry --stage stack --id 42      # Retry one exhausted stage
 ```
 
-After updating the code, run `pnpm install && pnpm build`, then `docker compose up -d --force-recreate web fetch-scheduler fetch-worker review-worker`.
+After updating the code, run `pnpm install && pnpm build`, then `docker compose up -d --remove-orphans --force-recreate web scheduler workers`. The orphan cleanup removes containers for services renamed by an update without deleting queue data.
 
 Keep the worker running when using `review`. If a check fails, its stage and reason appear in the UI. Use `retry` to try that stage again, or `repair` to pick up unfinished work missing from the queue. `stack-backfill` adds missing stack checks, regardless of location eligibility.
 
@@ -110,11 +110,11 @@ Jobs and login tokens stay in this checkout (`jobs.sqlite` and `.auth.json`). Ke
 
 TypeScript, SQLite, BullMQ/Redis, and a plain HTML/CSS/JS UI. Autom.dev provides Google results, public Ashby, Greenhouse, and Lever APIs read their listings, and ChatGPT checks location and stack independently. The existing Firecrawl stack remains provisioned but is not used for these supported listings.
 
-One worker handles crawling and both checks. Saved listing text is reused, each result saves as it finishes, and temporary failures get up to three attempts.
+The `scheduler` service queues searches; `workers` runs discovery, crawling, and both checks. Saved listing text is reused, each result saves as it finishes, and temporary review failures get up to three attempts.
 
 Ashby extraction selects the exact listing UUID from the board's documented `jobUrl` values and saves the description together with location, workplace, employment, and compensation metadata. A successful board response without that UUID marks crawling terminal and blocks both checks; API errors, malformed posting URLs, and empty descriptions use normal retries. There is no Firecrawl fallback for Ashby. Previously saved text and assessments are unchanged.
 
-Searches use Autom credits. Failed searches are logged without automatically retrying the whole run; the next scheduled or manual request can run again. Queued searches wait while the fetch worker is offline, but scheduled ticks are missed while the scheduler is offline. ChatGPT access uses an unofficial subscription endpoint, so upstream changes may break it.
+Searches use Autom credits. Failed searches are logged without automatically retrying the whole run; the next scheduled or manual request can run again. Queued searches wait while `workers` is offline, but scheduled ticks are missed while the scheduler is offline. ChatGPT access uses an unofficial subscription endpoint, so upstream changes may break it.
 
 For local development:
 

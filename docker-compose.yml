@@ -32,9 +32,9 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
 
-  review-worker:
+  workers:
     <<: *app
-    command: [review-worker]
+    command: [workers]
     stop_grace_period: 3m
     environment:
       FIRECRAWL_URL: http://firecrawl:3002
@@ -43,19 +43,12 @@ services:
       redis:
         condition: service_healthy
 
-  fetch-scheduler:
+  scheduler:
     <<: *app
-    command: [fetch-scheduler]
+    command: [scheduler]
     environment:
       FETCH_CRON: ${FETCH_CRON:-0 * * * *}
       REDIS_URL: redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  fetch-worker:
-    <<: *app
-    command: [fetch-worker]
     depends_on:
       redis:
         condition: service_healthy

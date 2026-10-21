@@ -111,61 +111,26 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }),
     fetch: defineCommand({
       meta: {
-        description: 'Queue a discovery run (requires fetch-worker)',
+        description: 'Queue a discovery run (requires workers)',
       },
       run: async () => {
         const task = await (await discoveryQueue()).enqueue();
         console.log(JSON.stringify({ queued: task.id }));
       },
     }),
-    'fetch-scheduler': defineCommand({
+    scheduler: defineCommand({
       meta: { description: 'Queue fetching with FETCH_CRON (hourly, UTC)' },
       run: async () => {
-        const { scheduleFetch } = await import('./discovery/worker.js');
+        const { scheduleFetch } = await import('./discovery/scheduler.js');
         const queue = await discoveryQueue();
         await scheduleFetch(async () => {
           await queue.enqueue();
         });
       },
     }),
-    'fetch-worker': defineCommand({
-      meta: { description: 'Consume queued discovery runs' },
-      run: async () => {
-        const { fetchJobs } = await import('./discovery/discover-jobs.js');
-        const profile = await loadProfile();
-        const store = await database();
-        const queues = await jobQueues();
-        const queue = await discoveryQueue();
-        const signal = processingSignal();
-        const worker = await queue.startWorker(async () => {
-          const outcome = await fetchJobs(
-            store,
-            undefined,
-            profile,
-            async (ids) => {
-              for (const id of ids) await queues.scheduleListing(store, id);
-            },
-          );
-          console.log(JSON.stringify(outcome));
-          if (outcome.failures.length)
-            throw new Error(outcome.failures.join('; '));
-        });
-        try {
-          console.info('[fetch-worker] Started');
-          if (!signal.aborted)
-            await new Promise<void>((resolve) =>
-              signal.addEventListener('abort', () => resolve(), { once: true }),
-            );
-        } finally {
-          await worker.close();
-          console.info('[fetch-worker] Stopped');
-        }
-      },
-    }),
     review: defineCommand({
       meta: {
-        description:
-          'Enqueue unfinished listings and wait (requires review-worker)',
+        description: 'Enqueue unfinished listings and wait (requires workers)',
       },
       args: {
         limit: { type: 'string', description: 'Maximum listings to review' },
@@ -183,11 +148,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         );
       },
     }),
-    'review-worker': defineCommand({
-      meta: { description: 'Run crawl, location and stack consumers' },
+    workers: defineCommand({
+      meta: { description: 'Run fetch, crawl, location and stack consumers' },
       run: async () => {
         const profile = await loadProfile();
         const llm = createLlm();
+        const { startFetchWorker } = await import('./discovery/worker.js');
         const { startCrawlWorker } = await import('./review/crawl.js');
         const { startLocationWorker } = await import(
           './review/location-check.js'
@@ -195,9 +161,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         const { startTechWorker } = await import('./review/tech-check.js');
         const store = await database();
         const queues = await jobQueues();
+        const queue = await discoveryQueue();
         const signal = processingSignal();
         const workers: Worker[] = [];
         try {
+          workers.push(await startFetchWorker(store, queues, queue, profile));
           workers.push(await startCrawlWorker(store, queues));
           workers.push(
             await startLocationWorker(store, queues, (url, options) =>
@@ -209,14 +177,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
               llm.reviewStack(url, { ...options, skills: profile.skills }),
             ),
           );
-          console.info(`[worker] Started ${STAGES.join(', ')} consumers`);
+          console.info(
+            `[workers] Started fetch, ${STAGES.join(', ')} consumers`,
+          );
           if (!signal.aborted)
             await new Promise<void>((resolve) =>
               signal.addEventListener('abort', () => resolve(), { once: true }),
             );
         } finally {
           await Promise.all(workers.map((worker) => worker.close()));
-          console.info('[worker] Stopped');
+          console.info('[workers] Stopped');
         }
       },
     }),
