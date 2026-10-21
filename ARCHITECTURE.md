@@ -16,7 +16,6 @@ job-hunter/
 │   │   ├── job-url.ts         # ATS listing URL validation and normalization
 │   │   └── google.ts          # Query construction, search types, Autom.dev requests
 │   ├── review/
-│   │   ├── auth.ts            # Provider sign-in and cancellation lifecycle
 │   │   ├── review-jobs.ts     # Enqueue unfinished listings and wait for outcomes
 │   │   ├── stages.ts          # Shared processing-stage names and type
 │   │   ├── crawl.ts           # Direct extraction/persistence and crawl consumer fan-out
@@ -120,7 +119,7 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 **Name:** Command entry point and fetch worker.
 
-**Description:** `src/cli.ts` loads root-relative configuration, constructs dependencies only for commands that need them, dispatches commands, and closes shared resources. Commands include `auth`, `fetch`, `scheduler`, `workers`, `review`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`. Feature modules own workflow lifecycles: `src/review/auth.ts` handles sign-in cancellation, `src/review/review-jobs.ts` owns review enqueueing and outcome waiting, and `src/web/server.ts` owns server startup and graceful shutdown.
+**Description:** `src/cli.ts` loads root-relative configuration, constructs dependencies only for commands that need them, dispatches commands, handles sign-in cancellation, and closes shared resources. Commands include `auth`, `fetch`, `scheduler`, `workers`, `review`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`. Feature modules own workflow lifecycles: `src/review/review-jobs.ts` owns review enqueueing and outcome waiting, and `src/web/server.ts` owns server startup and graceful shutdown.
 
 `src/discovery/google.ts` builds one combined Google query across Ashby, Lever, and Greenhouse. All title, skill, and search-location terms come from the root profile: array groups are ANDed; canonical names and aliases within a group are ORed. Titles use `intitle:` and skills match page-wide. The builder adds neither a profession nor a remote clause. `searchLocation` controls discovery alternatives; `location` is the candidate's residence for assessment.
 

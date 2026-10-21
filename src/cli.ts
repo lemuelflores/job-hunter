@@ -13,7 +13,6 @@ import {
 } from 'citty';
 import type { FetchQueue, ReviewQueues } from './bullmq.js';
 import { loadProfile, type Profile } from './profile.js';
-import { authenticate } from './review/auth.js';
 import { createLlm } from './review/llm/index.js';
 import type { LlmProvider } from './review/llm/types.js';
 import { reviewJobs } from './review/review-jobs.js';
@@ -51,6 +50,20 @@ function validateArguments(argv: string[], args: ArgsDef = {}) {
   for (const [name, arg] of Object.entries(args))
     if (arg.required && values[name] === undefined)
       throw new Error(`Missing required argument: --${name}`);
+}
+
+async function authenticate(llm: LlmProvider) {
+  const controller = new AbortController();
+  const stop = () => controller.abort(new Error('Authentication interrupted'));
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+  try {
+    await llm.authenticate({ signal: controller.signal });
+    console.log('Signed in with ChatGPT.');
+  } finally {
+    process.off('SIGINT', stop);
+    process.off('SIGTERM', stop);
+  }
 }
 
 function loadEnvironment() {
