@@ -222,3 +222,108 @@ test('search rejects malformed response containers and pagination', async (t) =>
     await assert.rejects(googleSearch('remote engineer'), /Invalid Autom.dev/);
   }
 });
+
+for (const status of [400, 401, 402, 403, 429, 503]) {
+  test(`HTTP ${status} preserves Autom's error without retrying`, async (t) => {
+    let calls = 0;
+    const message = `Provider explanation for ${status}`;
+    mock(t, async () => {
+      calls++;
+      return Response.json({ error: message }, { status });
+    });
+    await assert.rejects(googleSearch('engineer'), { message });
+    assert.equal(calls, 1);
+  });
+}
+
+test('unusable error bodies get an HTTP-specific fallback', async (t) => {
+  for (const body of [
+    'not JSON',
+    'null',
+    '[]',
+    '{}',
+    '{"error":42}',
+    '{"error":"  "}',
+  ]) {
+    mock(t, async () => new Response(body, { status: 402 }));
+    await assert.rejects(googleSearch('engineer'), {
+      message: 'Autom.dev Google search failed (HTTP 402)',
+    });
+  }
+});
+
+for (const [status, message, delays] of [
+  [500, 'Internal server error from Autom', [500, 1000]],
+  [
+    401,
+    "Rate limit exceeded: You've exceeded the subscription rate limit",
+    [2000, 2000],
+  ],
+  [401, 'RATE LIMIT exceeded for the API key: quota daily', [2000, 2000]],
+]) {
+  for (const recover of [true, false]) {
+    test(`HTTP ${status} ${recover ? 'recovers' : 'stops'} after three attempts: ${message}`, async (t) => {
+      const waits = [];
+      t.mock.method(globalThis, 'setTimeout', (callback, delay) => {
+        waits.push(delay);
+        queueMicrotask(callback);
+      });
+      let calls = 0;
+      mock(t, async () => {
+        calls++;
+        return recover && calls === 3
+          ? Response.json({ organic_results: [] })
+          : Response.json({ error: message }, { status });
+      });
+      if (recover) assert.deepEqual(await googleSearch('engineer'), []);
+      else await assert.rejects(googleSearch('engineer'), { message });
+      assert.equal(calls, 3);
+      assert.deepEqual(waits, delays);
+    });
+  }
+}
+
+test('HTTP 404 ends pagination with no failure and retains earlier results', async (t) => {
+  const pages = [];
+  mock(t, async (url) => {
+    const page = Number(url.searchParams.get('page'));
+    pages.push(page);
+    return page === 1
+      ? Response.json({
+          organic_results: [
+            { title: 'Engineer', link: 'https://example.test/1' },
+          ],
+          pagination: { has_next_page: true, next: 2 },
+        })
+      : new Response('not JSON', { status: 404 });
+  });
+  const outcome = await runParallelGoogleSearchesDetailed(['engineer']);
+  assert.equal(outcome.results.length, 1);
+  assert.deepEqual(outcome.failures, []);
+  assert.deepEqual(pages, [1, 2]);
+});
+
+test('exhausted later-page retries preserve earlier results and the provider error', async (t) => {
+  const pages = [];
+  t.mock.method(globalThis, 'setTimeout', (callback) =>
+    queueMicrotask(callback),
+  );
+  mock(t, async (url) => {
+    const page = Number(url.searchParams.get('page'));
+    pages.push(page);
+    return page === 1
+      ? Response.json({
+          organic_results: [
+            { title: 'Engineer', link: 'https://example.test/1' },
+          ],
+          pagination: { has_next_page: true, next: 2 },
+        })
+      : Response.json({ error: 'Search backend unavailable' }, { status: 500 });
+  });
+  const outcome = await runParallelGoogleSearchesDetailed(['engineer']);
+  assert.equal(outcome.results.length, 1);
+  assert.deepEqual(outcome.failures, [
+    { query: 'engineer', error: 'Error: Search backend unavailable' },
+  ]);
+  assert.deepEqual(pages, [1, 2, 2, 2]);
+});

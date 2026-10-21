@@ -107,22 +107,41 @@ function getAutomApiKey(): string {
 }
 
 async function searchPage(url: URL, apiKey: string) {
-  const response = await fetch(url, {
-    method: 'GET',
-    signal: AbortSignal.timeout(30_000),
-    headers: { 'x-api-key': apiKey, Accept: 'application/json' },
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Autom.dev Google search failed: ${response.status} ${body}`,
+  let response: Response;
+  for (let attempt = 0; ; attempt++) {
+    response = await fetch(url, {
+      method: 'GET',
+      signal: AbortSignal.timeout(30_000),
+      headers: { 'x-api-key': apiKey, Accept: 'application/json' },
+    });
+    if (response.status === 404) return {};
+    if (response.status === 200) break;
+
+    const body = await response.json().catch(() => null);
+    const parsed = v.safeParse(
+      v.object({
+        error: v.pipe(
+          v.string(),
+          v.check((value) => value.trim().length > 0),
+        ),
+      }),
+      body,
     );
+    const message = parsed.success
+      ? parsed.output.error
+      : `Autom.dev Google search failed (HTTP ${response.status})`;
+    const rateLimited =
+      response.status === 401 && message.toLowerCase().includes('rate limit');
+    if (attempt >= 2 || (!rateLimited && response.status !== 500))
+      throw new Error(message);
+
+    const delay = rateLimited ? 2000 : 500 * 2 ** attempt;
+    await new Promise<void>((resolve) => setTimeout(resolve, delay));
   }
   const data = v.parse(SearchResponse, await response.json(), {
     message: 'Invalid Autom.dev search response',
   });
-  if (data.error)
-    throw new Error(`Autom.dev Google search failed: ${data.error}`);
+  if (data.error) throw new Error(data.error);
   return data;
 }
 

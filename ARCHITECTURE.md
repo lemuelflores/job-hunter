@@ -121,6 +121,8 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 Valibot validates search response containers and pagination; malformed result entries are skipped and invalid optional snippets/positions are omitted. If a later page fails, completed pages still reach persistence and scheduling alongside a reported query failure. Ashby and Lever UUIDs are normalized to lowercase without changing board-name casing.
 
+Autom error messages are preserved verbatim, with an HTTP-status fallback only for missing or unusable error text. Each search page allows three total attempts: rate-limit `401` responses wait two seconds between attempts, while `500` responses back off for 500 ms then one second. Other statuses are not retried; `404` ends the search as an empty page. Authentication `401` responses are distinguished from rate limits using Autom's error text.
+
 `src/discovery/worker.ts` uses `FETCH_CRON` (default `0 * * * *`, UTC), with no immediate startup fetch and no overlapping runs. Shutdown waits for the active fetch; scheduled failures are logged without stopping future runs.
 
 **Technologies:** Node.js 22.18+, TypeScript ESM, native Fetch API, node-cron.
