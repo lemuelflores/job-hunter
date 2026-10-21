@@ -8,13 +8,14 @@ import {
   readFile,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   authenticate,
   getCredentials,
@@ -71,6 +72,11 @@ test('default login and reviews share app-root .auth.json', async (t) => {
   const directory = join(root, 'dist', 'review', 'llm', 'chatgpt');
   await mkdir(directory, { recursive: true });
   await writeFile(join(root, 'package.json'), '{"type":"module"}');
+  await symlink(
+    fileURLToPath(new URL('../node_modules', import.meta.url)),
+    join(root, 'node_modules'),
+    'dir',
+  );
   await copyFile(
     new URL('../dist/review/llm/chatgpt/auth.js', import.meta.url),
     join(directory, 'auth.js'),
@@ -374,6 +380,79 @@ test('failed refresh preserves old credentials and redacts provider response', a
   assert.equal(await readFile(authPath, 'utf8'), original);
 });
 
+test('malformed token responses and claims never overwrite saved credentials', async (t) => {
+  const { root } = await setup(t);
+  const authPath = join(root, 'auth.json');
+  const original = JSON.stringify({
+    openai: { type: 'oauth', access: 'old', refresh: 'refresh', expires: 1 },
+  });
+  await writeFile(authPath, original);
+  for (const value of [
+    null,
+    [],
+    {},
+    { ...tokenResponse(), access_token: '' },
+    { ...tokenResponse(), refresh_token: 42 },
+    { ...tokenResponse(), id_token: 42 },
+    { ...tokenResponse(), expires_in: '3600' },
+    { ...tokenResponse(), expires_in: -1 },
+    {
+      access_token: jwt({ exp: String(Math.floor(Date.now() / 1000) + 3600) }),
+    },
+    { ...tokenResponse(), id_token: jwt(null) },
+    { ...tokenResponse(), id_token: jwt([]) },
+    {
+      ...tokenResponse(),
+      id_token: jwt({ 'https://api.openai.com/auth': [] }),
+    },
+    {
+      ...tokenResponse(),
+      id_token: jwt({
+        'https://api.openai.com/auth': { chatgpt_account_id: 42 },
+      }),
+    },
+  ]) {
+    await assert.rejects(
+      getCredentials({ authPath, fetch: async () => Response.json(value) }),
+      {
+        constructor: AuthenticationError,
+        message: 'Invalid ChatGPT token response',
+      },
+      JSON.stringify(value),
+    );
+    assert.equal(await readFile(authPath, 'utf8'), original);
+  }
+});
+
+test('refresh accepts opaque fields and reuses the previous refresh token', async (t) => {
+  const { root } = await setup(t);
+  const authPath = join(root, 'auth.json');
+  await writeFile(
+    authPath,
+    JSON.stringify({
+      openai: { type: 'oauth', access: 'old', refresh: 'refresh', expires: 1 },
+    }),
+  );
+  const credentials = await getCredentials({
+    authPath,
+    fetch: async () =>
+      Response.json({
+        access_token: jwt({
+          exp: Math.floor(Date.now() / 1000) + 3600,
+          'https://api.openai.com/auth': {
+            chatgpt_account_id: 'account',
+            extra: true,
+          },
+          extra: true,
+        }),
+        extra: true,
+      }),
+  });
+  assert.equal(credentials.refresh, 'refresh');
+  assert.equal(credentials.accountId, 'account');
+  assert.ok(credentials.expires > Date.now());
+});
+
 test('model transport uses the access token returned by a real credential refresh', async (t) => {
   const { root } = await setup(t);
   const authPath = join(root, 'auth.json');
@@ -440,6 +519,15 @@ test('missing or corrupt credentials give actionable errors without network call
     'null',
     '[]',
     '{"openai":{"type":"oauth","access":42}}',
+    ...[
+      { refresh: 42 },
+      { refresh: '' },
+      { expires: '3600' },
+      { expires: -1 },
+      { accountId: 42 },
+    ].map((fields) =>
+      JSON.stringify({ openai: { type: 'oauth', access: 'test', ...fields } }),
+    ),
   ]) {
     // Arrange: replace the file with this malformed credential case.
     await writeFile(authPath, value);

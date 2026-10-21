@@ -1,3 +1,4 @@
+import * as v from 'valibot';
 import type { StackAssessmentInput, StackDecision } from '../types.js';
 import { type ChatgptRequest, request } from './request.js';
 
@@ -6,7 +7,7 @@ const stackSchema = {
   properties: {
     status: {
       type: 'string',
-      enum: ['match', 'partial_match', 'potential_match', 'unclear'],
+      enum: ['match', 'partial_match', 'potential_match', 'unclear'] as const,
     },
     reason: { type: 'string', minLength: 1, maxLength: 5000 },
     evidence: { type: 'string', maxLength: 5000 },
@@ -15,24 +16,23 @@ const stackSchema = {
   additionalProperties: false,
 };
 
+const StackDecisionSchema = v.strictObject({
+  status: v.picklist(stackSchema.properties.status.enum),
+  reason: v.pipe(
+    v.string(),
+    v.check((value) => value.trim().length > 0),
+    v.maxLength(stackSchema.properties.reason.maxLength),
+  ),
+  evidence: v.pipe(
+    v.string(),
+    v.maxLength(stackSchema.properties.evidence.maxLength),
+  ),
+});
+
 export function parseStackDecision(text: string): StackDecision {
-  const value = JSON.parse(text);
-  if (
-    !value ||
-    typeof value !== 'object' ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype ||
-    Object.keys(value).length !== stackSchema.required.length ||
-    Object.keys(value).some((key) => !stackSchema.required.includes(key)) ||
-    !stackSchema.properties.status.enum.includes(value.status) ||
-    typeof value.reason !== 'string' ||
-    !value.reason.trim() ||
-    value.reason.length > 5000 ||
-    typeof value.evidence !== 'string' ||
-    value.evidence.length > 5000
-  )
-    throw new Error('Invalid ChatGPT stack decision');
-  return value;
+  const result = v.safeParse(StackDecisionSchema, JSON.parse(text));
+  if (!result.success) throw new Error('Invalid ChatGPT stack decision');
+  return result.output;
 }
 
 export async function reviewStack(

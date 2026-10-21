@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as v from 'valibot';
 import { AuthenticationError, type AuthOptions } from '../types.js';
 
 // shortcut: uses the public Codex OAuth client; recheck upstream if OpenAI changes third-party access.
@@ -24,16 +25,52 @@ export interface CredentialOptions extends AuthOptions {
   authPath?: string;
 }
 
+interface TokenClaims {
+  exp?: number;
+  'https://api.openai.com/auth'?: { chatgpt_account_id?: string };
+}
+
 const AUTH_PATH = fileURLToPath(
   new URL('../../../../.auth.json', import.meta.url),
 );
 
+const CredentialsSchema = v.object({
+  type: v.literal('oauth'),
+  access: v.pipe(v.string(), v.nonEmpty()),
+  refresh: v.optional(v.pipe(v.string(), v.nonEmpty())),
+  expires: v.optional(v.pipe(v.number(), v.finite(), v.minValue(0))),
+  accountId: v.optional(v.string()),
+});
+
+const AuthObjectSchema = v.pipe(
+  v.unknown(),
+  v.check((value) => !Array.isArray(value)),
+  v.record(v.string(), v.unknown()),
+);
+
+const ClaimsSchema = v.pipe(
+  AuthObjectSchema,
+  v.object({
+    exp: v.optional(v.pipe(v.number(), v.finite())),
+    'https://api.openai.com/auth': v.optional(
+      v.pipe(
+        AuthObjectSchema,
+        v.object({ chatgpt_account_id: v.optional(v.string()) }),
+      ),
+    ),
+  }),
+);
+
+const TokenResponseSchema = v.object({
+  access_token: v.pipe(v.string(), v.nonEmpty()),
+  refresh_token: v.nullish(v.pipe(v.string(), v.nonEmpty())),
+  id_token: v.nullish(v.string()),
+  expires_in: v.nullish(v.pipe(v.number(), v.finite(), v.gtValue(0))),
+});
+
 async function readAuth(path: string): Promise<Record<string, unknown>> {
   try {
-    const value = JSON.parse(await readFile(path, 'utf8'));
-    if (!value || typeof value !== 'object' || Array.isArray(value))
-      throw new Error();
-    return value;
+    return v.parse(AuthObjectSchema, JSON.parse(await readFile(path, 'utf8')));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
     throw new AuthenticationError(
@@ -58,19 +95,20 @@ async function saveAuth(path: string, credentials: Credentials): Promise<void> {
   }
 }
 
-function claims(token: unknown): {
-  exp?: number;
-  'https://api.openai.com/auth'?: { chatgpt_account_id?: unknown };
-} {
+function claims(token: string | null | undefined): TokenClaims {
+  if (!token) return {};
+  let value: unknown;
   try {
-    return (
-      JSON.parse(
-        Buffer.from((token as string).split('.')[1], 'base64url').toString(),
-      ) ?? {}
+    value = JSON.parse(
+      Buffer.from(token.split('.')[1], 'base64url').toString(),
     );
   } catch {
     return {};
   }
+  const result = v.safeParse(ClaimsSchema, value);
+  if (!result.success)
+    throw new AuthenticationError('Invalid ChatGPT token response');
+  return result.output;
 }
 
 async function exchange(
@@ -92,36 +130,27 @@ async function exchange(
     throw new AuthenticationError(
       `ChatGPT token exchange HTTP ${response.status}. ${SIGN_IN}`,
     );
-  let data: {
-    access_token?: unknown;
-    refresh_token?: unknown;
-    id_token?: unknown;
-    expires_in?: unknown;
-  } | null;
+  let value: unknown;
   try {
-    data = await response.json();
+    value = await response.json();
   } catch {
     throw new AuthenticationError('Invalid ChatGPT token response');
   }
-  const accessClaims = claims(data?.access_token);
+  const result = v.safeParse(TokenResponseSchema, value);
+  if (!result.success)
+    throw new AuthenticationError('Invalid ChatGPT token response');
+  const data = result.output;
+  const accessClaims = claims(data.access_token);
   const expires =
-    typeof data?.expires_in === 'number' && data.expires_in > 0
+    data.expires_in != null
       ? Date.now() + data.expires_in * 1000
       : (accessClaims.exp ?? Number.NaN) * 1000;
-  const refresh = data?.refresh_token ?? previous?.refresh;
+  const refresh = data.refresh_token ?? previous?.refresh;
   const accountId =
-    claims(data?.id_token)['https://api.openai.com/auth']?.chatgpt_account_id ??
+    claims(data.id_token)['https://api.openai.com/auth']?.chatgpt_account_id ??
     accessClaims['https://api.openai.com/auth']?.chatgpt_account_id ??
     previous?.accountId;
-  if (
-    typeof data?.access_token !== 'string' ||
-    !data.access_token ||
-    typeof refresh !== 'string' ||
-    !refresh ||
-    !Number.isFinite(expires) ||
-    expires <= Date.now() ||
-    (accountId !== undefined && typeof accountId !== 'string')
-  ) {
+  if (!refresh || !Number.isFinite(expires) || expires <= Date.now()) {
     throw new AuthenticationError('Invalid ChatGPT token response');
   }
   return {
@@ -154,19 +183,13 @@ async function loadCredentials(
   options: CredentialOptions = {},
 ): Promise<Credentials> {
   const path = options.authPath ?? AUTH_PATH;
-  const auth = (await readAuth(path)).openai as Credentials | undefined;
-  if (
-    auth?.type !== 'oauth' ||
-    typeof auth.access !== 'string' ||
-    !auth.access ||
-    (auth.expires !== undefined &&
-      (!Number.isFinite(auth.expires) || auth.expires < 0)) ||
-    (auth.accountId !== undefined && typeof auth.accountId !== 'string')
-  ) {
+  const result = v.safeParse(CredentialsSchema, (await readAuth(path)).openai);
+  if (!result.success) {
     throw new AuthenticationError(`No valid saved ChatGPT login. ${SIGN_IN}`);
   }
+  const auth = result.output;
   if (auth.expires !== undefined && auth.expires <= Date.now() + 30_000) {
-    if (typeof auth.refresh !== 'string' || !auth.refresh)
+    if (!auth.refresh)
       throw new AuthenticationError(`ChatGPT login expired. ${SIGN_IN}`);
     const refreshed = await exchange(
       { grant_type: 'refresh_token', refresh_token: auth.refresh },

@@ -1,3 +1,4 @@
+import * as v from 'valibot';
 import type { Decision, LocationAssessmentInput } from '../types.js';
 import { type ChatgptRequest, request } from './request.js';
 
@@ -15,7 +16,7 @@ const decisionSchema = {
   properties: {
     eligibility: {
       type: 'string',
-      enum: ['eligible', 'ineligible', 'unclear'],
+      enum: ['eligible', 'ineligible', 'unclear'] as const,
     },
     reason: { type: 'string', minLength: 1, maxLength: 5000 },
     evidence: { type: 'string', maxLength: 5000 },
@@ -34,22 +35,35 @@ const decisionSchema = {
   additionalProperties: false,
 };
 
+const DecisionSchema = v.strictObject({
+  eligibility: v.picklist(decisionSchema.properties.eligibility.enum),
+  reason: v.pipe(
+    v.string(),
+    v.check((value) => value.trim().length > 0),
+    v.maxLength(decisionSchema.properties.reason.maxLength),
+  ),
+  evidence: v.pipe(
+    v.string(),
+    v.maxLength(decisionSchema.properties.evidence.maxLength),
+  ),
+  company: v.pipe(
+    v.string(),
+    v.maxLength(decisionSchema.properties.company.maxLength),
+  ),
+  location: v.pipe(
+    v.string(),
+    v.maxLength(decisionSchema.properties.location.maxLength),
+  ),
+  title: v.pipe(
+    v.string(),
+    v.maxLength(decisionSchema.properties.title.maxLength),
+  ),
+});
+
 export function parseDecision(text: string): Decision {
-  const value = JSON.parse(text);
-  if (
-    !value ||
-    !['eligible', 'ineligible', 'unclear'].includes(value.eligibility) ||
-    Object.keys(value).some((key) => !decisionSchema.required.includes(key)) ||
-    !['reason', 'evidence', 'company', 'location', 'title'].every(
-      (key) => typeof value[key] === 'string',
-    ) ||
-    !value.reason.trim() ||
-    value.reason.length > 5000 ||
-    value.evidence.length > 5000 ||
-    ['company', 'location', 'title'].some((key) => value[key].length > 1000)
-  )
-    throw new Error('Invalid ChatGPT decision');
-  return value;
+  const result = v.safeParse(DecisionSchema, JSON.parse(text));
+  if (!result.success) throw new Error('Invalid ChatGPT decision');
+  return result.output;
 }
 
 export async function reviewJob(

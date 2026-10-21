@@ -163,9 +163,21 @@ test('location decisions reject malformed values', () => {
   // Arrange: use the shared valid decision as the baseline for malformed table values.
   for (const value of [
     null,
+    true,
+    1,
+    'eligible',
+    [],
+    [decision],
     {},
     { ...decision, extra: true },
     { ...decision, reason: '' },
+    { ...decision, reason: '   ' },
+    { ...decision, reason: 'x'.repeat(5001) },
+    { ...decision, evidence: 'x'.repeat(5001) },
+    ...['company', 'location', 'title'].flatMap((key) => [
+      { ...decision, [key]: 42 },
+      { ...decision, [key]: 'x'.repeat(1001) },
+    ]),
     { ...decision, evidence: 42 },
     { ...decision, eligibility: 'pending' },
   ]) {
@@ -173,6 +185,18 @@ test('location decisions reject malformed values', () => {
     // Act / Assert: parsing rejects it instead of accepting an invalid model response.
     assert.throws(() => parseDecision(JSON.stringify(value)));
   }
+  assert.throws(() =>
+    parseDecision(JSON.stringify(decision).replace(/}$/, ',"__proto__":{}}')),
+  );
+  const boundary = {
+    ...decision,
+    reason: ` ${'x'.repeat(4998)} `,
+    evidence: 'x'.repeat(5000),
+    company: 'x'.repeat(1000),
+    location: 'x'.repeat(1000),
+    title: 'x'.repeat(1000),
+  };
+  assert.deepEqual(parseDecision(JSON.stringify(boundary)), boundary);
 });
 
 test('credential failures propagate before model network access', async () => {
@@ -511,6 +535,12 @@ test('stack decisions strictly reject malformed values and prototype keys', () =
       '{"status":"match","reason":"Aligned","evidence":"","__proto__":{}}',
     ),
   );
+  const boundary = {
+    ...stackDecision,
+    reason: ` ${'x'.repeat(4998)} `,
+    evidence: 'x'.repeat(5000),
+  };
+  assert.deepEqual(parseStackDecision(JSON.stringify(boundary)), boundary);
 });
 
 test('shared transport rejects HTTP errors, incomplete streams and invalid effort', async () => {
