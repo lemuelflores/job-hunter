@@ -330,6 +330,16 @@ Real SQLite is appropriate in HTTP and workflow tests; those suites assert their
 | `pnpm test` | Build and run `test/*.test.mjs`; no Redis/Docker required |
 | `pnpm test:queue` | Build and run `test/workers.queue.mjs`; isolated test Redis required |
 
+To run the optional queue integration suite locally:
+
+```sh
+docker compose --profile test up -d redis-test
+pnpm test:queue
+docker compose --profile test stop redis-test
+```
+
+The test Redis defaults to `redis://127.0.0.1:6380`; override it with `TEST_REDIS_URL`. Tests clean up their isolated queue namespaces and temporary storage, not the Redis service.
+
 **Code quality tools:** TypeScript and Biome 2.5.15. No frontend bundler is needed. Tests do not require paid search/model calls.
 
 ## 9. Future Considerations / Roadmap

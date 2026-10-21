@@ -31,7 +31,7 @@ pnpm job-hunter auth
 docker compose up -d
 ```
 
-Open **<http://localhost:3000>**. Compose runs the web UI, scheduled fetching, background reviews, and Firecrawl together. No systemd or host cron setup needed.
+Open **<http://localhost:3000>**. Everything runs in the background through Docker Compose—no extra scheduling setup needed.
 
 Fetching runs hourly in UTC, starting at the next hour. To get your first results right away:
 
@@ -39,7 +39,7 @@ Fetching runs hourly in UTC, starting at the next hour. To get your first result
 pnpm job-hunter fetch
 ```
 
-`fetch` queues a search and returns immediately; keep `workers` running to execute it and review new listings automatically. Duplicate requests while a search is queued or running are skipped. AI assessments can be wrong—check the original listing before applying.
+Results appear as jobs are found and checked; `fetch` doesn't wait for them. Leave Compose running to keep finding and reviewing jobs. AI assessments can be wrong—check the original listing before applying.
 
 ## Make it yours
 
@@ -48,7 +48,7 @@ pnpm job-hunter fetch
 | Field | What to put there |
 | --- | --- |
 | `location` | Where you live, for hiring eligibility checks |
-| `title` | Title groups: arrays mean AND; entries in each object mean OR |
+| `title` | Job titles you're looking for; see the example below |
 | `searchLocation` | Places or work arrangements to search for, like `APAC` or `remote` |
 | `skills` | Technologies to search for and compare against each job; same format as titles |
 
@@ -83,46 +83,57 @@ After editing it, restart the workers:
 docker compose restart workers
 ```
 
-Optional settings in `.env`: `FETCH_CRON` changes the UTC fetch schedule, while `MODEL_NAME` and `MODEL_EFFORT` control the reviewer. `MODEL_PROVIDER` defaults to `chatgpt`, the only supported provider. After changing `.env`, run `docker compose up -d`.
+Want to tweak things further? In `.env`, `FETCH_CRON` changes the hourly schedule (UTC), while `MODEL_NAME` and `MODEL_EFFORT` control the AI reviewer. After changing `.env`, run `docker compose up -d`.
 
 ## Usage
 
 ```sh
-docker compose logs -f scheduler workers         # Follow activity
-docker compose down                              # Stop everything
-pnpm job-hunter fetch                            # Queue a search now
-pnpm job-hunter jobs                             # List saved jobs
-pnpm job-hunter stack-backfill                   # Queue missing stack checks
-pnpm job-hunter review --limit 10                # Enqueue and wait; workers must be running
-pnpm job-hunter repair                          # Restore missing unfinished tasks
-pnpm job-hunter retry --stage stack --id 42      # Retry one exhausted stage
+docker compose logs -f scheduler workers  # See what's happening
+docker compose down                       # Stop everything
+pnpm job-hunter fetch                      # Search now
+pnpm job-hunter jobs                       # List saved jobs in the terminal
 ```
 
-After updating the code, run `pnpm install && pnpm build`, then `docker compose up -d --remove-orphans --force-recreate web scheduler workers`. The orphan cleanup removes containers for services renamed by an update without deleting queue data.
+### Updating
 
-Keep the worker running when using `review`. If a check fails, its stage and reason appear in the UI. Use `retry` to try that stage again, or `repair` to pick up unfinished work missing from the queue. `stack-backfill` adds missing stack checks, regardless of location eligibility.
+After pulling new code:
 
-Processing commands connect to Redis through `REDIS_URL` (localhost by default). Compose sets this for you and saves queue data in a Docker volume. Avoid `docker compose down -v` unless you want to delete that data.
+```sh
+pnpm install
+pnpm build
+docker compose up -d --remove-orphans --force-recreate web scheduler workers
+```
+
+Searches use Autom credits. If a search fails, check the logs and run `fetch` again when you're ready; the next hourly search will also try again.
+
+### Your data
 
 Jobs and login tokens stay in this checkout (`jobs.sqlite` and `.auth.json`). Keep `.auth.json` private—it contains plaintext credentials. Sign in again with `pnpm job-hunter auth` if needed. The web UI is only exposed locally.
 
-## Under the hood
+Compose keeps queued work in a Docker volume. Avoid `docker compose down -v` unless you want to delete it.
 
-TypeScript, SQLite, BullMQ/Redis, and a plain HTML/CSS/JS UI. Autom.dev provides Google results, public Ashby, Greenhouse, and Lever APIs read their listings, and ChatGPT checks location and stack independently. The existing Firecrawl stack remains provisioned but is not used for these supported listings.
+ChatGPT access uses an unofficial subscription endpoint, so upstream changes may break it.
 
-The `scheduler` service queues searches; `workers` runs discovery, crawling, and both checks. Saved listing text is reused, each result saves as it finishes, and temporary review failures get up to three attempts.
+## Development
 
-Ashby extraction selects the exact listing UUID from the board's documented `jobUrl` values and saves the description together with location, workplace, employment, and compensation metadata. A successful board response without that UUID marks crawling terminal and blocks both checks; API errors, malformed posting URLs, and empty descriptions use normal retries. There is no Firecrawl fallback for Ashby. Previously saved text and assessments are unchanged.
-
-Searches use Autom credits. Failed searches are logged without automatically retrying the whole run; the next scheduled or manual request can run again. Queued searches wait while `workers` is offline, but scheduled ticks are missed while the scheduler is offline. ChatGPT access uses an unofficial subscription endpoint, so upstream changes may break it.
-
-For local development:
+Working on the code? Start with:
 
 ```sh
 pnpm check
 pnpm test
-docker compose --profile test up -d redis-test
-pnpm test:queue  # Optional queue integration checks
 ```
 
-Tests make no live API calls. `pnpm test` needs no Redis or Docker. The optional `pnpm test:queue` checks require a separate test Redis at `redis://127.0.0.1:6380` (or `TEST_REDIS_URL`); the command above starts one. Tests clean up their isolated queue namespaces and temporary storage, not the Redis service. Stop it afterward with `docker compose --profile test stop redis-test`.
+Tests make no live API calls and need no Redis or Docker. For how the app works, implementation details, and optional queue integration tests, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## More commands
+
+You probably won't need these day to day. Leave Compose running while they finish.
+
+```sh
+pnpm job-hunter review --limit 10           # Queue up to 10 unfinished jobs and wait for results
+pnpm job-hunter stack-backfill             # Add missing stack checks to older listings
+pnpm job-hunter repair                     # Pick up unfinished work that isn't queued
+pnpm job-hunter retry --stage stack --id 42 # Give one failed check another try
+```
+
+Failed checks show a reason in the UI. For `retry`, use the job's ID and the failed stage: `crawl`, `location`, or `stack`.
