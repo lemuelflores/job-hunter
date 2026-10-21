@@ -12,8 +12,7 @@ job-hunter/
 │   ├── cli.ts                 # Commands, dependency construction, shutdown
 │   ├── discovery/
 │   │   ├── scheduler.ts       # UTC cron producer for queued discovery
-│   │   ├── worker.ts          # Discovery consumer, outcome logging, enqueue reviews
-│   │   ├── discover-jobs.ts   # Search, save listings, enqueue reviews
+│   │   ├── worker.ts          # Discovery consumer: search, save, enqueue reviews, log outcome
 │   │   ├── job-url.ts         # ATS listing URL validation and normalization
 │   │   └── google.ts          # Query construction, search types, Autom.dev requests
 │   ├── review/
@@ -124,7 +123,7 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 `src/discovery/google.ts` builds one combined Google query across Ashby, Lever, and Greenhouse. All title, skill, and search-location terms come from the root profile: array groups are ANDed; canonical names and aliases within a group are ORed. Titles use `intitle:` and skills match page-wide. The builder adds neither a profession nor a remote clause. `searchLocation` controls discovery alternatives; `location` is the candidate's residence for assessment.
 
-`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. `fetchJobs` in `src/discovery/discover-jobs.ts` validates and canonicalizes URLs through `src/discovery/job-url.ts` before passing accepted results to SQLite and scheduling unfinished jobs found in those results. SQLite persists the supplied URLs and deduplicates by URL; it does not own ATS URL rules. Fetching does not assess jobs.
+`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. The consumer callback in `src/discovery/worker.ts` validates and canonicalizes URLs through `src/discovery/job-url.ts` before passing accepted results to SQLite and scheduling unfinished jobs found in those results. SQLite persists the supplied URLs and deduplicates by URL; it does not own ATS URL rules. Fetching does not assess jobs.
 
 Valibot validates search response containers and pagination; malformed result entries are skipped and invalid optional snippets/positions are omitted. If a later page fails, completed pages still reach persistence and scheduling alongside a reported query failure. Ashby and Lever UUIDs are normalized to lowercase without changing board-name casing.
 
@@ -132,7 +131,7 @@ Autom error messages are preserved verbatim, with an HTTP-status fallback only f
 
 `scheduler` runs `src/discovery/scheduler.ts` with `FETCH_CRON` (default `0 * * * *`, UTC), with no immediate startup enqueue and no overlapping enqueue calls. Shutdown waits for the active enqueue; enqueue failures are logged without stopping future ticks. Scheduler downtime misses ticks; worker downtime leaves queued work waiting. Neither the scheduler nor manual `fetch` loads the profile, database, or search credentials.
 
-`FetchQueue` in `src/bullmq.ts` owns a separate `fetch` queue with prefix `job-hunter`. Cron and manual `fetch` enqueue one complete discovery run with empty payload and BullMQ simple deduplication ID `fetch`, held until completion or failure. Global and local concurrency are one. `src/discovery/worker.ts` exposes `startFetchWorker`, which executes `fetchJobs`, logs its outcome, and schedules listing stages through the existing review queues. The CLI supplies the shared profile and starts this consumer alongside the review consumers in `workers`. All consumers drain active work before queues and SQLite close. Discovery is not a listing stage and has no `job_stages` row. Each task allows one attempt; partial search failures preserve successful results and mark the run failed without repeating paid searches automatically. Completed tasks are removed and the most recent 20 failures retained; a later trigger can run after either outcome. BullMQ stalled delivery recovery can still repeat external searches after a crash.
+`FetchQueue` in `src/bullmq.ts` owns a separate `fetch` queue with prefix `job-hunter`. Cron and manual `fetch` enqueue one complete discovery run with empty payload and BullMQ simple deduplication ID `fetch`, held until completion or failure. Global and local concurrency are one. `src/discovery/worker.ts` exposes `startFetchWorker`, with search, persistence, review scheduling, and outcome logging inline in its consumer callback, matching the review workers. The CLI supplies the shared profile and starts this consumer alongside the review consumers in `workers`. All consumers drain active work before queues and SQLite close. Discovery is not a listing stage and has no `job_stages` row. Each task allows one attempt; partial search failures preserve successful results and mark the run failed without repeating paid searches automatically. Completed tasks are removed and the most recent 20 failures retained; a later trigger can run after either outcome. BullMQ stalled delivery recovery can still repeat external searches after a crash.
 
 **Technologies:** Node.js 22.18+, TypeScript ESM, native Fetch API, node-cron.
 

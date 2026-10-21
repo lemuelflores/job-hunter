@@ -1,21 +1,66 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fetchJobs } from '../dist/discovery/discover-jobs.js';
 import { buildQueryMatrix } from '../dist/discovery/google.js';
+import { startFetchWorker } from '../dist/discovery/worker.js';
 import { loadProfile } from '../dist/profile.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
-// Arrange: share canonical listing results.
+const profile = await loadProfile();
 const result = (id) => ({
   url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
   title: 'Engineer',
-  query: 'remote',
+  snippet: undefined,
+  position: undefined,
+  query: buildQueryMatrix(profile)[0].query,
 });
 
-test('fetch forwards explicit and default profile queries without a country override', async (t) => {
-  // Arrange: isolate discovery and supply a profile distinct from the root configuration.
-  const store = fixture(t);
-  const profile = {
+function fixture(t, suppliedProfile = profile) {
+  const store = new SqliteStore(':memory:');
+  t.after(() => store.close());
+  store.saveResults([result(1), result(2), result(3)]);
+  const key = process.env.AUTOM_API_KEY;
+  process.env.AUTOM_API_KEY = 'test';
+  t.after(() => {
+    if (key === undefined) delete process.env.AUTOM_API_KEY;
+    else process.env.AUTOM_API_KEY = key;
+  });
+  const scheduled = [];
+  const outcomes = [];
+  t.mock.method(console, 'log', (message) =>
+    outcomes.push(JSON.parse(message)),
+  );
+  let run;
+  const worker = { close() {} };
+  const started = startFetchWorker(
+    store,
+    {
+      async scheduleListing(actualStore, id) {
+        assert.equal(actualStore, store);
+        scheduled.push(id);
+      },
+    },
+    {
+      startWorker(callback) {
+        run = callback;
+        return worker;
+      },
+    },
+    suppliedProfile,
+  );
+  assert.equal(started, worker);
+  return { store, run, scheduled, outcomes };
+}
+
+function mockResults(t, results) {
+  return t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({
+      organic_results: results.map(({ url, title }) => ({ link: url, title })),
+    }),
+  );
+}
+
+test('fetch worker uses the supplied profile without a country override', async (t) => {
+  const supplied = {
     location: 'Germany',
     searchLocation: ['Germany', 'Berlin', 'Europe', 'worldwide'],
     title: [
@@ -24,70 +69,31 @@ test('fetch forwards explicit and default profile queries without a country over
     ],
     skills: [{ Laravel: [], Vue: [], TypeScript: [] }],
   };
-  for (const supplied of [profile, undefined]) {
-    // Arrange: determine the expected explicit or default discovery scope.
-    const expected = supplied ?? (await loadProfile());
-    const calls = [];
-    // Act: discover jobs without real search requests.
-    await fetchJobs(
-      store,
-      async (queries, options) => {
-        calls.push({ queries, options });
-        return { results: [], failures: [] };
-      },
-      supplied,
-      async () => {},
-    );
-    // Assert: discovery forwards precisely the profile query without a country override.
-    assert.equal(calls.length, 1);
-    assert.deepEqual(
-      calls[0].queries,
-      buildQueryMatrix(expected).map(({ query }) => query),
-    );
-    assert.equal(calls[0].options.country, undefined);
-  }
+  const { run } = fixture(t, supplied);
+  const search = mockResults(t, []);
+  assert.equal(search.mock.calls.length, 0);
+  await run();
+  assert.equal(search.mock.calls.length, 1);
+  const [url, options] = search.mock.calls[0].arguments;
+  assert.equal(
+    url.searchParams.get('query'),
+    buildQueryMatrix(supplied)[0].query,
+  );
+  assert.equal(url.searchParams.has('gl'), false);
+  assert.equal(options.headers['x-api-key'], 'test');
 });
 
-// Arrange: seed three pending listings in an isolated store with automatic cleanup.
-function fixture(t) {
-  const store = new SqliteStore(':memory:');
-  t.after(() => store.close());
-  store.saveResults([result(1), result(2), result(3)]);
-  return store;
-}
-
-test('fetch deduplicates one profile query and schedules only discovered unfinished listings', async (t) => {
-  // Arrange: include an existing listing outside the next discovery response.
-  const store = fixture(t);
+test('fetch deduplicates results and schedules only discovered unfinished listings', async (t) => {
+  const { store, run, scheduled, outcomes } = fixture(t);
   store.saveResults([result(4)]);
-  const scheduled = [];
-  // Act: discover duplicate and new listings, recording scheduled IDs.
-  const outcome = await fetchJobs(
-    store,
-    async (queries, options) => {
-      // Assert: discovery receives one profile query and the expected result limit.
-      assert.equal(queries.length, 1);
-      assert.equal(options.num, 100);
-      return {
-        results: [result(1), result(1), result(5)],
-        failures: [{ query: 'bad', error: 'timeout' }],
-      };
-    },
-    undefined,
-    async (ids) => scheduled.push(...ids),
-  );
-  // Assert: only newly discovered unfinished listings are scheduled.
-  assert.deepEqual(outcome, {
-    added: 1,
-    pending: 5,
-    failures: ['bad: timeout'],
-  });
+  mockResults(t, [result(1), result(1), result(5)]);
+  await run();
+  assert.deepEqual(outcomes, [{ added: 1, pending: 5, failures: [] }]);
   assert.deepEqual(scheduled, [1, 5]);
 });
 
 test('fetch validates and canonicalizes URLs before persistence and scheduling', async (t) => {
-  // Arrange: keep one completed listing and capture the persistence boundary.
-  const store = fixture(t);
+  const { store, run, scheduled, outcomes } = fixture(t);
   store.saveListingText(2, 'Saved text');
   store.review(2, 'eligible', 'Worldwide');
   store.reviewStack(2, {
@@ -102,31 +108,21 @@ test('fetch validates and canonicalizes URLs before persistence and scheduling',
     saved.push(...results);
     return saveResults(results);
   };
-  const scheduled = [];
   const alias = (id) => ({
     ...result(id),
     url: `https://boards.greenhouse.io/example/jobs/${id}?source=google#top`,
   });
-  // Act: discover tracked aliases, duplicates, and unsupported listing URLs.
-  const outcome = await fetchJobs(
-    store,
-    async () => ({
-      results: [
-        alias(1),
-        alias(2),
-        alias(5),
-        result(5),
-        { ...result(6), url: 'https://evil.test/example/jobs/6' },
-        { ...result(7), url: 'https://jobs.lever.co/example' },
-      ],
-      failures: [],
-    }),
-    undefined,
-    async (ids) => scheduled.push(...ids),
-  );
-  // Assert: only canonical, accepted results reach SQLite, retaining their metadata.
+  mockResults(t, [
+    alias(1),
+    alias(2),
+    alias(5),
+    result(5),
+    { ...result(6), url: 'https://evil.test/example/jobs/6' },
+    { ...result(7), url: 'https://jobs.lever.co/example' },
+  ]);
+  await run();
   assert.deepEqual(saved, [result(1), result(2), result(5), result(5)]);
-  assert.deepEqual(outcome, { added: 1, pending: 3, failures: [] });
+  assert.deepEqual(outcomes, [{ added: 1, pending: 3, failures: [] }]);
   assert.deepEqual(scheduled, [1, 4]);
   assert.equal(store.listReviewJobs('active').length, 4);
   const { last_seen: _beforeSeen, ...original } = before;
@@ -134,14 +130,8 @@ test('fetch validates and canonicalizes URLs before persistence and scheduling',
   assert.deepEqual(after, original);
 });
 
-test('discovery saves and schedules completed search pages despite a later failure', async (t) => {
-  const store = fixture(t);
-  const key = process.env.AUTOM_API_KEY;
-  process.env.AUTOM_API_KEY = 'test';
-  t.after(() => {
-    if (key === undefined) delete process.env.AUTOM_API_KEY;
-    else process.env.AUTOM_API_KEY = key;
-  });
+test('discovery saves and schedules completed search pages before failing delivery', async (t) => {
+  const { store, run, scheduled, outcomes } = fixture(t);
   t.mock.method(globalThis, 'fetch', async (url) =>
     url.searchParams.get('page') === '1'
       ? Response.json({
@@ -153,38 +143,35 @@ test('discovery saves and schedules completed search pages despite a later failu
         })
       : new Response('Unavailable', { status: 503 }),
   );
-  const scheduled = [];
-  const outcome = await fetchJobs(store, undefined, undefined, async (ids) => {
-    scheduled.push(...ids);
+  await assert.rejects(run(), (error) => {
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].added, 2);
+    assert.equal(outcomes[0].failures.length, 1);
+    assert.match(outcomes[0].failures[0], /503/);
+    assert.equal(error.message, outcomes[0].failures[0]);
+    assert.deepEqual(scheduled, [4, 5]);
+    return true;
   });
-  assert.equal(outcome.added, 2);
-  assert.equal(outcome.failures.length, 1);
-  assert.match(outcome.failures[0], /503/);
-  assert.deepEqual(scheduled, [4, 5]);
   assert.equal(store.getJob(4).snippet, 'Valid text');
   assert.equal(store.getJob(5).snippet, '');
 });
 
 test('discovery deduplicates UUID casing without changing board casing or saved decisions', async (t) => {
-  const store = fixture(t);
+  const { store, run, outcomes } = fixture(t);
   const uuid = '12345678-abcd-abcd-abcd-123456789abc';
   const url = `https://jobs.ashbyhq.com/Example/${uuid}`;
   const saved = { ...result(1), url };
-  const search = async () => ({
-    results: [saved, { ...saved, url: url.replace(uuid, uuid.toUpperCase()) }],
-    failures: [],
-  });
-  assert.equal(
-    (await fetchJobs(store, search, undefined, async () => {})).added,
-    1,
-  );
+  mockResults(t, [
+    saved,
+    { ...saved, url: url.replace(uuid, uuid.toUpperCase()) },
+  ]);
+  await run();
+  assert.equal(outcomes[0].added, 1);
   store.saveListingText(4, 'Saved listing');
   store.review(4, 'eligible', 'Saved decision');
   const before = store.getJob(4);
-  assert.equal(
-    (await fetchJobs(store, search, undefined, async () => {})).added,
-    0,
-  );
+  await run();
+  assert.equal(outcomes[1].added, 0);
   assert.equal(store.getJob(4).url, url);
   assert.equal(store.getJob(4).reason, before.reason);
   assert.equal(store.getJob(4).listing_text, before.listing_text);

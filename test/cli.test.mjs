@@ -136,7 +136,7 @@ test('fetch and scheduler only enqueue, without loading profile or database', as
   const { root, cli } = await fixture(t);
   await rm(join(root, 'profile.ts'));
   await rm(join(root, 'dist/sqlite.js'));
-  await rm(join(root, 'dist/discovery/discover-jobs.js'));
+  await rm(join(root, 'dist/discovery/worker.js'));
   await writeFile(
     join(root, 'dist/bullmq.js'),
     `export class FetchQueue {
@@ -187,17 +187,19 @@ test('workers run discovery and drain before closing queues', async (t) => {
     }`,
   );
   await writeFile(
-    join(root, 'dist/discovery/discover-jobs.js'),
-    `export async function fetchJobs(store, _search, profile, schedule) {
-      if (!store || !profile) throw new Error('missing dependency');
+    join(root, 'dist/discovery/google.js'),
+    `export function buildQueryMatrix(profile) {
+      if (!profile) throw new Error('missing profile');
+      return [{ query: 'remote' }];
+    }
+    export async function runParallelGoogleSearchesDetailed() {
       await new Promise(resolve => setTimeout(resolve, 30));
-      await schedule([42]);
-      return { added: 1, pending: 1, failures: [] };
+      return { results: [{ url: 'https://job-boards.greenhouse.io/example/jobs/42', title: 'Engineer', query: 'remote' }], failures: [] };
     }`,
   );
   const stopped = cli('workers');
   assert.equal(stopped.status, 0, stopped.stderr);
-  assert.match(stopped.stdout, /review 42/);
+  assert.match(stopped.stdout, /review 1/);
   assert.match(stopped.stdout, /"added":1/);
   for (const file of ['crawl', 'location-check', 'tech-check']) {
     assert.match(stopped.stdout, new RegExp(`${file} started`));
@@ -234,7 +236,7 @@ test('discovery consumer reports partial failures to BullMQ after scheduling res
       async startWorker(fetch) {
         try { await fetch(); throw new Error('failure not propagated'); }
         catch (error) {
-          if (error.message !== 'search failed') throw error;
+          if (error.message !== 'remote: search failed') throw error;
           console.log('delivery failed: ' + error.message);
         }
         throw new Error('stop after delivery');
@@ -243,10 +245,10 @@ test('discovery consumer reports partial failures to BullMQ after scheduling res
     }`,
   );
   await writeFile(
-    join(root, 'dist/discovery/discover-jobs.js'),
-    `export async function fetchJobs(_store, _search, _profile, schedule) {
-      await schedule([42]);
-      return { added: 1, pending: 1, failures: ['search failed'] };
+    join(root, 'dist/discovery/google.js'),
+    `export function buildQueryMatrix() { return [{ query: 'remote' }]; }
+    export async function runParallelGoogleSearchesDetailed() {
+      return { results: [{ url: 'https://job-boards.greenhouse.io/example/jobs/42', title: 'Engineer', query: 'remote' }], failures: [{ query: 'remote', error: 'search failed' }] };
     }`,
   );
   const failed = cli('workers');
@@ -254,7 +256,7 @@ test('discovery consumer reports partial failures to BullMQ after scheduling res
   assert.match(failed.stderr, /stop after delivery/);
   assert.match(
     failed.stdout,
-    /review 42\n\{"added":1,"pending":1,"failures":\["search failed"\]\}\ndelivery failed: search failed/,
+    /review 1\n\{"added":1,"pending":1,"failures":\["remote: search failed"\]\}\ndelivery failed: remote: search failed/,
   );
   assert.match(failed.stdout, /reviews closed/);
   assert.match(failed.stdout, /fetch queue closed/);
