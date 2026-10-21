@@ -47,7 +47,8 @@ services:
     <<: *app
     command: [scheduler]
     environment:
-      FETCH_CRON: ${FETCH_CRON:-0 * * * *}
+      GOOGLE_CRON: ${GOOGLE_CRON:-0 * * * *}
+      FREEHIRE_CRON: ${FREEHIRE_CRON:-*/15 * * * *}
       REDIS_URL: redis://redis:6379
     depends_on:
       redis:
@@ -100,6 +101,15 @@ services:
     memswap_limit: 4G
     tmpfs:
       - /tmp/.cache:noexec,nosuid,size=1g
+
+  redis-test:
+    image: redis:8.10.2-alpine
+    profiles: [test]
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "127.0.0.1:6380:6379"
+    tmpfs:
+      - /data
 
   redis:
     <<: *service

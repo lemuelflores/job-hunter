@@ -6,12 +6,19 @@ import { parseArgs } from 'node:util';
 import type { Worker } from 'bullmq';
 import {
   type ArgsDef,
+  type CommandDef,
   defineCommand,
   type EnumArgDef,
   renderUsage,
   runCommand,
 } from 'citty';
-import type { FetchQueue, ReviewQueues } from '../bullmq.js';
+import type {
+  DiscoveryQueue,
+  DiscoverySource,
+  ReviewQueues,
+} from '../bullmq.js';
+import type { FreehireConfig } from '../discovery/freehire.js';
+import type { DiscoverySchedules } from '../discovery/scheduler.js';
 import { loadProfile, type Profile } from '../profile.js';
 import { createLlm } from '../review/llm/index.js';
 import type {
@@ -81,18 +88,44 @@ function loadEnvironment() {
   }
 }
 
+type CommandUsage = Pick<CommandDef, 'meta' | 'args' | 'subCommands'>;
+
+function selectInvocation(
+  argv: string[],
+  commands: Record<string, CommandUsage>,
+  sources: Record<string, CommandUsage>,
+) {
+  if (argv[0] !== 'fetch' || !argv[1] || argv[1].startsWith('-'))
+    return {
+      selected: Object.hasOwn(commands, argv[0] ?? '')
+        ? commands[argv[0]]
+        : undefined,
+      offset: 1,
+      name: argv[0],
+    };
+  if (!Object.hasOwn(sources, argv[1]))
+    throw new Error(`Unknown discovery source: ${argv[1]}`);
+  return { selected: sources[argv[1]], offset: 2, name: `fetch ${argv[1]}` };
+}
+
 export interface CliDependencies {
   loadProfile(): Promise<Profile>;
   createLlm(): LlmProvider;
   createStore(): Promise<SqliteStore>;
   createReviewQueues(): Promise<ReviewQueues>;
-  createFetchQueue(): Promise<FetchQueue>;
-  startFetchScheduler(queue: FetchQueue): Promise<void>;
-  startFetchWorker(
+  createDiscoveryQueue(source: DiscoverySource): Promise<DiscoveryQueue>;
+  startDiscoveryScheduler(options: DiscoverySchedules): Promise<void>;
+  startGoogleWorker(
     store: SqliteStore,
     queues: ReviewQueues,
-    queue: FetchQueue,
+    queue: DiscoveryQueue,
     profile: Profile,
+  ): Promise<Worker>;
+  startFreehireWorker(
+    store: SqliteStore,
+    queues: ReviewQueues,
+    queue: DiscoveryQueue,
+    config: FreehireConfig,
   ): Promise<Worker>;
   startCrawlWorker(store: SqliteStore, queues: ReviewQueues): Promise<Worker>;
   startLocationWorker(
@@ -118,17 +151,23 @@ const defaults: CliDependencies = {
     const { ReviewQueues } = await import('../bullmq.js');
     return new ReviewQueues();
   },
-  createFetchQueue: async () => {
-    const { FetchQueue } = await import('../bullmq.js');
-    return new FetchQueue();
+  createDiscoveryQueue: async (source) => {
+    const { DiscoveryQueue } = await import('../bullmq.js');
+    return new DiscoveryQueue(source);
   },
-  startFetchScheduler: async (queue) => {
-    const { startFetchScheduler } = await import('../discovery/scheduler.js');
-    return startFetchScheduler(queue);
+  startDiscoveryScheduler: async (options) => {
+    const { startDiscoveryScheduler } = await import(
+      '../discovery/scheduler.js'
+    );
+    return startDiscoveryScheduler(options);
   },
-  startFetchWorker: async (store, queues, queue, profile) => {
-    const { startFetchWorker } = await import('./workers.js');
-    return startFetchWorker(store, queues, queue, profile);
+  startGoogleWorker: async (store, queues, queue, profile) => {
+    const { startGoogleWorker } = await import('./workers.js');
+    return startGoogleWorker(store, queues, queue, profile);
+  },
+  startFreehireWorker: async (store, queues, queue, config) => {
+    const { startFreehireWorker } = await import('./workers.js');
+    return startFreehireWorker(store, queues, queue, config);
   },
   startCrawlWorker: async (store, queues) => {
     const { startCrawlWorker } = await import('./workers.js');
@@ -151,7 +190,7 @@ export async function main(
   const deps = { ...defaults, ...dependencies };
   let store: SqliteStore | undefined;
   let queues: ReviewQueues | undefined;
-  let fetchQueue: FetchQueue | undefined;
+  const discoveryQueues: Partial<Record<DiscoverySource, DiscoveryQueue>> = {};
   let exitCode = 0;
   const database = async () => {
     if (!store) {
@@ -166,11 +205,12 @@ export async function main(
     return queues;
   };
   const controller = new AbortController();
-  const discoveryQueue = async () => {
-    if (!fetchQueue) {
-      fetchQueue = await deps.createFetchQueue();
-    }
-    return fetchQueue;
+  const discoveryQueue = async (source: DiscoverySource) => {
+    const existing = discoveryQueues[source];
+    if (existing) return existing;
+    const queue = await deps.createDiscoveryQueue(source);
+    discoveryQueues[source] = queue;
+    return queue;
   };
   const stop = () => controller.abort(new Error('Processing interrupted'));
   const processingSignal = () => {
@@ -181,6 +221,21 @@ export async function main(
   const report = (outcome: { failures: string[] }) => {
     console.log(JSON.stringify(outcome));
     exitCode = outcome.failures.length ? 1 : 0;
+  };
+  const sourceCommand = (source: DiscoverySource) =>
+    defineCommand({
+      meta: { description: `Queue ${source} discovery (requires workers)` },
+      run: async () => {
+        const profile = await deps.loadProfile();
+        if (!profile[source].enabled)
+          throw new Error(`${source} discovery is disabled in profile.ts`);
+        const task = await (await discoveryQueue(source)).enqueue();
+        console.log(JSON.stringify({ source, queued: task.id }));
+      },
+    });
+  const sourceCommands = {
+    google: sourceCommand('google'),
+    freehire: sourceCommand('freehire'),
   };
   const subCommands = {
     auth: defineCommand({
@@ -195,18 +250,23 @@ export async function main(
         ),
     }),
     fetch: defineCommand({
-      meta: {
-        description: 'Queue a discovery run (requires workers)',
-      },
-      run: async () => {
-        const task = await (await discoveryQueue()).enqueue();
-        console.log(JSON.stringify({ queued: task.id }));
-      },
+      meta: { description: 'Queue source-specific discovery' },
+      subCommands: sourceCommands,
     }),
     scheduler: defineCommand({
-      meta: { description: 'Queue fetching with FETCH_CRON (hourly, UTC)' },
+      meta: {
+        description: 'Schedule enabled Google and Freehire discovery (UTC)',
+      },
       run: async () => {
-        await deps.startFetchScheduler(await discoveryQueue());
+        const profile = await deps.loadProfile();
+        await deps.startDiscoveryScheduler({
+          google: profile.google.enabled
+            ? await discoveryQueue('google')
+            : undefined,
+          freehire: profile.freehire.enabled
+            ? await discoveryQueue('freehire')
+            : undefined,
+        });
       },
     }),
     review: defineCommand({
@@ -230,32 +290,55 @@ export async function main(
       },
     }),
     workers: defineCommand({
-      meta: { description: 'Run fetch, crawl, location and stack consumers' },
+      meta: {
+        description:
+          'Run enabled discovery, crawl, location and stack consumers',
+      },
       run: async () => {
         const profile = await deps.loadProfile();
         const llm = deps.createLlm();
         const store = await database();
         const queues = await reviewQueues();
-        const queue = await discoveryQueue();
         const signal = processingSignal();
         const workers: Worker[] = [];
         try {
-          workers.push(
-            await deps.startFetchWorker(store, queues, queue, profile),
-          );
+          if (profile.google.enabled)
+            workers.push(
+              await deps.startGoogleWorker(
+                store,
+                queues,
+                await discoveryQueue('google'),
+                profile,
+              ),
+            );
+          if (profile.freehire.enabled)
+            workers.push(
+              await deps.startFreehireWorker(
+                store,
+                queues,
+                await discoveryQueue('freehire'),
+                profile.freehire,
+              ),
+            );
           workers.push(await deps.startCrawlWorker(store, queues));
           workers.push(
             await deps.startLocationWorker(store, queues, (url, options) =>
-              llm.reviewJob(url, { ...options, location: profile.location }),
+              llm.reviewJob(url, {
+                ...options,
+                location: profile.review.location,
+              }),
             ),
           );
           workers.push(
             await deps.startTechWorker(store, queues, (url, options) =>
-              llm.reviewStack(url, { ...options, skills: profile.skills }),
+              llm.reviewStack(url, {
+                ...options,
+                stack: profile.review.stack,
+              }),
             ),
           );
           console.info(
-            `[workers] Started fetch, ${STAGES.join(', ')} consumers`,
+            `[workers] Started ${Object.keys(discoveryQueues).join(', ')} discovery; ${STAGES.join(', ')} consumers`,
           );
           if (!signal.aborted)
             await new Promise<void>((resolve) =>
@@ -325,16 +408,24 @@ export async function main(
     subCommands,
   });
   try {
-    const selected = Object.hasOwn(subCommands, argv[0] ?? '')
-      ? subCommands[argv[0] as keyof typeof subCommands]
-      : undefined;
-    if (!argv.length || argv.includes('--help') || argv.includes('-h')) {
+    const { selected, offset, name } = selectInvocation(
+      argv,
+      subCommands,
+      sourceCommands,
+    );
+    if (
+      !argv.length ||
+      argv.includes('--help') ||
+      argv.includes('-h') ||
+      (argv.length === 1 && argv[0] === 'fetch')
+    ) {
       console.log(
         selected
           ? await renderUsage(
               {
-                meta: { ...selected.meta, name: argv[0] },
+                meta: { ...selected.meta, name },
                 args: selected.args as ArgsDef,
+                subCommands: selected.subCommands,
               },
               command,
             )
@@ -343,7 +434,7 @@ export async function main(
       return 0;
     }
     if (!selected) throw new Error(`Unknown command: ${argv[0]}`);
-    validateArguments(argv.slice(1), selected.args as ArgsDef);
+    validateArguments(argv.slice(offset), selected.args as ArgsDef);
     loadEnvironment();
     await runCommand(command, { rawArgs: argv });
     return exitCode;
@@ -354,7 +445,10 @@ export async function main(
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
     try {
-      await Promise.all([queues?.close(), fetchQueue?.close()]);
+      await Promise.all([
+        queues?.close(),
+        ...Object.values(discoveryQueues).map((queue) => queue.close()),
+      ]);
     } finally {
       store?.close();
     }

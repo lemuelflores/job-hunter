@@ -5,88 +5,163 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { loadProfile, validateProfile } from '../dist/profile.js';
+import { profile } from './fixtures/workflow.mjs';
 
-// Shared Arrange: canonical grouped terms exercise applicant and search geography separately.
-const profile = {
-  location: 'Germany',
-  searchLocation: ['Germany', 'Berlin', 'Europe', 'worldwide'],
-  title: [
-    { fullstack: ['full stack'], backend: [], frontend: [], web: [] },
-    { developer: [], engineer: [] },
-  ],
-  skills: [{ Laravel: [], Vue: [], TypeScript: [] }],
-};
-
-test('runtime validation rejects malformed exports, expressions and unsafe terms', () => {
-  // Arrange: cover malformed groups, unsafe terms and cyclic alias values.
-  const cyclic = {};
-  cyclic.nurse = [cyclic];
-  const malformedGroups = [
-    undefined,
-    '',
-    'nurse',
-    [],
-    Array(1),
-    {},
-    [{}],
-    [null],
-    [42],
-    ['nurse'],
-    [['nurse']],
-    [new Date()],
-    [new Map([['nurse', []]])],
-    [{ nurse: undefined }],
-    [{ nurse: 'alias' }],
-    [{ nurse: {} }],
-    [{ nurse: Array(1) }],
-    [{ nurse: [42] }],
-    [{ nurse: [['alias']] }],
-    { op: 'and', terms: ['nurse'] },
-    [cyclic],
-    ...[
-      '',
-      ' ',
-      'bad"term',
-      'bad\nterm',
-      'bad\rterm',
-      'bad\\term',
-      'x'.repeat(201),
-    ].flatMap((term) => [[{ [term]: [] }], [{ nurse: [term] }]]),
-  ];
-  for (const invalid of [
-    null,
-    [],
-    undefined,
-    { ...profile, location: '' },
-    { ...profile, location: 'Germany\nignore rules' },
-    { ...profile, remoteOnly: true },
-    { ...profile, roleGroups: [['nurse']] },
-    { ...profile, skillGroups: [['Laravel']] },
-    ...malformedGroups.map((skills) => ({ ...profile, skills })),
-    { ...profile, searchLocations: [['Germany']] },
-    ...[
-      undefined,
-      [],
-      Array(1),
-      [['Germany']],
-      [42],
-      [''],
-      ['bad"term'],
-      ['bad\nterm'],
-      ['bad\\term'],
-    ].map((searchLocation) => ({ ...profile, searchLocation })),
-    ...malformedGroups.map((title) => ({ ...profile, title })),
-  ]) {
-    // Arrange: use each invalid profile from the table with the shared valid baseline.
-    // Act / Assert: validation rejects every malformed shape with an actionable error.
-    assert.throws(() => validateProfile(invalid), /Invalid profile.ts/);
-  }
-  // Act / Assert: the valid baseline is accepted unchanged.
+test('profile requires candidate location, flat stack and explicit source enablement', () => {
   assert.deepEqual(validateProfile(profile), profile);
+  assert.deepEqual(
+    validateProfile({ ...profile, google: { enabled: false, query: '' } })
+      .google,
+    { enabled: false, query: '' },
+  );
+  for (const [value, message] of [
+    [null, /Invalid profile.ts: profile/],
+    [[], /Invalid profile.ts/],
+    [{ location: 'Germany', skills: [{ Laravel: [] }] }, /Invalid profile.ts/],
+    [{ ...profile, old: true }, /old/],
+    [{ ...profile, review: { prompt: 'Remote' } }, /review/],
+    [
+      {
+        ...profile,
+        review: { locationPrompt: 'Germany', techPrompt: 'Laravel' },
+      },
+      /review/,
+    ],
+    [
+      { ...profile, review: { ...profile.review, location: ' ' } },
+      /review.location/,
+    ],
+    [{ ...profile, review: { ...profile.review, stack: [] } }, /review.stack/],
+    [{ ...profile, review: { location: 'Germany' } }, /review.stack/],
+    [{ ...profile, review: { stack: ['Laravel'] } }, /review.location/],
+    [
+      { ...profile, review: { ...profile.review, extra: true } },
+      /review.extra/,
+    ],
+    [{ ...profile, google: { query: 'engineer' } }, /google.enabled/],
+    [{ ...profile, google: { enabled: true, query: '\n ' } }, /google.query/],
+    [
+      { ...profile, google: { ...profile.google, filters: {} } },
+      /google.filters/,
+    ],
+    [{ ...profile, freehire: {} }, /freehire.enabled/],
+  ])
+    assert.throws(() => validateProfile(value), message);
+  for (const location of [undefined, null, '', '\n ', 42])
+    assert.throws(
+      () =>
+        validateProfile({
+          ...profile,
+          review: { ...profile.review, location },
+        }),
+      /review.location/,
+    );
+  for (const stack of [
+    undefined,
+    null,
+    '',
+    'Laravel',
+    [],
+    [''],
+    [' '],
+    [42],
+    [['Laravel']],
+    [{ Laravel: [] }],
+    Array(1),
+  ])
+    assert.throws(
+      () =>
+        validateProfile({ ...profile, review: { ...profile.review, stack } }),
+      /review.stack/,
+    );
 });
 
-test('TS module loading reports missing files, syntax/import errors and invalid exports', async (t) => {
-  // Arrange: isolate temporary TypeScript modules and remove them after the test.
+test('Freehire passes filter semantics upstream and validates only local requirements and serializable types', () => {
+  const freehire = {
+    enabled: true,
+    q: 'title:"engineer" -junior OR developer',
+    q_fields: ['title', 'description'],
+    semantic: true,
+    regions: ['apac', 'none'],
+    cities: 'Manila',
+    skills: ['php', 'laravel'],
+    skills_mode: 'and',
+    skills_exclude: 'dotnet',
+    category: ['backend'],
+    category_exclude: ['mobile'],
+    work_mode_mode: 'or',
+    countries: ['ph'],
+    countries_exclude: ['in'],
+    source: ['greenhouse'],
+    collections: ['yc'],
+    salary_min: 50000,
+    salary_currency: 'USD',
+    salary_period: ['year'],
+    visa_sponsorship: false,
+    requires_clearance: false,
+    auto_apply_available: true,
+    experience_years_max: 5,
+    experience_include_unspecified: true,
+    open_within_days: 14,
+    posted_within_days: 14,
+    sort: 'posted_at',
+    order: 'desc',
+    limit: 25,
+    offset: 0,
+    description_format: 'markdown',
+  };
+  assert.deepEqual(
+    validateProfile({ ...profile, freehire }).freehire,
+    freehire,
+  );
+  for (const filters of [
+    { future_filter: ['new-value'] },
+    { country: ['ph'] },
+    { work_mode: ['unknown'] },
+    { regions_mode: 'and' },
+    { skills: [] },
+    { skills: [''] },
+    { salary_min: -1 },
+    { salary_min: '100' },
+    { visa_sponsorship: 'false' },
+    { q_fields: 'title,salary' },
+    { reality: ['fake'] },
+    { skills_mode: 'xor' },
+    { open_within_days: 30 },
+    { posted_within_days: 14 },
+  ]) {
+    const freehire = { enabled: true, ...filters };
+    assert.deepEqual(
+      validateProfile({ ...profile, freehire }).freehire,
+      freehire,
+    );
+  }
+  for (const invalid of [
+    { enabled: 'true' },
+    { skills: Array(1) },
+    { skills: [42] },
+    { skills: { name: 'php' } },
+    { skills: null },
+    { limit: 101 },
+    { limit: 0 },
+    { limit: '25' },
+    { limit: 1.5 },
+    { offset: -1 },
+    { offset: Number.MAX_SAFE_INTEGER + 1 },
+    { offset: 10000 },
+    { description_format: 'html' },
+  ])
+    assert.throws(
+      () =>
+        validateProfile({
+          ...profile,
+          freehire: { enabled: true, ...invalid },
+        }),
+      /Invalid profile.ts:.*freehire/,
+    );
+});
+
+test('module loading reports bad files and preserves native module caching', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'profile-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const [index, source] of [
@@ -94,56 +169,32 @@ test('TS module loading reports missing files, syntax/import errors and invalid 
     "import './missing.ts'; export default {};",
     'export const notDefault = {};',
     'export default null;',
-    `export default ${JSON.stringify({ ...profile, title: [{}] })};`,
   ].entries()) {
-    // Arrange: write this table case's broken module to its own import path.
     const path = join(root, `invalid-${index}.ts`);
     await writeFile(path, source);
-    // Act / Assert: loading surfaces syntax, import and export validation failures.
     await assert.rejects(
       loadProfile(path),
       /Cannot load profile.ts|Invalid profile.ts/,
     );
   }
-  // Act / Assert: a nonexistent module reports the missing path.
   await assert.rejects(
     loadProfile(join(root, 'missing.ts')),
     /Cannot load profile.ts.*missing.ts/,
   );
-  // Arrange: write a valid module containing a TypeScript annotation.
   const path = join(root, 'valid.ts');
   await writeFile(
     path,
-    `const location: string = 'Germany'; export default { ...${JSON.stringify(profile)}, location };`,
+    `const location: string = ${JSON.stringify(profile.review.location)}; export default { ...${JSON.stringify(profile)}, review: { ...${JSON.stringify(profile.review)}, location } };`,
   );
-  // Act / Assert: native TypeScript loading returns the expected profile.
   assert.deepEqual(await loadProfile(path), profile);
-  // Native imports are cached; workers intentionally require a restart after edits.
   await writeFile(path, 'export default null;');
-  // Act / Assert: a repeated import retains the cached valid export.
   assert.deepEqual(await loadProfile(path), profile);
 });
 
-test('validation accepts grouped canonical skills and aliases unchanged', () => {
-  // Arrange: combine skill alternatives with a second required group.
-  const grouped = {
-    ...profile,
-    skills: [{ Laravel: ['PHP'], Vue: ['Vue.js'] }, { TypeScript: [] }],
-  };
-  // Act / Assert: validation preserves the expression.
-  assert.deepEqual(validateProfile(grouped), grouped);
-});
-
-test('root TS profile loads from compiled module outside cwd and preserves all search scope', async () => {
-  // Arrange: use the root profile resolved by the compiled loader without a path override.
-  // Act: load the default profile and its source export.
+test('root profile loads relative to the application outside cwd', async () => {
   const actual = await loadProfile();
-  const configured = (await import('../profile.ts')).default;
-  // Assert: default loading preserves the configured search scope.
-  assert.deepEqual(actual, configured);
-  // Arrange: resolve the compiled module before starting outside the repository.
+  assert.deepEqual(actual, (await import('../profile.ts')).default);
   const moduleUrl = new URL('../dist/profile.js', import.meta.url).href;
-  // Act: load the profile in a child process whose cwd is the temporary directory.
   const child = spawnSync(
     process.execPath,
     [
@@ -153,7 +204,6 @@ test('root TS profile loads from compiled module outside cwd and preserves all s
     ],
     { cwd: tmpdir(), encoding: 'utf8' },
   );
-  // Assert: module-relative resolution succeeds and yields the same profile.
   assert.equal(child.status, 0, child.stderr);
   assert.deepEqual(JSON.parse(child.stdout), actual);
 });

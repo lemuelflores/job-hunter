@@ -8,6 +8,7 @@ import { SqliteStore } from '../dist/sqlite.js';
 
 // Arrange: share canonical listing results.
 const result = (id) => ({
+  source: 'google',
   url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
   title: 'Engineer',
   query: 'remote',
@@ -45,6 +46,11 @@ test('invalid results and completed-stage guards reject unsafe writes', (t) => {
   // Arrange: start with pending stages.
   const store = fixture(t);
   // Act / Assert: reject invalid location decisions and empty listing text.
+  assert.throws(
+    () => store.saveResults([{ ...result(4), source: 'unknown' }]),
+    /CHECK constraint failed/,
+  );
+  assert.equal(store.getJob(4), undefined);
   assert.throws(() => store.review(1, 'deleted', 'invalid'), /Invalid review/);
   assert.throws(() => store.review(1, 'eligible', ''), /Invalid review/);
   assert.throws(() => store.saveListingText(1, ''), /Invalid listing/);
@@ -86,6 +92,7 @@ test('a failed result write rolls back stage completion and permits retry', asyn
       url: 'https://job-boards.greenhouse.io/example/jobs/1',
       title: 'Engineer',
       query: 'remote',
+      source: 'google',
     },
   ]);
   const before = store.getJob(1);
@@ -144,6 +151,7 @@ test('migration preserves historical decisions, indexes and triggers without imp
       status,
     );
   }
+  db.exec("UPDATE jobs SET query='freehire' WHERE id=3");
   const before = db.prepare('SELECT * FROM jobs ORDER BY id').all();
   db.close();
   // Act: open the legacy database to apply migration.
@@ -151,6 +159,9 @@ test('migration preserves historical decisions, indexes and triggers without imp
   try {
     // Assert: migration preserves pending work, historical rows, indexes, and triggers.
     assert.equal(store.pendingCount(), 1);
+    assert.equal(store.getJob(1).source, 'google');
+    assert.equal(store.getJob(3).source, 'freehire');
+    assert.equal(store.getJob(3).query, 'freehire');
     const check = new DatabaseSync(path);
     for (const original of before) {
       // Assert: every field in this historical listing survives migration unchanged.
@@ -195,6 +206,8 @@ test('migration preserves historical decisions, indexes and triggers without imp
     const reopened = new SqliteStore(path);
     // Assert: persisted stage state is stable across reopening.
     assert.deepEqual(reopened.stages(1), store.stages(1));
+    assert.equal(reopened.getJob(3).source, 'freehire');
+    assert.equal(reopened.getJob(3).query, 'freehire');
     reopened.close();
   } finally {
     store.close();
@@ -212,6 +225,7 @@ test('migration preserves assessment results and snapshots and restores only unf
       url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
       title: 'Engineer',
       query: 'remote',
+      source: 'google',
     })),
   );
   store.saveListingText(1, 'Saved snapshot');

@@ -3,10 +3,16 @@ import { createChatgpt } from '../../dist/review/llm/index.js';
 
 export const uuid = '12345678-abcd-abcd-abcd-123456789abc';
 export const profile = {
-  location: 'Germany',
-  searchLocation: ['Europe', 'worldwide'],
-  title: [{ engineer: [] }],
-  skills: [{ Laravel: [] }],
+  review: {
+    location: 'Germany',
+    stack: ['Laravel'],
+  },
+  google: {
+    enabled: true,
+    query:
+      'site:job-boards.greenhouse.io intitle:engineer Laravel (Europe OR worldwide)',
+  },
+  freehire: { enabled: false, work_mode: ['remote'] },
 };
 export const location = {
   eligibility: 'ineligible',
@@ -22,6 +28,7 @@ export const stack = {
   evidence: 'Laravel',
 };
 export const result = (id) => ({
+  source: 'google',
   url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
   title: 'Engineer',
   query: 'remote',
@@ -89,8 +96,8 @@ export function externalFixture(t, respond = () => undefined) {
     requests,
     llm,
     reviewLocation: (url, options) =>
-      llm.reviewJob(url, { ...options, location: profile.location }),
+      llm.reviewJob(url, { ...options, location: profile.review.location }),
     reviewStack: (url, options) =>
-      llm.reviewStack(url, { ...options, skills: profile.skills }),
+      llm.reviewStack(url, { ...options, stack: profile.review.stack }),
   };
 }

@@ -25,14 +25,17 @@ RedisConnection.clientFactory = (options) => {
   return connection;
 };
 
-export class FetchQueue {
+export type DiscoverySource = 'google' | 'freehire';
+
+export class DiscoveryQueue {
   readonly queue: Queue;
 
   constructor(
+    readonly source: DiscoverySource,
     readonly url = process.env.REDIS_URL || 'redis://127.0.0.1:6379',
     readonly prefix = 'job-hunter',
   ) {
-    this.queue = new Queue('fetch', {
+    this.queue = new Queue(source, {
       prefix,
       connection: { url, enableOfflineQueue: false },
       defaultJobOptions: {
@@ -42,26 +45,32 @@ export class FetchQueue {
       },
     });
     this.queue.on('error', (error) =>
-      console.error(`[queue] fetch: ${error.message}`),
+      console.error(`[queue] ${source}: ${error.message}`),
     );
   }
 
   async enqueue() {
-    return this.queue.add('fetch', {}, { deduplication: { id: 'fetch' } });
+    return this.queue.add(
+      this.source,
+      {},
+      { deduplication: { id: this.source } },
+    );
   }
 
-  async startWorker(fetch: () => Promise<void>) {
+  async startWorker(discover: () => Promise<void>) {
     await this.queue.setGlobalConcurrency(1);
-    const worker = new Worker('fetch', fetch, {
+    const worker = new Worker(this.source, discover, {
       prefix: this.prefix,
       connection: { url: this.url },
       concurrency: 1,
     });
     worker.on('error', (error) =>
-      console.error(`[worker] fetch: ${error.message}`),
+      console.error(`[worker] ${this.source}: ${error.message}`),
     );
     worker.on('failed', (_task, error) =>
-      console.error(`[worker] Fetch failed: ${error.message}`),
+      console.error(
+        `[worker] ${this.source} discovery failed: ${error.message}`,
+      ),
     );
     return worker;
   }

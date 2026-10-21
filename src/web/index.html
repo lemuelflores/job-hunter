@@ -153,6 +153,32 @@
       align-items: center;
       gap: 5px;
     }
+    .job-card__source {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      align-self: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 10px;
+      background: #edf0ed;
+      color: var(--muted);
+      box-shadow: inset 0 1px 0 #ffffffb3;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.025em;
+      white-space: nowrap;
+    }
+    .job-card__source--google {
+      border-color: #c6d9fb;
+      background: linear-gradient(135deg, #f4f8ff, #e5eeff);
+      color: #2456a6;
+    }
+    .job-card__source--freehire {
+      border-color: #ddcef5;
+      background: linear-gradient(135deg, #faf5ff, #eee5fc);
+      color: #7140a0;
+    }
     .assessment__status {
       flex: none;
       border: 1px solid var(--line);
@@ -490,6 +516,12 @@
               <span
                 class="job-card__metadata-item"
                 x-text="`Location: ${displayText(job.location, 'Not provided')}`"
+              ></span>
+              <span
+                class="job-card__source"
+                :class="{ 'job-card__source--google': job.source === 'google', 'job-card__source--freehire': job.source === 'freehire' }"
+                :aria-label="`Source: ${{ google: 'Google', freehire: 'Freehire' }[job.source] || 'Unknown'}`"
+                x-text="{ google: 'Google', freehire: 'Freehire' }[job.source] || 'Unknown'"
               ></span>
             </div>
             <div class="job-card__assessments">

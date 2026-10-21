@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { discoverJobs } from '../dist/discovery/discover.js';
-import { buildQueryMatrix } from '../dist/discovery/google.js';
+import { discoverGoogleJobs } from '../dist/discovery/discover.js';
+import { normalizeGoogleQuery } from '../dist/discovery/google.js';
 import { crawlJob } from '../dist/review/crawl.js';
 import { checkLocation } from '../dist/review/location-check.js';
 import { checkTech } from '../dist/review/tech-check.js';
@@ -45,7 +45,7 @@ test('discovery canonicalizes, deduplicates and returns only discovered unfinish
   f.store.review(2, 'eligible', 'Saved decision');
   f.store.reviewStack(2, stack);
   const { last_seen: _beforeSeen, ...before } = f.store.getJob(2);
-  assert.deepEqual(await discoverJobs(f.store, profile), {
+  assert.deepEqual(await discoverGoogleJobs(f.store, profile), {
     ids: [1, 5],
     added: 1,
     pending: 4,
@@ -59,7 +59,7 @@ test('discovery canonicalizes, deduplicates and returns only discovered unfinish
   const search = f.requests[0];
   assert.equal(
     search.url.searchParams.get('query'),
-    buildQueryMatrix(profile)[0].query,
+    normalizeGoogleQuery(profile.google.query),
   );
   assert.equal(search.url.searchParams.has('gl'), false);
   assert.equal(search.init.headers['x-api-key'], 'fixture-key');
@@ -85,7 +85,7 @@ test('partial discovery returns completed pages and failure without repeating pa
         ? new Response('Unavailable', { status: 503 })
         : Response.json({ organic_results: [] });
   });
-  const outcome = await discoverJobs(f.store, profile);
+  const outcome = await discoverGoogleJobs(f.store, profile);
   assert.deepEqual(outcome.ids, [1, 2]);
   assert.equal(outcome.added, 2);
   assert.equal(outcome.pending, 2);
@@ -95,7 +95,7 @@ test('partial discovery returns completed pages and failure without repeating pa
   assert.equal(f.store.getJob(2).snippet, '');
   assert.equal(f.requests.length, 2);
   unavailable = false;
-  assert.deepEqual(await discoverJobs(f.store, profile), {
+  assert.deepEqual(await discoverGoogleJobs(f.store, profile), {
     ids: [1, 2],
     added: 0,
     pending: 2,
@@ -112,11 +112,11 @@ test('discovery normalizes UUID casing but preserves board casing and saved deci
       ),
     }),
   );
-  await discoverJobs(f.store, profile);
+  await discoverGoogleJobs(f.store, profile);
   f.store.saveListingText(1, 'Saved listing');
   f.store.review(1, 'eligible', 'Saved decision');
   const saved = f.store.getJob(1);
-  assert.equal((await discoverJobs(f.store, profile)).added, 0);
+  assert.equal((await discoverGoogleJobs(f.store, profile)).added, 0);
   assert.equal(f.store.listReviewJobs('active').length, 1);
   assert.equal(f.store.getJob(1).url, url);
   assert.equal(f.store.getJob(1).reason, saved.reason);
@@ -179,6 +179,39 @@ for (const [name, url, endpoint, response] of [
     await checkTech(f.store, 1, f.reviewStack);
     assert.equal(f.requests.length, 3);
     assert.deepEqual(f.store.getJob(1), saved);
+  });
+}
+
+for (const status of [200, 404, 503]) {
+  test(`Freehire completion during an ATS HTTP ${status} request preserves its checkpoint`, async (t) => {
+    let release;
+    const response = new Promise((resolve) => {
+      release = resolve;
+    });
+    const f = fixture(t, () => response);
+    f.store.saveResults([result(1)]);
+    const crawling = crawlJob(f.store, 1);
+    assert.equal(f.requests.length, 1);
+    f.store.saveResults([
+      {
+        ...result(1),
+        source: 'freehire',
+        query: 'freehire',
+        listingText: 'Freehire Laravel role',
+      },
+    ]);
+    const saved = f.store.getJob(1);
+    const stages = f.store.stages(1);
+    release(
+      status === 200
+        ? Response.json({ id: 1, content: '<p>ATS Laravel role</p>' })
+        : new Response('', { status }),
+    );
+    await crawling;
+    assert.deepEqual(f.store.getJob(1), saved);
+    assert.deepEqual(f.store.stages(1), stages);
+    assert.equal(f.store.needsStage(1, 'location'), true);
+    assert.equal(f.store.needsStage(1, 'stack'), true);
   });
 }
 

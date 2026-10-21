@@ -1,5 +1,3 @@
-import type { SearchTerms } from '../../profile.js';
-
 export interface Decision {
   eligibility: 'eligible' | 'ineligible' | 'unclear';
   reason: string;
@@ -24,7 +22,7 @@ export interface LocationAssessmentInput extends SavedListingInput {
 }
 
 export interface StackAssessmentInput extends SavedListingInput {
-  skills: SearchTerms;
+  stack: string[];
 }
 
 export interface StackDecision {

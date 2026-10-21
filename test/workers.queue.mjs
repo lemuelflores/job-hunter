@@ -5,16 +5,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { FetchQueue, ReviewQueues } from '../dist/bullmq.js';
-import { startFetchScheduler } from '../dist/discovery/scheduler.js';
+import { DiscoveryQueue, ReviewQueues } from '../dist/bullmq.js';
+import { startDiscoveryScheduler } from '../dist/discovery/scheduler.js';
 import { main } from '../dist/entrypoints/cli.js';
 import {
   startCrawlWorker,
-  startFetchWorker,
+  startFreehireWorker,
+  startGoogleWorker,
   startLocationWorker,
   startTechWorker,
 } from '../dist/entrypoints/workers.js';
-import { loadProfile } from '../dist/profile.js';
 import { createLlm } from '../dist/review/llm/index.js';
 import { reviewJobs } from '../dist/review/review-jobs.js';
 import { SqliteStore } from '../dist/sqlite.js';
@@ -49,7 +49,8 @@ test('queue dispatch, recovery and process lifecycle', {
     const path = join(root, `${prefix}.sqlite`);
     const store = new SqliteStore(path);
     const queues = new ReviewQueues(redisUrl, prefix);
-    const fetches = new FetchQueue(redisUrl, prefix);
+    const google = new DiscoveryQueue('google', redisUrl, prefix);
+    const freehire = new DiscoveryQueue('freehire', redisUrl, prefix);
     // Exhaust delivery once; test our bookkeeping, not BullMQ's retry engine.
     for (const queue of Object.values(queues.queues))
       queue.jobsOpts.attempts = 1;
@@ -65,29 +66,54 @@ test('queue dispatch, recovery and process lifecycle', {
       path,
       store,
       queues,
-      fetches,
+      google,
+      freehire,
       ...external,
       releases,
       output,
       async start(selected = stages) {
-        for (const stage of selected) runningStages.add(stage);
-        if (selected.includes('fetch'))
-          workers.push(await startFetchWorker(store, queues, fetches, profile));
-        if (selected.includes('crawl'))
-          workers.push(await startCrawlWorker(store, queues));
-        if (selected.includes('location'))
-          workers.push(
-            await startLocationWorker(store, queues, external.reviewLocation),
-          );
-        if (selected.includes('stack'))
-          workers.push(
-            await startTechWorker(store, queues, external.reviewStack),
-          );
+        for (const stage of selected) {
+          runningStages.add(stage);
+          switch (stage) {
+            case 'google':
+              workers.push(
+                await startGoogleWorker(store, queues, google, profile),
+              );
+              break;
+            case 'freehire':
+              workers.push(
+                await startFreehireWorker(store, queues, freehire, {
+                  ...profile.freehire,
+                  enabled: true,
+                }),
+              );
+              break;
+            case 'crawl':
+              workers.push(await startCrawlWorker(store, queues));
+              break;
+            case 'location':
+              workers.push(
+                await startLocationWorker(
+                  store,
+                  queues,
+                  external.reviewLocation,
+                ),
+              );
+              break;
+            case 'stack':
+              workers.push(
+                await startTechWorker(store, queues, external.reviewStack),
+              );
+              break;
+            default:
+              assert.fail(`Unexpected stage: ${stage}`);
+          }
+        }
       },
       async idle() {
         await until(async () => {
           const counts = await Promise.all(
-            [fetches.queue, ...Object.values(queues.queues)]
+            [google.queue, freehire.queue, ...Object.values(queues.queues)]
               .filter((queue) => runningStages.has(queue.name))
               .map((queue) => queue.getJobCounts('active', 'wait', 'delayed')),
           );
@@ -103,11 +129,11 @@ test('queue dispatch, recovery and process lifecycle', {
       for (const release of releases) await release();
       await f.stop();
       await Promise.all(
-        [fetches.queue, ...Object.values(queues.queues)].map((queue) =>
-          queue.obliterate(),
+        [google.queue, freehire.queue, ...Object.values(queues.queues)].map(
+          (queue) => queue.obliterate(),
         ),
       );
-      await Promise.all([queues.close(), fetches.close()]);
+      await Promise.all([queues.close(), google.close(), freehire.close()]);
       store.close();
     });
     return f;
@@ -126,17 +152,230 @@ test('queue dispatch, recovery and process lifecycle', {
             : new Response('Unavailable', { status: 503 })
           : undefined,
       );
-      await f.start(['fetch', ...stages]);
-      const task = await f.fetches.enqueue();
+      await f.start(['google', ...stages]);
+      const task = await f.google.enqueue();
       await f.idle();
       assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
-      assert.match((await f.fetches.queue.getJob(task.id)).failedReason, /503/);
+      assert.match((await f.google.queue.getJob(task.id)).failedReason, /503/);
       assert.equal(
         f.requests.filter(({ url }) => url.hostname === 'api.autom.dev').length,
         2,
       );
       assert.equal(f.output[0].added, 1);
       assert.match(f.output[0].failures[0], /503/);
+    },
+  );
+
+  await t.test(
+    'Freehire source saves and dispatches both checks without extraction',
+    async (t) => {
+      const f = fixture(t, ({ url }) =>
+        url.hostname === 'freehire.me'
+          ? Response.json({
+              data: [
+                {
+                  url: 'https://careers.example.com/1',
+                  title: 'Engineer',
+                  description: 'Full Freehire Laravel listing',
+                },
+              ],
+              meta: { total: 1, limit: 100, offset: 0 },
+            })
+          : undefined,
+      );
+      await f.start(['google', 'freehire', ...stages]);
+      const task = await f.freehire.enqueue();
+      assert.equal(task.opts.deduplication.id, 'freehire');
+      assert.equal((await f.google.enqueue()).opts.deduplication.id, 'google');
+      await f.idle();
+      assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
+      assert.ok(
+        f.store
+          .getJob(1)
+          .listing_text.endsWith('Full Freehire Laravel listing'),
+      );
+      assert.equal(
+        f.requests.filter(
+          ({ url }) => url.hostname === 'boards-api.greenhouse.io',
+        ).length,
+        0,
+      );
+      for (const queue of [f.google, f.freehire]) {
+        assert.equal(queue.queue.jobsOpts.attempts, 1);
+        assert.equal(await queue.queue.getGlobalConcurrency(), 1);
+      }
+      assert.ok(
+        f.output.some(
+          (outcome) => outcome.source === 'freehire' && outcome.added === 1,
+        ),
+      );
+    },
+  );
+
+  await t.test(
+    'Freehire dispatch gap is repairable without extraction or resetting failed crawls',
+    async (t) => {
+      const f = fixture(t, ({ url }) =>
+        url.hostname === 'freehire.me'
+          ? Response.json({
+              data: [1, 2].map((id) => ({
+                url: result(id).url,
+                title: 'Engineer',
+                description: 'Saved Freehire Laravel',
+              })),
+              meta: { total: 2, limit: 100, offset: 0 },
+            })
+          : undefined,
+      );
+      f.store.saveResults([result(2)]);
+      f.store.failStage(1, 'crawl', 'Exhausted', true);
+      f.queues.queues.location.jobsOpts.sizeLimit = 1;
+      await f.start(['freehire']);
+      const task = await f.freehire.enqueue();
+      await f.idle();
+      assert.match(
+        (await f.freehire.queue.getJob(task.id)).failedReason,
+        /size/i,
+      );
+      const imported = f.store
+        .listReviewJobs('active')
+        .find((job) => job.url === result(1).url);
+      assert.ok(
+        f.store
+          .getJob(imported.id)
+          .listing_text.endsWith('Saved Freehire Laravel'),
+      );
+      assert.equal(f.store.stages(1)[0].state, 'failed');
+      delete f.queues.queues.location.jobsOpts.sizeLimit;
+      await f.start(['location', 'stack']);
+      await f.queues.repair(f.store);
+      await f.idle();
+      assert.ok(
+        f.store.stages(imported.id).every(({ state }) => state === 'complete'),
+      );
+      assert.equal(
+        f.requests.filter(({ url }) => url.hostname === 'freehire.me').length,
+        1,
+      );
+    },
+  );
+
+  await t.test(
+    'Freehire preserves completed pages and dispatches before a later page failure',
+    async (t) => {
+      const f = fixture(t, ({ url }) =>
+        url.hostname === 'freehire.me'
+          ? url.searchParams.get('offset') === '0'
+            ? Response.json({
+                data: [
+                  {
+                    url: result(1).url,
+                    title: 'Engineer',
+                    description: 'Freehire Laravel',
+                  },
+                ],
+                meta: { total: 2, limit: 100, offset: 0 },
+              })
+            : new Response('', { status: 503 })
+          : undefined,
+      );
+      await f.start(['freehire', 'location', 'stack']);
+      const task = await f.freehire.enqueue();
+      await f.idle();
+      assert.match(
+        (await f.freehire.queue.getJob(task.id)).failedReason,
+        /503/,
+      );
+      assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
+      assert.equal(f.output[0].source, 'freehire');
+    },
+  );
+
+  await t.test(
+    'manual source commands honor enabled without constructing unrelated dependencies',
+    async (t) => {
+      const f = fixture(t);
+      const dependencies = {
+        loadProfile: async () => profile,
+        createDiscoveryQueue: async (source) => {
+          assert.equal(source, 'freehire');
+          return new DiscoveryQueue(source, redisUrl, f.freehire.prefix);
+        },
+        createStore: async () => assert.fail('database'),
+        createLlm: () => assert.fail('model'),
+      };
+      t.mock.method(console, 'error', () => {});
+      assert.equal(await main(['fetch', 'freehire'], dependencies), 1);
+      assert.equal(await f.freehire.queue.getWaitingCount(), 0);
+      assert.equal(
+        await main(['fetch', 'freehire'], {
+          ...dependencies,
+          loadProfile: async () => ({
+            ...profile,
+            freehire: { ...profile.freehire, enabled: true },
+          }),
+        }),
+        0,
+      );
+      assert.equal(await f.freehire.queue.getWaitingCount(), 1);
+      assert.equal(f.requests.length, 0);
+    },
+  );
+
+  await t.test(
+    'independent schedules use source defaults and enabled queues only',
+    async (t) => {
+      const f = fixture(t);
+      const logs = [];
+      t.mock.method(console, 'error', (message) => logs.push(String(message)));
+      const before = {
+        google: process.env.GOOGLE_CRON,
+        freehire: process.env.FREEHIRE_CRON,
+      };
+      delete process.env.GOOGLE_CRON;
+      delete process.env.FREEHIRE_CRON;
+      try {
+        const running = startDiscoveryScheduler({
+          google: f.google,
+          freehire: f.freehire,
+        });
+        assert.ok(
+          logs.includes('[scheduler] google scheduled 0 * * * * (UTC)'),
+        );
+        assert.ok(
+          logs.includes('[scheduler] freehire scheduled */15 * * * * (UTC)'),
+        );
+        process.emit('SIGTERM');
+        await running;
+        logs.length = 0;
+        const independent = startDiscoveryScheduler({
+          google: f.google,
+          freehire: f.freehire,
+          googleCron: '0 0 1 1 *',
+          freehireCron: '* * * * * *',
+        });
+        try {
+          await until(
+            async () => (await f.freehire.queue.getWaitingCount()) > 0,
+          );
+          assert.equal(await f.google.queue.getWaitingCount(), 0);
+        } finally {
+          process.emit('SIGTERM');
+          await independent;
+        }
+        await assert.rejects(
+          startDiscoveryScheduler({
+            freehire: f.freehire,
+            freehireCron: 'invalid',
+          }),
+          /FREEHIRE_CRON/,
+        );
+      } finally {
+        if (before.google === undefined) delete process.env.GOOGLE_CRON;
+        else process.env.GOOGLE_CRON = before.google;
+        if (before.freehire === undefined) delete process.env.FREEHIRE_CRON;
+        else process.env.FREEHIRE_CRON = before.freehire;
+      }
     },
   );
 
@@ -323,8 +562,8 @@ test('queue dispatch, recovery and process lifecycle', {
         createStore: async () => new SqliteStore(f.path),
         createReviewQueues: async () =>
           new ReviewQueues(redisUrl, f.queues.prefix),
-        createFetchQueue: async () =>
-          new FetchQueue(redisUrl, f.fetches.prefix),
+        createDiscoveryQueue: async (source) =>
+          new DiscoveryQueue(source, redisUrl, f.google.prefix),
       }).then((code) => {
         stopped = true;
         return code;
@@ -335,7 +574,7 @@ test('queue dispatch, recovery and process lifecycle', {
           await running;
         }
       });
-      await f.fetches.enqueue();
+      await f.google.enqueue();
       await until(() => stackStarted);
       await until(
         () =>
@@ -349,17 +588,29 @@ test('queue dispatch, recovery and process lifecycle', {
       assert.equal(await running, 0);
       running = undefined;
       assert.equal(observer.getJob(1).stack_status, 'match');
-      assert.match(
-        f.requests.find(({ body }) => body?.text.format.name === 'job_review')
-          .body.instructions,
-        /Germany/,
+      const locationRequest = f.requests.find(
+        ({ body }) => body?.text.format.name === 'job_review',
+      ).body;
+      const stackRequest = f.requests.find(
+        ({ body }) => body?.text.format.name === 'job_stack_review',
+      ).body;
+      assert.ok(
+        locationRequest.instructions.includes(
+          JSON.stringify(profile.review.location),
+        ),
       );
       assert.ok(
-        f.requests
-          .find(({ body }) => body?.text.format.name === 'job_stack_review')
-          .body.input[0].content[0].text.includes(
-            JSON.stringify(profile.skills),
-          ),
+        stackRequest.input[0].content[0].text.includes(
+          JSON.stringify(profile.review.stack),
+        ),
+      );
+      assert.ok(
+        !locationRequest.input[0].content[0].text.includes(
+          JSON.stringify(profile.review.stack),
+        ),
+      );
+      assert.ok(
+        !JSON.stringify(stackRequest).includes(profile.review.location),
       );
       assert.deepEqual(
         ['SIGINT', 'SIGTERM'].map((event) => process.listeners(event)),
@@ -368,13 +619,22 @@ test('queue dispatch, recovery and process lifecycle', {
     },
   );
 
-  for (const failing of ['fetch', 'location']) {
+  for (const failing of ['google', 'freehire', 'location']) {
     await t.test(`CLI cleans up when ${failing} cannot start`, async (t) => {
       const f = fixture(t);
       const queues = new ReviewQueues(redisUrl, f.queues.prefix);
-      const fetches = new FetchQueue(redisUrl, f.fetches.prefix);
+      const google = new DiscoveryQueue('google', redisUrl, f.google.prefix);
+      const freehire = new DiscoveryQueue(
+        'freehire',
+        redisUrl,
+        f.google.prefix,
+      );
       const unavailable =
-        failing === 'fetch' ? fetches.queue : queues.queues.location;
+        failing === 'google'
+          ? google.queue
+          : failing === 'freehire'
+            ? freehire.queue
+            : queues.queues.location;
       await unavailable.waitUntilReady();
       await unavailable.close();
       const errors = [];
@@ -383,29 +643,34 @@ test('queue dispatch, recovery and process lifecycle', {
       );
       assert.equal(
         await main(['workers'], {
-          loadProfile: async () => profile,
+          loadProfile: async () => ({
+            ...profile,
+            freehire: { ...profile.freehire, enabled: true },
+          }),
           createLlm: () => f.llm,
           createStore: async () => new SqliteStore(f.path),
           createReviewQueues: async () => queues,
-          createFetchQueue: async () => fetches,
+          createDiscoveryQueue: async (source) =>
+            source === 'google' ? google : freehire,
         }),
         1,
       );
       assert.ok(errors.some((message) => /closed/i.test(message)));
-      assert.deepEqual(await f.fetches.queue.getWorkers(), []);
+      assert.deepEqual(await f.google.queue.getWorkers(), []);
+      await Promise.all([google.close(), freehire.close()]);
       assert.deepEqual(await f.queues.queues.crawl.getWorkers(), []);
     });
   }
 
   await t.test(
-    'CLI fetch only enqueues without loading profile, store or model',
+    'CLI fetch google only enqueues without loading store or model',
     async (t) => {
       const f = fixture(t);
       assert.equal(
-        await main(['fetch'], {
-          createFetchQueue: async () =>
-            new FetchQueue(redisUrl, f.fetches.prefix),
-          loadProfile: () => loadProfile(join(root, 'missing-profile.ts')),
+        await main(['fetch', 'google'], {
+          createDiscoveryQueue: async (source) =>
+            new DiscoveryQueue(source, redisUrl, f.google.prefix),
+          loadProfile: async () => profile,
           createStore: async () =>
             new SqliteStore(join(root, 'missing-directory', 'jobs.sqlite')),
           createLlm: () => createLlm('unsupported'),
@@ -414,33 +679,38 @@ test('queue dispatch, recovery and process lifecycle', {
       );
       assert.equal(f.requests.length, 0);
       assert.ok(f.output[0].queued);
-      await f.start(['fetch']);
+      await f.start(['google']);
       await f.idle();
-      assert.deepEqual(f.output[1], { added: 0, pending: 0, failures: [] });
+      assert.deepEqual(f.output[1], {
+        source: 'google',
+        added: 0,
+        pending: 0,
+        failures: [],
+      });
     },
   );
 
   await t.test(
-    'CLI scheduler enqueues without a working profile, database or model',
+    'CLI scheduler reads enablement without loading database or model',
     async (t) => {
       const f = fixture(t);
-      const previous = process.env.FETCH_CRON;
-      process.env.FETCH_CRON = '* * * * * *';
+      const previous = process.env.GOOGLE_CRON;
+      process.env.GOOGLE_CRON = '* * * * * *';
       t.after(() => {
-        if (previous === undefined) delete process.env.FETCH_CRON;
-        else process.env.FETCH_CRON = previous;
+        if (previous === undefined) delete process.env.GOOGLE_CRON;
+        else process.env.GOOGLE_CRON = previous;
       });
       const running = main(['scheduler'], {
-        createFetchQueue: async () =>
-          new FetchQueue(redisUrl, f.fetches.prefix),
-        loadProfile: () => loadProfile(join(root, 'missing-profile.ts')),
+        createDiscoveryQueue: async (source) =>
+          new DiscoveryQueue(source, redisUrl, f.google.prefix),
+        loadProfile: async () => profile,
         createStore: async () =>
           new SqliteStore(join(root, 'missing-directory', 'jobs.sqlite')),
         createLlm: () => createLlm('unsupported'),
       });
       try {
         await until(
-          async () => (await f.fetches.queue.getWaitingCount()) > 0,
+          async () => (await f.google.queue.getWaitingCount()) > 0,
           'CLI cron delivery',
         );
       } finally {
@@ -448,9 +718,11 @@ test('queue dispatch, recovery and process lifecycle', {
         assert.equal(await running, 0);
       }
       assert.equal(f.requests.length, 0);
-      await f.start(['fetch']);
+      await f.start(['google']);
       await f.idle();
-      assert.deepEqual(f.output, [{ added: 0, pending: 0, failures: [] }]);
+      assert.deepEqual(f.output, [
+        { source: 'google', added: 0, pending: 0, failures: [] },
+      ]);
     },
   );
 
@@ -459,23 +731,28 @@ test('queue dispatch, recovery and process lifecycle', {
     async (t) => {
       const f = fixture(t);
       await assert.rejects(
-        startFetchScheduler(f.fetches, 'invalid'),
-        /FETCH_CRON/,
+        startDiscoveryScheduler({ google: f.google, googleCron: 'invalid' }),
+        /GOOGLE_CRON/,
       );
-      const scheduled = startFetchScheduler(f.fetches, '* * * * * *');
+      const scheduled = startDiscoveryScheduler({
+        google: f.google,
+        googleCron: '* * * * * *',
+      });
       try {
-        assert.equal(await f.fetches.queue.getWaitingCount(), 0);
+        assert.equal(await f.google.queue.getWaitingCount(), 0);
         await until(
-          async () => (await f.fetches.queue.getWaitingCount()) > 0,
+          async () => (await f.google.queue.getWaitingCount()) > 0,
           'cron tick',
         );
       } finally {
         process.emit('SIGTERM');
         await scheduled;
       }
-      await f.start(['fetch']);
+      await f.start(['google']);
       await f.idle();
-      assert.deepEqual(f.output, [{ added: 0, pending: 0, failures: [] }]);
+      assert.deepEqual(f.output, [
+        { source: 'google', added: 0, pending: 0, failures: [] },
+      ]);
     },
   );
 
@@ -483,15 +760,18 @@ test('queue dispatch, recovery and process lifecycle', {
     'scheduler continues after enqueue failures and stops cleanly',
     async (t) => {
       const f = fixture(t);
-      f.fetches.queue.jobsOpts.sizeLimit = 1;
+      f.google.queue.jobsOpts.sizeLimit = 1;
       const errors = [];
       t.mock.method(console, 'error', (...args) => errors.push(args));
-      const scheduled = startFetchScheduler(f.fetches, '* * * * * *');
+      const scheduled = startDiscoveryScheduler({
+        google: f.google,
+        googleCron: '* * * * * *',
+      });
       try {
         await until(
           () =>
             errors.filter(
-              ([message]) => message === '[scheduler] Enqueue failed:',
+              ([message]) => message === '[scheduler] google enqueue failed:',
             ).length >= 2,
           'next tick after enqueue failure',
         );

@@ -113,7 +113,7 @@ test('review uses the configured applicant location rather than search regions',
       // Assert: policy uses the applicant location and excludes unrelated search defaults.
       assert.match(instructions, /living in "Germany"/);
       assert.match(instructions, /regions that include that location/);
-      assert.doesNotMatch(instructions, /Philippines|APAC|Asia/);
+      assert.doesNotMatch(instructions, /Philippines/);
       assert.match(
         instructions,
         /On-site\/hybrid or expired jobs are also ineligible/,
@@ -145,10 +145,7 @@ test('extracted text is supplied without browsing tools', async () => {
         body.instructions,
         /Read the supplied extracted listing text/,
       );
-      assert.doesNotMatch(
-        body.instructions,
-        /web search|skills|seniority|salary|JSON|string fields/,
-      );
+      assert.doesNotMatch(body.instructions, /web search|JSON|string fields/);
       return stream(events);
     },
   });
@@ -193,12 +190,18 @@ test('credential failures propagate before model network access', async () => {
 });
 
 test('location policy retains worldwide overrides and explicit residency limits', () => {
+  const rule = locationRule('Philippines');
+  assert.ok(rule.includes('living in "Philippines"'));
+  for (const term of ['Worldwide', 'Global', 'anywhere', 'APAC', 'SEA'])
+    assert.ok(rule.includes(term));
+  assert.match(rule, /not literal name matching/);
+  assert.match(rule, /Infer region membership yourself/);
   assert.match(
-    locationRule('Philippines'),
+    rule,
     /work anywhere worldwide overrides country\/city location tags/,
   );
   assert.match(
-    locationRule('Philippines'),
+    rule,
     /unless an explicit hiring\/residency restriction excludes the applicant's location/,
   );
 });
@@ -295,7 +298,7 @@ test('both reviewers validate the completed model response', async () => {
     await assert.rejects(
       review('https://example.test', {
         location: 'Germany',
-        skills: [{ Laravel: [] }],
+        stack: ['Laravel'],
         listingText: 'Worldwide Laravel',
       }),
       /Invalid ChatGPT/,
@@ -337,7 +340,7 @@ test('constructed provider shares its credential loader and transport across bot
   const options = {
     signal,
     location: 'Germany',
-    skills: [{ Laravel: [] }],
+    stack: ['Laravel'],
     listingText: 'Worldwide Laravel',
   };
   assert.deepEqual(
@@ -365,13 +368,24 @@ test('candidate settings are required before credentials or HTTP calls', async (
       }),
       /location is required/,
     );
-  for (const skills of [undefined, null, [], 'Laravel'])
+  for (const stack of [
+    undefined,
+    null,
+    [],
+    '',
+    42,
+    [''],
+    [' '],
+    [42],
+    [['Laravel']],
+    Array(1),
+  ])
     await assert.rejects(
       provider.reviewStack('https://example.test', {
         listingText: 'Laravel',
-        skills,
+        stack,
       }),
-      /skills are required/,
+      /stack must be a nonempty array of nonblank strings/,
     );
   for (const review of [provider.reviewJob, provider.reviewStack]) {
     for (const listingText of [undefined, null, '', '   '])
@@ -379,37 +393,41 @@ test('candidate settings are required before credentials or HTTP calls', async (
         review('https://example.test', {
           listingText,
           location: 'Germany',
-          skills: [{ Laravel: [] }],
+          stack: ['Laravel'],
         }),
         /listingText is required/,
       );
   }
 });
 
-test('stack review sends full canonical groups with a strict separate schema', async () => {
-  // Arrange: include required skill groups, canonical alternatives and aliases.
-  const skills = [
-    { Laravel: [] },
-    { Vue: ['Vue.js', 'VueJS'], Nuxt: ['Nuxt.js'] },
-  ];
+test('stack review sends candidate technologies with a strict separate schema', async () => {
+  const stack = ['Laravel', 'Vue', 'Nuxt'];
   const listingText = 'Build with Laravel and React';
-  // Act: review the listing against the explicitly supplied skill expression.
+  // Act: review the listing against the explicitly supplied alternatives.
   const provider = createChatgpt({
     getCredentials,
     fetch: async (url, init) => {
-      // Assert: stack instructions, canonical groups and strict schema stay location-independent.
+      // Assert: technology alternatives and the strict schema stay location-independent.
       assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
       const body = JSON.parse(init.body);
       assert.match(
         body.input[0].content[0].text,
         /Build with Laravel and React/,
       );
-      assert.ok(body.input[0].content[0].text.includes(JSON.stringify(skills)));
+      assert.ok(body.input[0].content[0].text.includes(JSON.stringify(stack)));
       assert.doesNotMatch(body.input[0].content[0].text, /Philippines/);
-      assert.match(body.instructions, /array is AND/);
-      assert.match(body.instructions, /keys within a group are OR/);
-      assert.match(body.instructions, /include the key itself/);
-      assert.match(body.instructions, /Aliases count as one concept/);
+      assert.match(
+        body.instructions,
+        /The stack lists alternatives, not a checklist/,
+      );
+      assert.match(
+        body.instructions,
+        /Recognize common technology aliases and spelling variations yourself/,
+      );
+      assert.match(
+        body.instructions,
+        /Do not evaluate location or remote eligibility/,
+      );
       assert.match(body.instructions, /optional\/bonus\/nice-to-have/);
       assert.match(body.instructions, /Laravel \+ React is partial_match/);
       assert.match(body.instructions, /React only is potential_match/);
@@ -445,7 +463,7 @@ test('stack review sends full canonical groups with a strict separate schema', a
     },
   });
   const result = await provider.reviewStack('https://example.test', {
-    skills,
+    stack,
     listingText,
   });
   // Assert: the completed response becomes the validated stack decision.
@@ -555,7 +573,7 @@ test('both reviewers preserve caller cancellation in the shared transport', asyn
     await assert.rejects(
       provider[method]('https://example.test', {
         location: 'Germany',
-        skills: [{ Laravel: [] }],
+        stack: ['Laravel'],
         listingText: 'Laravel',
         signal: controller.signal,
       }),

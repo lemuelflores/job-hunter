@@ -35,11 +35,15 @@ export async function crawlJob(
       text = await firecrawlListing(job.url, { signal });
     }
   } catch (error) {
-    if (!(error instanceof PageError) || error.retryable) throw error;
     signal?.throwIfAborted();
+    // Freehire can complete this crawl while the extraction request is in flight.
+    if (!store.needsStage(id, 'crawl')) return;
+    if (!(error instanceof PageError) || error.retryable) throw error;
     store.terminalCrawl(id, error.message);
     return;
   }
   signal?.throwIfAborted();
+  // Keep Freehire's checkpoint instead of trying to save a second extraction.
+  if (!store.needsStage(id, 'crawl')) return;
   store.saveListingText(id, text);
 }

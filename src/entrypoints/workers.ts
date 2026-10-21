@@ -1,5 +1,9 @@
-import type { FetchQueue, ReviewQueues } from '../bullmq.js';
-import { discoverJobs } from '../discovery/discover.js';
+import type { DiscoveryQueue, ReviewQueues } from '../bullmq.js';
+import {
+  discoverFreehireJobs,
+  discoverGoogleJobs,
+} from '../discovery/discover.js';
+import type { FreehireConfig } from '../discovery/freehire.js';
 import type { Profile } from '../profile.js';
 import { crawlJob } from '../review/crawl.js';
 import type { ListingExtractor } from '../review/extraction/types.js';
@@ -8,17 +12,35 @@ import { checkLocation } from '../review/location-check.js';
 import { checkTech } from '../review/tech-check.js';
 import type { SqliteStore } from '../sqlite.js';
 
-export function startFetchWorker(
+export function startGoogleWorker(
   store: SqliteStore,
   queues: ReviewQueues,
-  queue: FetchQueue,
+  queue: DiscoveryQueue,
   profile: Profile,
 ) {
   return queue.startWorker(async () => {
-    const { ids, ...outcome } = await discoverJobs(store, profile);
+    const { ids, ...outcome } = await discoverGoogleJobs(store, profile);
     for (const id of ids) await queues.scheduleListing(store, id);
     outcome.pending = store.pendingCount();
-    console.log(JSON.stringify(outcome));
+    console.log(JSON.stringify({ source: 'google', ...outcome }));
+    if (outcome.failures.length) throw new Error(outcome.failures.join('; '));
+  });
+}
+
+export function startFreehireWorker(
+  store: SqliteStore,
+  queues: ReviewQueues,
+  queue: DiscoveryQueue,
+  config: FreehireConfig,
+) {
+  return queue.startWorker(async () => {
+    // Reconcile exhausted deliveries before considering an empty crawl checkpoint.
+    for (const job of store.unfinished())
+      await queues.syncFailures(store, job.id);
+    const { ids, ...outcome } = await discoverFreehireJobs(store, config);
+    for (const id of ids) await queues.scheduleListing(store, id);
+    outcome.pending = store.pendingCount();
+    console.log(JSON.stringify({ source: 'freehire', ...outcome }));
     if (outcome.failures.length) throw new Error(outcome.failures.join('; '));
   });
 }

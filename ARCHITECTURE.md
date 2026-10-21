@@ -11,12 +11,13 @@ job-hunter/
 ├── src/
 │   ├── entrypoints/
 │   │   ├── cli.ts             # Commands, dependency construction, shutdown
-│   │   └── workers.ts         # Four queue consumers and downstream delivery
+│   │   └── workers.ts         # Five queue consumers and downstream delivery
 │   ├── discovery/
 │   │   ├── scheduler.ts       # UTC cron producer for queued discovery
 │   │   ├── discover.ts        # Direct discovery operation and persistence
 │   │   ├── job-url.ts         # ATS listing URL validation and normalization
-│   │   └── google.ts          # Query construction, search types, Autom.dev requests
+│   │   ├── google.ts          # Explicit query normalization, Autom.dev requests
+│   │   └── freehire.ts        # Native search config, full descriptions, bounded pagination
 │   ├── review/
 │   │   ├── review-jobs.ts     # Enqueue unfinished listings and wait for outcomes
 │   │   ├── stages.ts          # Shared processing-stage names and type
@@ -71,21 +72,39 @@ Feature directories own their workflows; `entrypoints/` owns CLI composition and
 ```text
 profile.ts + .env
        |
-CLI fetch / cron scheduler
+CLI fetch google / scheduler (GOOGLE_CRON)
        |
-BullMQ / Redis: fetch queue
+BullMQ / Redis: google queue
        |
-fetch consumer (workers process)
-       |--> Autom.dev --> Google results
+google consumer (workers process)
+       |--> Autom.dev API --> Google search results
        v
-SQLite: validated, deduplicated listings and stage state
+SQLite: listing URLs and pending crawl
        |
 BullMQ / Redis: crawl queue
        |
-crawl consumer --> Ashby / Greenhouse / Lever public APIs --> listing text --> SQLite
+crawl consumer (workers process)
+       |--> Ashby / Greenhouse / Lever public APIs --> listing text
+       v
+SQLite: saved text and completed crawl
        |
+       +--> shared assessment queues below
+
+profile.ts + .env
+       |
+CLI fetch freehire / scheduler (FREEHIRE_CRON)
+       |
+BullMQ / Redis: freehire queue
+       |
+freehire consumer (workers process)
+       |--> Freehire API --> original URLs and full listing text
+       v
+SQLite: saved text and completed crawl (no extraction needed)
+       |
+       +--> shared assessment queues below
+
+Shared assessment queues (BullMQ / Redis; consumers in workers process):
        +--> location queue --> ChatGPT eligibility --> SQLite
-       |
        +--> stack queue ----> ChatGPT technology fit --> SQLite
 
 User <--> Browser UI <--> Local HTTP server <--> SQLite
@@ -95,7 +114,9 @@ Firecrawl API <--> Playwright / Redis
 
 SQLite is authoritative for job data and processing state. Redis coordinates work and carries listing IDs, not copies of listing text or assessment results. Both assessments consume the same saved listing text and run independently; location rejection does not prevent stack assessment. The browser reads results and changes user review status; it does not run the processing pipeline.
 
-Compose uses two processing containers: `scheduler` only produces discovery tasks, while `workers` runs four separate BullMQ consumers (`fetch`, `crawl`, `location`, and `stack`) in one Node process. Queue names select handlers, not a task discriminator. Each queue has local and global concurrency one; asynchronous work on different queues can overlap. All consumers share startup and shutdown, the profile, SQLite connection, and process-local OAuth refresh coordination. Source remains organized by feature rather than container.
+Both discovery sources use the same scheduler process with independent cron schedules and separate queue consumers. Both validate and deduplicate listings before persistence. Google supplies listing URLs that need extraction; Freehire supplies full text and completes the crawl checkpoint during ingestion. Both then feed the same location and stack assessment queues.
+
+Compose uses two processing containers: `scheduler` only produces discovery tasks, while `workers` runs up to five separate BullMQ consumers (`google`, `freehire`, `crawl`, `location`, and `stack`) in one Node process. Each source object's `enabled` flag controls its scheduler and consumer; manual commands reject disabled sources. Both configuration objects remain required. Queue names select handlers, not a task discriminator. Each queue has local and global concurrency one; asynchronous work on different queues can overlap. All consumers share startup and shutdown, the profile, SQLite connection, and process-local OAuth refresh coordination. Source remains organized by feature rather than container.
 
 ## 3. Core Components
 
@@ -105,7 +126,7 @@ Compose uses two processing containers: `scheduler` only produces discovery task
 
 **Description:** `src/web/index.html` displays saved listings, eligibility and stack assessments, filtering, and active/hidden/rejected review states. Users can change an individual listing's state. One Alpine.js component and keyed templates own browser state and rendering in the same document, without a bundler. Listing/model text uses `x-text`, never HTML interpretation; external links accept only HTTP(S). `src/web/server.ts` loads the colocated HTML and locally built Alpine asset for the HTTP server.
 
-Listings use scan-first cards: role/company/location lead, independent location and stack assessment rows place labels/statuses on the left and summaries/evidence on the right, native `details` elements disclose supporting evidence, and a footer groups the external listing link and review actions. Assessment columns stack on mobile. Component styles use BEM block, element, and modifier classes.
+Listings use scan-first cards: role/company/location lead, with the discovery source (Google or Freehire) alongside company and location. Independent location and stack assessment rows place labels/statuses on the left and summaries/evidence on the right, native `details` elements disclose supporting evidence, and a footer groups the external listing link and review actions. Assessment columns stack on mobile. Component styles use BEM block, element, and modifier classes.
 
 Optimistic status changes apply only while their save requests are pending. Successful saves reload server state rather than retaining local overrides that could hide changes from another tab. Restoring a listing with pending checks shows the explicit `repair` command; status changes do not enqueue processing.
 
@@ -122,28 +143,44 @@ The component polls the selected status every five seconds while visible and on 
 These are execution roles within the same application, sharing source, SQLite, and credentials.
 
 The CLI loads the HTTP server and its HTML asset only for `serve`. Queue loading
-uses stage contracts directly and imports SQLite only as a type, so fetch-only
+uses stage contracts directly and imports SQLite only as a type, so enqueue-only
 composition does not load the database implementation.
 
 #### 3.2.1. CLI and Discovery Scheduler
 
-**Name:** Command entry point and fetch worker.
+**Name:** Command entry point and independent discovery workers.
 
-**Description:** `src/entrypoints/cli.ts` loads root-relative configuration, constructs dependencies only for commands that need them, dispatches commands, handles sign-in cancellation, and closes shared resources. Commands include `auth`, `fetch`, `scheduler`, `workers`, `review`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`. Feature modules own workflow lifecycles: `src/review/review-jobs.ts` owns review enqueueing and outcome waiting, and `src/web/server.ts` owns server startup and graceful shutdown.
+**Description:** `src/entrypoints/cli.ts` loads root-relative configuration, constructs dependencies only for commands that need them, dispatches commands, handles sign-in cancellation, and closes shared resources. Commands include `auth`, `fetch google`, `fetch freehire`, `scheduler`, `workers`, `review`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`. Bare `fetch` prints help, not a combined run. Feature modules own workflow lifecycles: `src/review/review-jobs.ts` owns review enqueueing and outcome waiting, and `src/web/server.ts` owns server startup and graceful shutdown.
 
-`src/discovery/google.ts` builds one combined Google query across Ashby, Lever, and Greenhouse. All title, skill, and search-location terms come from the root profile: array groups are ANDed; canonical names and aliases within a group are ORed. Titles use `intitle:` and skills match page-wide. The builder adds neither a profession nor a remote clause. `searchLocation` controls discovery alternatives; `location` is the candidate's residence for assessment.
+The profile contains `review` (`location` residence string, flat `stack` string array), `google` (`enabled`, `query`), and `freehire` (`enabled` plus native search parameters). Composed Valibot schemas reject unknown fields outside Freehire, blank locations, empty/nested/blank stack entries, enabled blank Google queries, and removed profile formats, reporting the invalid field path. The small Freehire schema lives in `src/discovery/freehire.ts` and is reused by the profile schema and standalone client validation; it checks enablement, serializable parameter types, pagination bounds, and Markdown output, leaving filter semantics to the API. `src/discovery/google.ts` collapses whitespace in the explicit Google query and sends it without appended filters, generated aliases, or translation from review settings. The root query preserves the user's existing titles, aliases, skills and geography, including all five supported ATS hostnames. Assessment prompts, output contracts, decision definitions and untrusted-listing safeguards are application-owned. The location model receives only the residence and interprets worldwide/global/anywhere and region membership such as APAC/SEA, retaining explicit hiring exclusions. The stack model receives only the flat technology alternatives and interprets aliases without requiring every target in one job. The profile contains candidate data, not prompts or geographic alias lists.
 
-`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. The directly callable `discoverJobs` in `src/discovery/discover.ts` validates and canonicalizes URLs through `src/discovery/job-url.ts` before passing accepted results to SQLite. It returns discovered unfinished listing IDs and an outcome (added/pending counts and query failures). The consumer schedules those IDs before logging the outcome and throwing for partial query failures. SQLite persists the supplied URLs and deduplicates by URL; it does not own ATS URL rules. Fetching does not assess jobs.
+`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results up to 100 per run. Directly callable `discoverGoogleJobs` in `src/discovery/discover.ts` validates/canonicalizes URLs through `src/discovery/job-url.ts` before passing accepted results to SQLite. It returns discovered unfinished IDs and added/pending counts with query failures. The consumer dispatches those IDs before logging its source-tagged outcome and throwing for partial failures. Google retains ATS-only URL acceptance. SQLite persists supplied URLs and deduplicates by URL; it does not own URL rules. Discovery does not itself assess jobs.
+
+`discoverFreehireJobs` calls `src/discovery/freehire.ts` at `GET https://freehire.me/api/v1/agent/jobs/search?description_format=markdown`. The client validates response pagination and interpreted URL/title/description fields, skips malformed or blank entries, and refuses pages reporting ignored parameters or values. It preserves earlier successful pages on later HTTP, validation, timeout or cancellation failures. Native search parameters pass through as strings, string arrays, numbers or booleans; arrays serialize as comma-separated values. Filter names, vocabularies and combinations are validated by Freehire rather than mirrored locally. API-reported ignored settings fail the run visibly instead of accepting a broadened search.
+
+Freehire pages through all matching results with no application per-run cap; the 100-result run cap applies only to Google. Pages contain `limit` rows (default/max 100), with optional native `offset` and client defaults `sort=created_at&order=desc`. The root profile sets `posted_within_days=14` and `sort=posted_at`, filtering source posting dates upstream rather than catalogue creation age. No date filter or age ceiling is added by the client; native date settings pass through to Freehire. Markdown is fixed for the assessment pipeline. Empty pages or the reported total stop the scan; logs report scanned/total. Reaching the upstream 10,000-row pagination boundary with results remaining fails visibly and preserves completed pages. There is no persistent cursor, and offset shifts can miss listings. API warnings and rate-budget exhaustion fail the run visibly; requests identify this project and stop requesting more pages when the remaining rate budget is zero. Public access is rate-limited and licensed for personal/non-commercial use.
+
+Freehire URLs reuse ATS canonicalization for recognized listing identities; otherwise the original HTTP(S) URL is preserved rather than guessing identity from `source`. Malformed URLs, non-HTTP(S) schemes and embedded credentials are rejected. There is no additional hostname, IP-address, port or ATS-path filter for Freehire links because ingestion does not fetch them; Google's strict ATS validation is unchanged. The job title and full description are persisted, with insertion and pending-crawl completion in one SQLite transaction. Saved listing text prefixes the description with Freehire's title, company, location, countries, regions, and work mode when supplied; these fields are accepted as evidence for the existing reviewers without an ATS request. Optional metadata is type-validated and may be missing or null. Only active jobs with no text and pending crawl can receive incoming text. Rediscovery never overwrites saved text, decisions, status, failed/terminal/blocked stages or retry generations. Failed crawls require explicit retry; terminal crawls remain terminal. The Freehire consumer reconciles retained Redis failures before ingestion, then queues missing assessments without an extraction task. A save/dispatch gap remains repairable with `repair`.
 
 Valibot validates search response containers and pagination; malformed result entries are skipped and invalid optional snippets/positions are omitted. If a later page fails, completed pages still reach persistence and scheduling alongside a reported query failure. Ashby and Lever UUIDs are normalized to lowercase without changing board-name casing.
 
 Autom error messages are preserved verbatim, with an HTTP-status fallback only for missing or unusable error text. Each search page allows three total attempts: rate-limit `401` responses wait two seconds between attempts, while `500` responses back off for 500 ms then one second. Other statuses are not retried; `404` ends the search as an empty page. Authentication `401` responses are distinguished from rate limits using Autom's error text.
 
-`scheduler` runs `startFetchScheduler` in `src/discovery/scheduler.ts`, passing its `FetchQueue`, with `FETCH_CRON` (default `0 * * * *`, UTC), with no immediate startup enqueue and no overlapping enqueue calls. Shutdown waits for the active enqueue; enqueue failures are logged without stopping future ticks. Scheduler downtime misses ticks; worker downtime leaves queued work waiting. Neither the scheduler nor manual `fetch` loads the profile, database, or search credentials.
+`scheduler` runs `startDiscoveryScheduler` in `src/discovery/scheduler.ts`, passing enabled source queues. `GOOGLE_CRON` defaults to `0 * * * *`, and `FREEHIRE_CRON` to `*/15 * * * *`, both UTC. The two cron tasks admit work independently, with no startup enqueue and no overlapping calls per source. Shutdown destroys both tasks and waits for active enqueues; enqueue failures are logged without stopping future ticks. Scheduler downtime misses ticks; worker downtime leaves queued work waiting. Scheduler and manual source commands load the profile for enablement, but not SQLite, model credentials or search credentials.
 
-`ReviewQueues` manages the three listing-stage queues and their persistence-aware recovery; `FetchQueue` independently manages discovery delivery. Assessment workers receive only their respective review method, with candidate settings attached by the CLI.
+`ReviewQueues` manages the three listing-stage queues and persistence-aware recovery; one `DiscoveryQueue` instance per source independently manages discovery delivery. Assessment workers receive only their respective review method, with `review.location` or `review.stack` bound by the CLI.
 
-`FetchQueue` in `src/bullmq.ts` owns a separate `fetch` queue with prefix `job-hunter`. Cron and manual `fetch` enqueue one complete discovery run with empty payload and BullMQ simple deduplication ID `fetch`, held until completion or failure. Global and local concurrency are one. `src/entrypoints/workers.ts` exposes `startFetchWorker`, which calls `discoverJobs` and owns downstream delivery and outcome logging. The CLI supplies the shared profile and starts this consumer alongside the review consumers in `workers`. All consumers drain active work before queues and SQLite close. Discovery is not a listing stage and has no `job_stages` row. Each task allows one attempt; partial search failures preserve successful results and mark the run failed without repeating paid searches automatically. Completed tasks are removed and the most recent 20 failures retained; a later trigger can run after either outcome. BullMQ stalled delivery recovery can still repeat external searches after a crash.
+`DiscoveryQueue` in `src/bullmq.ts` owns queues `google` and `freehire` under prefix `job-hunter`. Cron and manual commands enqueue empty payloads with simple deduplication IDs matching each source, held until completion/failure. Global/local concurrency are one per source. `startGoogleWorker` and `startFreehireWorker` in `src/entrypoints/workers.ts` call their respective direct operations and own downstream dispatch and outcome logging. CLI starts enabled consumers alongside review consumers. All drain active work before queues and SQLite close. Discovery is not a listing stage and has no `job_stages` row. Each run allows one attempt; successful pages are persisted/dispatched before reporting partial failure, without automatically repeating an entire paid search. Completed deliveries are removed and the latest 20 failures retained per source. A later trigger can run after either outcome; stalled delivery recovery can repeat external searches after crashes.
+
+#### Discovery queue transition
+
+The old Redis `fetch` queue is not consumed by the new version. Before rebuilding a running installation, stop its old scheduler (`docker compose stop scheduler`), leave old workers running, and verify `wait`, `active`, `delayed`, `paused`, and `prioritized` are empty. With the old installation/dependencies, this read-only check prints the counts:
+
+```sh
+node --input-type=module -e 'import "./dist/bullmq.js"; import { Queue } from "bullmq"; const q = new Queue("fetch", { prefix: "job-hunter", connection: { url: process.env.REDIS_URL || "redis://127.0.0.1:6379", enableOfflineQueue: false } }); try { console.log(await q.getJobCounts("wait", "active", "delayed", "paused", "prioritized", "failed")); } finally { await q.close(); }'
+```
+
+Resolve any unfinished failed discovery run deliberately while the old worker is available; do not delete its queue. Once no deliverable work remains, stop old workers, rebuild, update the profile/environment and recreate scheduler/workers. An empty queue needs no data migration. Retained failure records may remain for inspection; no automatic queue deletion or legacy consumer is provided. Review-stage queues and SQLite data are unchanged.
 
 **Technologies:** Node.js 22.18+, TypeScript ESM, native Fetch API, node-cron.
 
@@ -207,7 +244,7 @@ Responses are not cached. Request validation and persistence remain server-side;
 
 **Key schemas:**
 
-- `jobs`: listing identity, search metadata, text, location/stack results, and user status.
+- `jobs`: listing identity, search metadata, text, location/stack results, and user status. `source` records the first discovery provider (`google` or `freehire`); `query` retains the Google query text or a JSON snapshot of the configured Freehire settings at search start (implicit client defaults are not expanded). Rediscovery preserves both fields, including across sources. Migration labels historical `query='freehire'` rows as Freehire and other rows as Google; historical Freehire configurations cannot be recovered, so those queries retain the old marker.
 - `job_stages`: one row per listing/stage, keyed by `(job_id, stage)`, with state, error, and retry generation.
 
 Scheduling queries return only listing IDs and URLs. Summary queries exclude saved listing text at the SQL boundary, stage-readiness checks do not copy descriptions into JavaScript, and unfinished counts are computed in SQLite.
@@ -242,8 +279,9 @@ Legacy job columns remain to preserve historical values and existing database ob
 
 ## 5. External Integrations / APIs
 
-Assessment inputs require saved listing text plus explicit candidate location or
-skills; adapters never load the root profile. `SavedListingInput` and named
+Assessment inputs require saved listing text plus the candidate residence for
+location checks or flat technology array for stack checks; adapters never load the
+root profile. `SavedListingInput` and named
 reviewer callbacks let CLI-bound workers receive text and per-operation model,
 effort, and cancellation options without requiring candidate settings again.
 `createChatgpt` constructs both reviewers with one HTTP transport, credential
@@ -259,6 +297,7 @@ and does not print browser instructions itself.
 | Service | Purpose | Integration method |
 | --- | --- | --- |
 | Autom.dev | Google search for supported ATS listings | HTTPS GET with `x-api-key` from `AUTOM_API_KEY` |
+| Freehire | Full descriptions and original URLs | Unauthenticated HTTPS GET `/api/v1/agent/jobs/search`, native filters, `description_format=markdown` |
 | Ashby | Source job listings | Google discovery; unauthenticated GET `https://api.ashbyhq.com/posting-api/job-board/{board}?includeCompensation=true`, exact UUID selection |
 | Greenhouse | Source job listings | Google discovery; unauthenticated GET `https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{job_id}?pay_transparency=true` |
 | Lever | Source job listings | Google discovery; unauthenticated GET `https://api.lever.co/v0/postings/{site}/{posting_id}` (EU: `api.eu.lever.co`) |
@@ -292,7 +331,7 @@ App containers use `${UID:-1000}:${GID:-1000}` to keep bind-mounted database and
 
 **Key practices:**
 
-- Listing URLs must match supported HTTPS ATS listing shapes; credentials, custom ports, board homepages, and application-form paths are rejected. Tracking parameters/fragments are stripped and Greenhouse hostnames canonicalized.
+- Google listing URLs must match supported HTTPS ATS listing shapes; credentials, custom ports, board homepages, and application-form paths are rejected. Tracking parameters/fragments are stripped and Greenhouse hostnames canonicalized. Freehire reuses that identity normalization where applicable, otherwise preserving HTTP(S) links without embedded credentials; it does not fetch those links.
 - API mutations require JSON, validated fields/statuses, and bodies no larger than 16 KiB. SQL values use bound parameters.
 - Browser rendering uses text nodes for listing text. Model prompts mark scraped content as untrusted data, and model decisions are checked against bounded schemas and runtime validation.
 - Secrets and databases are ignored by Git. OAuth credentials are saved through atomic replacement with mode `0600`.
@@ -303,7 +342,7 @@ App containers use `${UID:-1000}:${GID:-1000}` to keep bind-mounted database and
 
 **Local setup:** See [README.md](README.md). Use Node.js 22.18+ and pnpm; install with `pnpm install`, configure `.env` from `.env.example`, edit `profile.ts`, and run `pnpm build`. Authenticate with `pnpm job-hunter auth` before model processing. Redis and a running review worker are required for queued assessments; Compose still provisions Firecrawl although supported ATS listings now use direct APIs.
 
-Application configuration/database paths resolve relative to the application directory, not the shell's current directory. Build type-checks the root profile separately, compiles application TypeScript, and copies UI HTML and the Alpine browser script. Node imports the root TypeScript profile at runtime; restart long-running workers after profile changes.
+Application configuration/database paths resolve relative to the application directory, not the shell's current directory. Build type-checks the root profile separately, compiles application TypeScript, and copies UI HTML and the Alpine browser script. Node imports the root TypeScript profile at runtime; restart scheduler and workers after profile changes.
 
 **Testing frameworks:** Node's built-in test runner and assertions. Business tests call application operations directly with in-memory SQLite and real API/model adapters, replacing only external HTTP and credential loading. No Redis, consumer startup, queue polling, or retry timers are used for business cases. Temporary database files are used where persistence across connections matters. The default suite requires neither Redis nor Docker. Separately invoked queue checks run actual consumers against an isolated test Redis service; they cover application-owned dispatch, failure bookkeeping, recovery boundaries, and process lifecycle, not BullMQ's deduplication, reconnection, retry engine, or stalled-task guarantees.
 
@@ -313,7 +352,7 @@ File-backed test fixtures use `tmpdir()` and `join()`, honor the platform's
 temporary-directory configuration (including `TMPDIR`), and remove their own
 temporary directories on completion.
 
-- `profile.test.mjs`: profile validation and loading; `query.test.mjs`: search-expression rendering; `job-url.test.mjs`: listing URL rules.
+- `profile.test.mjs`: profile/native-filter validation and loading; `query.test.mjs`: explicit-query normalization and root search scope; `job-url.test.mjs`: ATS URL rules. `freehire.test.mjs`: native request serialization, warnings/errors/rate limits, pagination/age controls, cancellation/timeout, URL safety, full-text assessment handoff, cross-source deduplication, preservation of failed/inactive/completed work, and atomic rollback.
 - `workflows.test.mjs`: direct discovery URL acceptance/canonicalization, persistence and partial-success outcomes; ATS routing and terminal/transient policy; saved-text handoff through both real model adapters; independent assessments, checkpoint reuse, cancellation, and inactive/missing/readiness guards. Real in-memory SQLite and fixture external HTTP/credentials make outcomes deterministic without queue delivery.
 - `workers.queue.mjs`: queued discovery-to-assessment smoke coverage (including dispatch before partial-search failure), exhausted-delivery bookkeeping, targeted retry/repair, stale failure generations, interrupted replacement enqueue, crawl redelivery fan-out, production review waiting/selection/cancellation, CLI startup/draining/cleanup, and scheduler admission. Each case has isolated temporary SQLite storage and a random queue prefix. Fixture delivery allows one attempt to check exhaustion without exercising BullMQ's retry engine. Run explicitly through `pnpm test:queue` with `TEST_REDIS_URL` (default `redis://127.0.0.1:6380`). Compose's optional `redis-test` service uses the `test` profile, ephemeral storage, and loopback port 6380; the suite removes its namespaces, not the service.
 - `sqlite.integration.test.mjs`: persistence, transactions, stage-state transitions, and migrations, without running processors.
@@ -360,7 +399,7 @@ No committed feature roadmap is asserted here. Existing architectural limits to 
 
 **Primary contact/team:** Not declared in the package manifest; use the repository's maintainer/contact channels.
 
-**Date of last update:** 2026-10-21.
+**Date of last update:** 2026-10-22.
 
 ## 11. Glossary / Acronyms
 

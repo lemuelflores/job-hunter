@@ -1,5 +1,4 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { SearchResult } from './discovery/google.js';
 import type { StackDecision } from './review/llm/types.js';
 import { STAGES, type Stage } from './review/stages.js';
 
@@ -14,8 +13,21 @@ export interface StageState {
   generation: number;
 }
 
+export type ListingSource = 'google' | 'freehire';
+
+export interface DiscoveredListing {
+  source: ListingSource;
+  url: string;
+  title: string;
+  snippet?: string;
+  query: string;
+  listingText?: string;
+}
+
 export interface Listing {
   id: number;
+  source: ListingSource;
+  query: string;
   url: string;
   title: string;
   snippet: string;
@@ -85,10 +97,16 @@ export class SqliteStore {
           "TEXT NOT NULL DEFAULT 'not_checked' CHECK (stack_status IN ('not_checked','pending','match','partial_match','potential_match','unclear','error'))",
         stack_reason: "TEXT NOT NULL DEFAULT ''",
         stack_evidence: "TEXT NOT NULL DEFAULT ''",
+        source:
+          "TEXT NOT NULL DEFAULT 'google' CHECK (source IN ('google','freehire'))",
       })) {
         if (!columns.includes(name))
           this.db.exec(`ALTER TABLE jobs ADD COLUMN ${name} ${definition}`);
       }
+      if (!columns.includes('source'))
+        this.db.exec(
+          "UPDATE jobs SET source='freehire' WHERE query='freehire'",
+        );
       const table = this.db
         .prepare(
           "SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'",
@@ -149,10 +167,10 @@ export class SqliteStore {
     }
   }
 
-  saveResults(results: SearchResult[]): number {
+  saveResults(results: DiscoveredListing[]): number {
     const insert =
-      this.db.prepare(`INSERT INTO jobs(url,title,snippet,query,first_seen,last_seen,stack_status)
-      VALUES (?,?,?,?,?,?,'pending') ON CONFLICT(url) DO UPDATE SET last_seen=excluded.last_seen`);
+      this.db.prepare(`INSERT INTO jobs(url,title,snippet,query,source,first_seen,last_seen,stack_status)
+      VALUES (?,?,?,?,?,?,?,'pending') ON CONFLICT(url) DO UPDATE SET last_seen=excluded.last_seen`);
     let added = 0;
     const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');
@@ -167,6 +185,7 @@ export class SqliteStore {
           result.title.slice(0, 1000),
           (result.snippet ?? '').slice(0, 5000),
           result.query,
+          result.source,
           now,
           now,
         );
@@ -181,6 +200,20 @@ export class SqliteStore {
               )
               .run(Number(row?.id), stage);
           added++;
+        }
+        if (result.listingText !== undefined) {
+          this.validateListingText(result.listingText);
+          const row = this.db
+            .prepare(`UPDATE jobs SET listing_text=?
+            WHERE url=? AND status='active' AND listing_text IS NULL
+            AND id IN (SELECT job_id FROM job_stages WHERE stage='crawl' AND state='pending') RETURNING id`)
+            .get(result.listingText, url);
+          if (row)
+            this.db
+              .prepare(
+                "UPDATE job_stages SET state='complete',error='' WHERE job_id=? AND stage='crawl'",
+              )
+              .run(row.id);
         }
       }
       this.db.exec('COMMIT');
@@ -335,8 +368,7 @@ export class SqliteStore {
   }
 
   saveListingText(id: number, text: string): void {
-    if (typeof text !== 'string' || !text.trim())
-      throw new Error('Invalid listing text');
+    this.validateListingText(text);
     this.completeStage(id, 'crawl', () => {
       const result = this.db
         .prepare(`UPDATE jobs SET listing_text=?
@@ -344,6 +376,11 @@ export class SqliteStore {
         .run(text, id);
       if (!result.changes) throw new Error('Listing already has text');
     });
+  }
+
+  private validateListingText(text: string): void {
+    if (typeof text !== 'string' || !text.trim())
+      throw new Error('Invalid listing text');
   }
 
   reviewStack(
@@ -421,7 +458,7 @@ export class SqliteStore {
   listReviewJobs(status: ReviewStatus) {
     return (
       this.db
-        .prepare(`SELECT id,url,title,snippet,query,first_seen,last_seen,
+        .prepare(`SELECT id,url,title,snippet,query,source,first_seen,last_seen,
           eligibility,reason,evidence,company,location,status,reviewed_at,last_attempt,
           attempts,next_retry_at,last_error,stack_status,stack_reason,stack_evidence
           FROM jobs WHERE status=? ORDER BY id DESC`)

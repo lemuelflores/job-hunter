@@ -546,6 +546,7 @@ async function fixture(t) {
       url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
       title: `Engineer ${id}`,
       query: 'remote',
+      source: id === 1 ? 'google' : 'freehire',
     })),
   );
   t.after(async () => {
@@ -592,6 +593,15 @@ test('HTTP UI lists eligibility and persists individual listing statuses', async
   const jobs = (await (await get('/api/jobs')).json()).jobs;
   // Assert: expose assessments and stage failures without full listing text.
   assert.equal(jobs.length, 2);
+  assert.equal(jobs.find((row) => row.id === 1).source, 'google');
+  assert.equal(jobs.find((row) => row.id === 2).source, 'freehire');
+  assert.match(
+    UI_HTML,
+    /:aria-label="`Source: \$\{\{ google: 'Google', freehire: 'Freehire' \}\[job.source\] \|\| 'Unknown'\}`"/,
+  );
+  assert.match(UI_HTML, /class="job-card__source"/);
+  assert.match(UI_HTML, /\.job-card__source--google\s*\{/);
+  assert.match(UI_HTML, /\.job-card__source--freehire\s*\{/);
   assert.ok(
     jobs
       .find((row) => row.id === 2)

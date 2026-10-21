@@ -36,6 +36,7 @@ test('jobs reads the app-local database from another cwd without initializing a 
       url: `https://job-boards.greenhouse.io/example/jobs/${id}`,
       title: `Engineer ${id}`,
       query: 'remote',
+      source: 'google',
     })),
   );
   const expected = JSON.parse(JSON.stringify(store.listReviewJobs('active')));
@@ -67,7 +68,9 @@ test('CLI rejects unknown commands, unsupported options and invalid arguments', 
     [['review', '--db', '/tmp/arbitrary.sqlite'], /Unknown option.*--db/],
     [['review', '--status', 'rejected'], /Unknown option.*--status/],
     [['review', '--limit', '0'], /Expected an integer/],
-    [['fetch', '--limit', '1'], /Unknown option.*--limit/],
+    [['fetch', 'google', '--limit', '1'], /Unknown option.*--limit/],
+    [['fetch', 'freehire', '--limit', '1'], /Unknown option.*--limit/],
+    [['fetch', 'other'], /Unknown discovery source/],
     [['unknown'], /Unknown command: unknown/],
     [['worker'], /Unknown command: worker/],
     [['fetch-worker'], /Unknown command: fetch-worker/],
@@ -102,7 +105,14 @@ test('CLI prints global and command help including required retry options', asyn
   // Act / Assert: accept global help and an invocation without a command.
   assert.equal(cli('--help').status, 0);
   assert.equal(cli().status, 0);
-  for (const command of ['review', 'workers', 'scheduler', 'retry', 'serve']) {
+  for (const command of [
+    'fetch',
+    'review',
+    'workers',
+    'scheduler',
+    'retry',
+    'serve',
+  ]) {
     // Act: request this command's help page.
     const help = cli(command, '--help');
     // Assert: print command-specific usage without an error.

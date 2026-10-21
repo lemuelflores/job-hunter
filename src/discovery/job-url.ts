@@ -1,5 +1,21 @@
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
+export function normalizeFreehireUrl(raw: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    url.username ||
+    url.password
+  )
+    return null;
+  return normalizeJobUrl(raw) ?? raw;
+}
+
 // Expected: jobs.ashbyhq.com/<board>/<job UUID>; parts = [board, job UUID].
 function normalizeAshby(url: URL, parts: string[]): string | null {
   // A board homepage has no job ID; extra segments are not a listing path.
