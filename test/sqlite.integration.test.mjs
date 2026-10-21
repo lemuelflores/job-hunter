@@ -272,6 +272,8 @@ test('stage failures remain pending until exhausted and only failed stages can r
   assert.throws(() => store.resetStage(1, 'crawl'), /not failed/);
   // Act: reset the failed crawl.
   store.resetStage(2, 'crawl');
+  // A failure captured before retry must not undo the new pending generation.
+  store.failStage(2, 'crawl', 'Stale failure', true, 0);
   // Assert: reset clears the error and restores pending work.
   assert.deepEqual(
     { ...store.stages(2)[0] },

@@ -121,7 +121,8 @@ For local development:
 ```sh
 pnpm check
 pnpm test
-pnpm test:queue  # Isolated Docker Redis restart/recovery tests (build first)
+docker compose --profile test up -d redis-test
+pnpm test:queue  # Optional queue integration checks
 ```
 
-Tests use mocked services and temporary databases, not live API calls. Queue integration tests additionally require Docker and the `redis:8.10.2-alpine` image; they create and remove their own container and temporary storage.
+Tests make no live API calls. `pnpm test` needs no Redis or Docker. The optional `pnpm test:queue` checks require a separate test Redis at `redis://127.0.0.1:6380` (or `TEST_REDIS_URL`); the command above starts one. Tests clean up their isolated queue namespaces and temporary storage, not the Redis service. Stop it afterward with `docker compose --profile test stop redis-test`.

@@ -7,6 +7,38 @@ import {
 } from './google.js';
 import { normalizeJobUrl } from './job-url.js';
 
+export interface DiscoveryResult {
+  ids: number[];
+  added: number;
+  pending: number;
+  failures: string[];
+}
+
+export async function discoverJobs(
+  store: SqliteStore,
+  profile: Profile,
+): Promise<DiscoveryResult> {
+  const searched = await runParallelGoogleSearchesDetailed(
+    buildQueryMatrix(profile).map((spec) => spec.query),
+    { concurrency: 5, num: 100 },
+  );
+  const results = searched.results.flatMap((result) => {
+    const url = normalizeJobUrl(result.url);
+    return url ? [{ ...result, url }] : [];
+  });
+  const added = store.saveResults(results);
+  const urls = new Set(results.map((result) => result.url));
+  return {
+    ids: store
+      .unfinished()
+      .filter((job) => urls.has(job.url))
+      .map((job) => job.id),
+    added,
+    pending: store.pendingCount(),
+    failures: searched.failures.map((item) => `${item.query}: ${item.error}`),
+  };
+}
+
 export function startFetchWorker(
   store: SqliteStore,
   queues: ReviewQueues,
@@ -14,24 +46,9 @@ export function startFetchWorker(
   profile: Profile,
 ) {
   return queue.startWorker(async () => {
-    const searched = await runParallelGoogleSearchesDetailed(
-      buildQueryMatrix(profile).map((spec) => spec.query),
-      { concurrency: 5, num: 100 },
-    );
-    const results = searched.results.flatMap((result) => {
-      const url = normalizeJobUrl(result.url);
-      return url ? [{ ...result, url }] : [];
-    });
-    const added = store.saveResults(results);
-    const urls = new Set(results.map((result) => result.url));
-    for (const job of store.unfinished()) {
-      if (urls.has(job.url)) await queues.scheduleListing(store, job.id);
-    }
-    const outcome = {
-      added,
-      pending: store.pendingCount(),
-      failures: searched.failures.map((item) => `${item.query}: ${item.error}`),
-    };
+    const { ids, ...outcome } = await discoverJobs(store, profile);
+    for (const id of ids) await queues.scheduleListing(store, id);
+    outcome.pending = store.pendingCount();
     console.log(JSON.stringify(outcome));
     if (outcome.failures.length) throw new Error(outcome.failures.join('; '));
   });

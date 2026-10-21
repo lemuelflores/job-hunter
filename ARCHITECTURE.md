@@ -12,20 +12,20 @@ job-hunter/
 │   ├── cli.ts                 # Commands, dependency construction, shutdown
 │   ├── discovery/
 │   │   ├── scheduler.ts       # UTC cron producer for queued discovery
-│   │   ├── worker.ts          # Discovery consumer: search, save, enqueue reviews, log outcome
+│   │   ├── worker.ts          # Direct discovery operation and queue consumer
 │   │   ├── job-url.ts         # ATS listing URL validation and normalization
 │   │   └── google.ts          # Query construction, search types, Autom.dev requests
 │   ├── review/
 │   │   ├── auth.ts            # Provider sign-in and cancellation lifecycle
 │   │   ├── review-jobs.ts     # Enqueue unfinished listings and wait for outcomes
 │   │   ├── stages.ts          # Shared processing-stage names and type
-│   │   ├── crawl.ts           # Crawl consumer, extraction, persistence, enqueue checks
+│   │   ├── crawl.ts           # Direct extraction/persistence and crawl consumer fan-out
 │   │   ├── extraction.ts      # Provider-neutral extraction contract and page errors
 │   │   ├── ashby.ts           # Board API client, posting selection, text rendering
 │   │   ├── greenhouse.ts      # Single-job API client, HTML-to-text extraction
 │   │   ├── lever.ts           # Global/EU posting API client, listing rendering
-│   │   ├── location-check.ts  # Location consumer, assessment, persistence
-│   │   ├── tech-check.ts      # Stack consumer, assessment, persistence
+│   │   ├── location-check.ts  # Direct location assessment/persistence and consumer
+│   │   ├── tech-check.ts      # Direct stack assessment/persistence and consumer
 │   │   ├── firecrawl.ts       # Scrape API client, Markdown and page-error handling
 │   │   └── llm/
 │   │       ├── types.ts       # Provider contract and assessment types
@@ -123,7 +123,7 @@ These are execution roles within the same application, sharing source, SQLite, a
 
 `src/discovery/google.ts` builds one combined Google query across Ashby, Lever, and Greenhouse. All title, skill, and search-location terms come from the root profile: array groups are ANDed; canonical names and aliases within a group are ORed. Titles use `intitle:` and skills match page-wide. The builder adds neither a profession nor a remote clause. `searchLocation` controls discovery alternatives; `location` is the candidate's residence for assessment.
 
-`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. The consumer callback in `src/discovery/worker.ts` validates and canonicalizes URLs through `src/discovery/job-url.ts` before passing accepted results to SQLite and scheduling unfinished jobs found in those results. SQLite persists the supplied URLs and deduplicates by URL; it does not own ATS URL rules. Fetching does not assess jobs.
+`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. The directly callable `discoverJobs` in `src/discovery/worker.ts` validates and canonicalizes URLs through `src/discovery/job-url.ts` before passing accepted results to SQLite. It returns discovered unfinished listing IDs and an outcome (added/pending counts and query failures). The consumer schedules those IDs before logging the outcome and throwing for partial query failures. SQLite persists the supplied URLs and deduplicates by URL; it does not own ATS URL rules. Fetching does not assess jobs.
 
 Valibot validates search response containers and pagination; malformed result entries are skipped and invalid optional snippets/positions are omitted. If a later page fails, completed pages still reach persistence and scheduling alongside a reported query failure. Ashby and Lever UUIDs are normalized to lowercase without changing board-name casing.
 
@@ -133,7 +133,7 @@ Autom error messages are preserved verbatim, with an HTTP-status fallback only f
 
 `ReviewQueues` manages the three listing-stage queues and their persistence-aware recovery; `FetchQueue` independently manages discovery delivery. Assessment workers receive only their respective review method, with candidate settings attached by the CLI.
 
-`FetchQueue` in `src/bullmq.ts` owns a separate `fetch` queue with prefix `job-hunter`. Cron and manual `fetch` enqueue one complete discovery run with empty payload and BullMQ simple deduplication ID `fetch`, held until completion or failure. Global and local concurrency are one. `src/discovery/worker.ts` exposes `startFetchWorker`, with search, persistence, review scheduling, and outcome logging inline in its consumer callback, matching the review workers. The CLI supplies the shared profile and starts this consumer alongside the review consumers in `workers`. All consumers drain active work before queues and SQLite close. Discovery is not a listing stage and has no `job_stages` row. Each task allows one attempt; partial search failures preserve successful results and mark the run failed without repeating paid searches automatically. Completed tasks are removed and the most recent 20 failures retained; a later trigger can run after either outcome. BullMQ stalled delivery recovery can still repeat external searches after a crash.
+`FetchQueue` in `src/bullmq.ts` owns a separate `fetch` queue with prefix `job-hunter`. Cron and manual `fetch` enqueue one complete discovery run with empty payload and BullMQ simple deduplication ID `fetch`, held until completion or failure. Global and local concurrency are one. `src/discovery/worker.ts` exposes `startFetchWorker`, which calls `discoverJobs` and owns downstream delivery and outcome logging. The CLI supplies the shared profile and starts this consumer alongside the review consumers in `workers`. All consumers drain active work before queues and SQLite close. Discovery is not a listing stage and has no `job_stages` row. Each task allows one attempt; partial search failures preserve successful results and mark the run failed without repeating paid searches automatically. Completed tasks are removed and the most recent 20 failures retained; a later trigger can run after either outcome. BullMQ stalled delivery recovery can still repeat external searches after a crash.
 
 **Technologies:** Node.js 22.18+, TypeScript ESM, native Fetch API, node-cron.
 
@@ -143,7 +143,7 @@ Autom error messages are preserved verbatim, with an HTTP-status fallback only f
 
 **Name:** Independent crawl, location, and stack consumers.
 
-**Description:** `src/review/crawl.ts`, `location-check.ts`, and `tech-check.ts` each expose one consumer starter with stage processing inline in its worker callback; `src/bullmq.ts` owns shared worker creation, queue delivery, and recovery. Each assessment consumer receives only its LLM method; the crawl consumer accepts an optional listing extractor. Shared delivery handling validates listing IDs, skips missing or inactive listings, and persists failures. The CLI starts all three consumers alongside discovery in one `workers` process and closes started consumers on shutdown or partial startup failure. Shutdown drains active tasks rather than cancelling their external calls. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
+**Description:** `src/review/crawl.ts`, `location-check.ts`, and `tech-check.ts` co-locate directly callable `crawlJob`, `checkLocation`, and `checkTech` operations with their consumer starters. Operations accept a store and listing ID, own active/readiness checks, checkpoint reuse, integration calls, and persistence, and propagate transient errors without marking delivery exhausted. Assessments receive only their LLM method; extraction accepts an optional listing extractor. `src/bullmq.ts` owns worker creation, delivery ID validation, attempts/backoff, failure bookkeeping, and recovery. Workers call the same operations as direct tests. The crawl consumer checks SQLite after the operation and enqueues missing assessments, including redelivery after a completed extraction checkpoint. The CLI starts all three consumers alongside discovery in one `workers` process and closes started consumers on shutdown or partial startup failure. Shutdown drains active tasks rather than cancelling their external calls. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
 
 Queues use prefix `job-hunter`, names `crawl`, `location`, and `stack`, payload `{ id }`, and stable per-queue IDs `listing-N`. Crawling saves listing text once and schedules both assessments. `src/review/crawl.ts` routes Ashby, Greenhouse, and Lever URLs to their unauthenticated public APIs. The Ashby adapter selects the exact UUID from the board response and saves its plain description with title, primary/secondary locations, address, workplace type, raw remote flag, employment type, department/team, and compensation metadata when provided. It does not interpret `isRemote` as fully remote; workplace type can still be Hybrid. The Greenhouse adapter requests one job with pay transparency enabled, verifies its returned posting ID, and saves all metadata plus its entity-decoded, HTML-to-text description. Lever requests one posting from the global or EU API matching the listing hostname and verifies its UUID. It saves opaque metadata plus the combined plain description, HTML-to-text lists with headings, closing text, and salary description, excluding duplicate HTML and opening/body fields. Processors consult SQLite before work; completed stages cannot overwrite saved results. Redelivered crawl tasks can enqueue missing assessments without extracting again.
 
@@ -276,27 +276,26 @@ App containers use `${UID:-1000}:${GID:-1000}` to keep bind-mounted database and
 
 Application configuration/database paths resolve relative to the application directory, not the shell's current directory. Build type-checks the root profile separately, compiles application TypeScript, and copies UI HTML. Node imports the root TypeScript profile at runtime; restart long-running workers after profile changes.
 
-**Testing frameworks:** Node's built-in test runner and assertions. Standard suites use mocked external services and temporary databases. The separate queue integration suite uses isolated Docker Redis instances to exercise delivery, retry, connection failure, shutdown, and restart/crash recovery.
+**Testing frameworks:** Node's built-in test runner and assertions. Business tests call application operations directly with in-memory SQLite and real API/model adapters, replacing only external HTTP and credential loading. No Redis, consumer startup, queue polling, or retry timers are used for business cases. Temporary database files are used where persistence across connections matters. The default suite requires neither Redis nor Docker. Separately invoked queue checks run actual consumers against an isolated test Redis service; they cover application-owned dispatch, failure bookkeeping, recovery boundaries, and process lifecycle, not BullMQ's deduplication, reconnection, retry engine, or stalled-task guarantees.
 
 Tests are grouped by the behavior they verify, not every dependency they use:
 
 - `profile.test.mjs`: profile validation and loading; `query.test.mjs`: search-expression rendering; `job-url.test.mjs`: listing URL rules.
-- `discovery.test.mjs`: discovery persistence/scheduling orchestration; `scheduler.test.mjs`: cron scheduling and shutdown.
-- `review-jobs.test.mjs`: review selection, waiting, and outcomes; `review-stage.integration.test.mjs`: stage orchestration with real SQLite and fake external services.
+- `workflows.test.mjs`: direct discovery URL acceptance/canonicalization, persistence and partial-success outcomes; ATS routing and terminal/transient policy; saved-text handoff through both real model adapters; independent assessments, checkpoint reuse, cancellation, and inactive/missing/readiness guards. Real in-memory SQLite and fixture external HTTP/credentials make outcomes deterministic without queue delivery.
+- `workers.queue.mjs`: queued discovery-to-assessment smoke coverage (including dispatch before partial-search failure), exhausted-delivery bookkeeping, targeted retry/repair, stale failure generations, interrupted replacement enqueue, crawl redelivery fan-out, production review waiting/selection/cancellation, CLI startup/draining/cleanup, and scheduler admission. Each case has isolated temporary SQLite storage and a random queue prefix. Fixture delivery allows one attempt to check exhaustion without exercising BullMQ's retry engine. Run explicitly through `pnpm test:queue` with `TEST_REDIS_URL` (default `redis://127.0.0.1:6380`). Compose's optional `redis-test` service uses the `test` profile, ephemeral storage, and loopback port 6380; the suite removes its namespaces, not the service.
 - `sqlite.integration.test.mjs`: persistence, transactions, stage-state transitions, and migrations, without running processors.
-- `cli.test.mjs`: command routing, arguments, help, and application-relative paths; `cli-lifecycle.test.mjs`: enqueue-only command boundaries and collective worker startup/draining/cleanup using injected factories; `web.test.mjs`: HTTP behavior, server lifecycle, and pure UI assessment logic.
-- `api-clients.test.mjs`: Ashby, Greenhouse, Lever, and Firecrawl request/response contracts, HTTP failures, timeout and cancellation with mocked network responses. `ashby.test.mjs`, `greenhouse.test.mjs`, `lever.test.mjs`, and `firecrawl.test.mjs`: extraction policy and rendering; `crawl.test.mjs`: strategy routing and no direct-API fallback. `auth.test.mjs`: authentication, real credential storage, and refresh-to-request integration; `chatgpt.test.mjs`: model adapters constructed with fake credential loading and HTTP transport; `llm.test.mjs`: provider selection.
+- `cli.test.mjs`: command routing, arguments, help, and application-relative paths; `web.test.mjs`: HTTP behavior, server lifecycle, and pure UI assessment logic.
+- `api-clients.test.mjs`: Ashby, Greenhouse, Lever, and Firecrawl request/response contracts, HTTP failures, timeout and cancellation with mocked network responses. `ashby.test.mjs`, `greenhouse.test.mjs`, `lever.test.mjs`, and `firecrawl.test.mjs`: extraction policy and rendering. `auth.test.mjs`: authentication, real credential storage, and refresh-to-request integration; `chatgpt.test.mjs`: model adapters constructed with fake credential loading and HTTP transport; `llm.test.mjs`: provider selection.
 - `google.test.mjs`: search response validation, pagination, and preservation of completed pages after failures.
-- `bullmq.test.mjs`: deterministic retry/failure-sync races and replacement-enqueue recovery; `bullmq.integration.mjs`: real Redis delivery, retries, repair, hidden-listing restoration, and recovery, separately from the default suite.
 
-Real SQLite is appropriate in HTTP and workflow integration tests; those suites assert their public behavior rather than duplicating database or adapter contracts. CLI execution accepts optional construction dependencies with lazy production defaults. `createChatgpt` constructs a provider with a credential loader and HTTP transport; normal provider selection uses the real implementations. These boundaries let tests use plain function fakes without module replacement or experimental test-runner flags.
+Real SQLite is appropriate in HTTP and workflow tests; those suites assert their public behavior rather than duplicating database or adapter contracts. CLI execution accepts optional construction dependencies with lazy production defaults; queue tests supply real isolated queue/store instances. `createChatgpt` accepts a credential loader and HTTP transport, allowing both suites to retain real prompt construction and response validation without paid calls or local OAuth secrets. The suites share external fixtures in `test/fixtures/workflow.mjs`, not a fake or synchronous queue driver. No module replacement or experimental test-runner flags are needed.
 
 | Command | Purpose |
 | --- | --- |
 | `pnpm build` | Profile type-check, TypeScript compilation, UI copy |
 | `pnpm check` | Biome lint/format checks, including inline UI code |
-| `pnpm test` | Build and run `test/*.test.mjs` |
-| `pnpm test:queue` | Run `test/bullmq.integration.mjs`; build first, Docker required |
+| `pnpm test` | Build and run `test/*.test.mjs`; no Redis/Docker required |
+| `pnpm test:queue` | Build and run `test/workers.queue.mjs`; isolated test Redis required |
 
 **Code quality tools:** TypeScript and Biome 2.5.15. No frontend build framework is needed. Tests do not require paid search/model calls.
 

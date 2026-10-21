@@ -1,11 +1,6 @@
 import { createNodeRedisClient, Queue, RedisConnection, Worker } from 'bullmq';
 import { createClient } from 'redis';
-import {
-  type Listing,
-  type SqliteStore,
-  STAGES,
-  type Stage,
-} from './sqlite.js';
+import { type SqliteStore, STAGES, type Stage } from './sqlite.js';
 
 RedisConnection.clientFactory = (options) => {
   const producer = options.enableOfflineQueue === false;
@@ -109,7 +104,7 @@ export class ReviewQueues {
   async startWorker(
     store: SqliteStore,
     stage: Stage,
-    process: (job: Listing) => Promise<void>,
+    process: (id: number) => Promise<void>,
     signal?: AbortSignal,
   ) {
     await this.queues[stage].setGlobalConcurrency(1);
@@ -121,9 +116,7 @@ export class ReviewQueues {
           throw new Error('Invalid listing ID');
         try {
           signal?.throwIfAborted();
-          const job = store.getJob(id);
-          if (job?.status !== 'active') return;
-          await process(job);
+          await process(id);
         } catch (error) {
           store.failStage(
             id,
