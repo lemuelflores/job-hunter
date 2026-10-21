@@ -115,6 +115,10 @@ Optimistic status changes apply only while their save requests are pending. Succ
 
 These are execution roles within the same application, sharing source, SQLite, and credentials.
 
+The CLI loads the HTTP server and its HTML asset only for `serve`. Queue loading
+uses stage contracts directly and imports SQLite only as a type, so fetch-only
+composition does not load the database implementation.
+
 #### 3.2.1. CLI and Discovery Scheduler
 
 **Name:** Command entry point and fetch worker.

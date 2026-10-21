@@ -18,7 +18,6 @@ import type { LlmProvider } from './review/llm/types.js';
 import { reviewJobs } from './review/review-jobs.js';
 import { STAGES } from './review/stages.js';
 import type { SqliteStore } from './sqlite.js';
-import { serveReviewServer } from './web/server.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const stageArg = {
@@ -305,6 +304,7 @@ export async function main(
       },
       run: async ({ args }) => {
         const port = integer(args.port, 65535);
+        const { serveReviewServer } = await import('./web/server.js');
         return serveReviewServer(await database(), port);
       },
     }),

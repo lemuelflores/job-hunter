@@ -145,6 +145,39 @@ test('CLI help works without the database implementation installed', async (t) =
   }
 });
 
+test('non-web commands work without the UI asset', async (t) => {
+  const { root, cli } = await fixture(t);
+  await rm(join(root, 'dist/web/index.html'));
+  for (const args of [[], ['--help'], ['serve', '--help'], ['jobs']]) {
+    const result = cli(...args);
+    assert.equal(result.status, 0, result.stderr);
+  }
+  const result = cli('serve');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ENOENT.*index.html/);
+});
+
+test('queue module imports without loading SQLite or connecting to Redis', () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+    import { registerHooks } from 'node:module';
+    registerHooks({ resolve(specifier, context, nextResolve) {
+      if (specifier === 'node:sqlite' || specifier.endsWith('/sqlite.js'))
+        throw new Error('SQLite loading denied');
+      return nextResolve(specifier, context);
+    }});
+    await import(${JSON.stringify(new URL('../dist/bullmq.js', import.meta.url).href)});
+  `,
+    ],
+    { encoding: 'utf8', timeout: 10000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('CLI auth routes through the provider and removes signal listeners on success or failure', async (t) => {
   // Arrange: stub provider authentication and capture original signal-listener counts.
   const llm = { authenticate: async () => {} };

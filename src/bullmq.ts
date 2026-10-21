@@ -1,6 +1,7 @@
 import { createNodeRedisClient, Queue, RedisConnection, Worker } from 'bullmq';
 import { createClient } from 'redis';
-import { type SqliteStore, STAGES, type Stage } from './sqlite.js';
+import { STAGES, type Stage } from './review/stages.js';
+import type { SqliteStore } from './sqlite.js';
 
 RedisConnection.clientFactory = (options) => {
   const producer = options.enableOfflineQueue === false;
