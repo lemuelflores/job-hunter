@@ -620,8 +620,9 @@ test('HTTP UI lists eligibility and persists individual listing statuses', async
   assert.equal(
     (
       await post('/api/jobs/status', {
-        reviewKey: String(job.id),
+        reviewKey: ` ${job.id} `,
         status: 'hidden',
+        extra: 'ignored',
       })
     ).status,
     200,
@@ -661,6 +662,22 @@ test('HTTP UI lists eligibility and persists individual listing statuses', async
     [2],
   );
   // Act / Assert: reject unsupported statuses and nonexistent review keys.
+  for (const payload of [
+    null,
+    [],
+    'invalid',
+    {},
+    { reviewKey: 1, status: 'hidden' },
+    { reviewKey: ' \t', status: 'hidden' },
+    { reviewKey: '1' },
+    { reviewKey: '1', status: null },
+  ]) {
+    const response = await post('/api/jobs/status', payload);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: 'Invalid request payload',
+    });
+  }
   assert.equal(
     (await post('/api/jobs/status', { reviewKey: '1', status: 'deleted' }))
       .status,

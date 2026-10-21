@@ -5,6 +5,7 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http';
+import * as v from 'valibot';
 import {
   REVIEW_STATUSES,
   type ReviewStatus,
@@ -19,6 +20,10 @@ export const UI_HTML = readFileSync(
 const ALPINE_JS = readFileSync(new URL('./alpine.js', import.meta.url));
 
 const MAX_BODY_BYTES = 16 * 1024;
+const UpdateJobStatusSchema = v.object({
+  reviewKey: v.pipe(v.string(), v.trim(), v.nonEmpty()),
+  status: v.picklist(REVIEW_STATUSES),
+});
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
@@ -83,17 +88,10 @@ async function updateJobStatus(
   request: IncomingMessage,
   response: ServerResponse,
 ) {
-  const body = (await readJson(
-    request,
-  )) as Partial<UpdateJobStatusRequest> | null;
-  if (
-    !body ||
-    typeof body !== 'object' ||
-    typeof body.reviewKey !== 'string' ||
-    !body.reviewKey.trim() ||
-    !validStatus(body.status)
-  )
+  const result = v.safeParse(UpdateJobStatusSchema, await readJson(request));
+  if (!result.success)
     return json(response, 400, { error: 'Invalid request payload' });
+  const body: UpdateJobStatusRequest = result.output;
   if (!store.setReviewStatus(body.reviewKey, body.status))
     return json(response, 404, { error: 'Job not found' });
   return json(response, 200, { ok: true });
