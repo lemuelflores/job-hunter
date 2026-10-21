@@ -53,6 +53,27 @@ test('Google integration has no hardcoded country bias and preserves credentials
   ]);
 });
 
+test('search logs every unique URL across pages, including before a later failure', async (t) => {
+  const logs = [];
+  t.mock.method(console, 'error', (message) => logs.push(message));
+  mock(t, async (raw) => {
+    const page = Number(raw.searchParams.get('page'));
+    if (page === 3) return new Response('unavailable', { status: 403 });
+    return Response.json({
+      organic_results: (page === 1 ? [1, 2, 3, 4] : [4, 5]).map((id) => ({
+        title: 'Engineer',
+        link: `https://example.test/${id}`,
+      })),
+      pagination: { has_next_page: true, next: page + 1 },
+    });
+  });
+  await assert.rejects(googleSearch('engineer'), /403/);
+  assert.deepEqual(
+    logs.filter((line) => line.startsWith('[google] result:')),
+    [1, 2, 3, 4, 5].map((id) => `[google] result: https://example.test/${id}`),
+  );
+});
+
 test('parallel searches retain successes and report failed requests independently', async (t) => {
   // Arrange: fail only the bad query while the other queries return listings.
   mock(t, async (raw) =>

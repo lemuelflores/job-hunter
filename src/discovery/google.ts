@@ -210,6 +210,8 @@ export async function googleSearch(
       const data = await searchPage(url, apiKey);
       const before = results.length;
       appendResults(results, seen, pageResults(data, query), limit);
+      for (const result of results.slice(before))
+        console.error(`[google] result: ${result.url}`);
       if (results.length === before || !data.pagination?.has_next_page) break;
       const next = data.pagination.next ?? page + 1;
       if (next <= page) break;
@@ -219,13 +221,7 @@ export async function googleSearch(
     throw new GoogleSearchError(error, results);
   }
 
-  const preview = results
-    .slice(0, 3)
-    .map((result) => `${result.title} (${result.url})`)
-    .join('; ');
-  console.error(
-    `[google] results: ${results.length}${preview ? ` — ${preview}` : ''}`,
-  );
+  console.error(`[google] results: ${results.length}`);
 
   return results;
 }
