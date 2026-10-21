@@ -1,11 +1,11 @@
 import type { ReviewQueues } from '../bullmq.js';
 import type { SqliteStore } from '../sqlite.js';
-import type { LlmProvider } from './llm/types.js';
+import type { LocationReviewer } from './llm/types.js';
 
 export async function checkLocation(
   store: SqliteStore,
   id: number,
-  reviewLocation: LlmProvider['reviewJob'],
+  reviewLocation: LocationReviewer,
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
@@ -31,7 +31,7 @@ export async function checkLocation(
 export function startLocationWorker(
   store: SqliteStore,
   queues: ReviewQueues,
-  reviewLocation: LlmProvider['reviewJob'],
+  reviewLocation: LocationReviewer,
   signal?: AbortSignal,
 ) {
   return queues.startWorker(

@@ -1,5 +1,4 @@
-import { loadProfile } from '../../../profile.js';
-import type { ReviewOptions, StackDecision } from '../types.js';
+import type { StackAssessmentInput, StackDecision } from '../types.js';
 import { type ChatgptRequest, request } from './request.js';
 
 const stackSchema = {
@@ -38,12 +37,14 @@ export function parseStackDecision(text: string): StackDecision {
 
 export async function reviewStack(
   url: string,
-  options: ReviewOptions = {},
+  options: StackAssessmentInput,
   send: ChatgptRequest = request,
 ): Promise<StackDecision> {
-  if (typeof options.listingText !== 'string')
+  if (typeof options?.listingText !== 'string' || !options.listingText.trim())
     throw new Error('listingText is required for reviewStack');
-  const skills = options.skills ?? (await loadProfile()).skills;
+  if (!Array.isArray(options.skills) || !options.skills.length)
+    throw new Error('skills are required for reviewStack');
+  const skills = options.skills;
   console.info(`[chatgpt] Checking stack: ${url}`);
   const decision = parseStackDecision(
     await send(

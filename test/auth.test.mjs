@@ -103,6 +103,7 @@ test('browser callback exchanges PKCE code and atomically saves private reusable
   let authorize,
     calls = 0;
   const provider = createChatgpt({
+    authPath,
     fetch: async (url, init) => {
       calls++;
       // Assert: the exchange matches the authorization URL and verifies the PKCE challenge.
@@ -132,7 +133,7 @@ test('browser callback exchanges PKCE code and atomically saves private reusable
       return Response.json(tokenResponse());
     },
   });
-  const login = await startLogin(t, { authPath }, provider.authenticate);
+  const login = await startLogin(t, {}, provider.authenticate);
   // Act: inspect the authorization URL emitted when login starts.
   authorize = login.url;
   // Assert: authorization requests a state-protected PKCE flow with offline access.
@@ -364,6 +365,7 @@ test('model transport uses the access token returned by a real credential refres
   );
   const calls = [];
   const request = createRequest({
+    authPath,
     fetch: async (url, init) => {
       calls.push(url);
       if (url === 'https://auth.openai.com/oauth/token')
@@ -379,7 +381,7 @@ test('model transport uses the access token returned by a real credential refres
     },
   });
   assert.equal(
-    await request({ authPath }, 'instructions', 'listing text', 'test', {}),
+    await request({}, 'instructions', 'listing text', 'test', {}),
     'ok',
   );
   assert.deepEqual(calls, [

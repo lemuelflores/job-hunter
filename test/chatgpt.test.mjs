@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
-import { loadProfile } from '../dist/profile.js';
 import {
   locationRule,
   parseDecision,
@@ -23,8 +22,6 @@ const dependencies = {
   fetch: async () => assert.fail('unexpected network request'),
 };
 const llm = createChatgpt(dependencies);
-const { reviewJob } = llm;
-const request = createRequest(dependencies);
 
 // Shared Arrange: a valid location decision and completed SSE stream for request fixtures.
 const decision = {
@@ -64,8 +61,8 @@ test('direct subscription request uses OAuth and validated JSON', async () => {
     events[1],
   ];
   // Act: review supplied text through the direct subscription endpoint.
-  const value = await reviewJob('https://jobs.example/job', {
-    listingText: 'Worldwide',
+  const provider = createChatgpt({
+    getCredentials,
     fetch: async (url, init) => {
       // Assert: the outgoing request uses OAuth and a strict location-decision schema.
       assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
@@ -99,15 +96,18 @@ test('direct subscription request uses OAuth and validated JSON', async () => {
       );
     },
   });
+  const value = await provider.reviewJob('https://jobs.example/job', {
+    location: 'Germany',
+    listingText: 'Worldwide',
+  });
   // Assert: incremental decoding preserves the complete multilingual decision.
   assert.deepEqual(value, unicodeDecision);
 });
 
 test('review uses the configured applicant location rather than search regions', async () => {
   // Act: review a European remote listing for that applicant.
-  await reviewJob('https://jobs.example/job', {
-    location: 'Germany',
-    listingText: 'Remote across Europe',
+  const provider = createChatgpt({
+    getCredentials,
     fetch: async (_url, init) => {
       const { instructions } = JSON.parse(init.body);
       // Assert: policy uses the applicant location and excludes unrelated search defaults.
@@ -121,6 +121,10 @@ test('review uses the configured applicant location rather than search regions',
       return stream(events);
     },
   });
+  await provider.reviewJob('https://jobs.example/job', {
+    location: 'Germany',
+    listingText: 'Remote across Europe',
+  });
 });
 // Shared fixture: LF-delimited SSE text lets tests control byte-level chunking.
 function itemsText(items) {
@@ -129,8 +133,8 @@ function itemsText(items) {
 
 test('extracted text is supplied without browsing tools', async () => {
   // Arrange: supply extracted listing text and a completed model response.
-  const options = {
-    listingText: 'Work anywhere worldwide',
+  const provider = createChatgpt({
+    getCredentials,
     fetch: async (_url, init) => {
       const body = JSON.parse(init.body);
       // Assert: the request carries the supplied text and no browsing tools or unrelated policy.
@@ -147,9 +151,15 @@ test('extracted text is supplied without browsing tools', async () => {
       );
       return stream(events);
     },
-  };
+  });
   // Act / Assert: review the supplied text and return the validated decision.
-  assert.deepEqual(await reviewJob('https://example.test', options), decision);
+  assert.deepEqual(
+    await provider.reviewJob('https://example.test', {
+      location: 'Germany',
+      listingText: 'Work anywhere worldwide',
+    }),
+    decision,
+  );
 });
 
 test('location decisions reject malformed values', () => {
@@ -174,11 +184,9 @@ test('credential failures propagate before model network access', async () => {
     throw error;
   });
   await assert.rejects(
-    reviewJob('https://example.test', {
+    llm.reviewJob('https://example.test', {
+      location: 'Germany',
       listingText: 'Worldwide',
-      fetch: async () => {
-        assert.fail('network');
-      },
     }),
     (actual) => actual === error,
   );
@@ -203,23 +211,27 @@ test('default review uses supplied text with Luna medium and never scrapes', asy
   const calls = [];
   const signal = new AbortController().signal;
   // Act / Assert: default review returns the model decision using supplied listing text.
+  const provider = createChatgpt({
+    getCredentials,
+    fetch: async (url, init) => {
+      calls.push(url);
+      const body = JSON.parse(init.body);
+      // Assert: defaults select Luna medium, preserve cancellation and omit browsing tools.
+      assert.equal(init.signal.aborted, false);
+      assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
+      assert.equal(body.model, 'gpt-6-luna');
+      assert.deepEqual(body.reasoning, { effort: 'medium' });
+      assert.equal(body.tools, undefined);
+      assert.equal(body.tool_choice, undefined);
+      assert.match(body.input[0].content[0].text, /Work anywhere worldwide/);
+      return stream(events);
+    },
+  });
   assert.deepEqual(
-    await reviewJob('https://example.test/job', {
+    await provider.reviewJob('https://example.test/job', {
       signal,
+      location: 'Germany',
       listingText: 'Work anywhere worldwide',
-      fetch: async (url, init) => {
-        calls.push(url);
-        const body = JSON.parse(init.body);
-        // Assert: defaults select Luna medium, preserve cancellation and omit browsing tools.
-        assert.equal(init.signal.aborted, false);
-        assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
-        assert.equal(body.model, 'gpt-6-luna');
-        assert.deepEqual(body.reasoning, { effort: 'medium' });
-        assert.equal(body.tools, undefined);
-        assert.equal(body.tool_choice, undefined);
-        assert.match(body.input[0].content[0].text, /Work anywhere worldwide/);
-        return stream(events);
-      },
     }),
     decision,
   );
@@ -234,8 +246,8 @@ test('model and effort environment settings are used and invalid effort fails be
     MODEL_EFFORT: 'high',
   });
   // Act: review using environment-based model settings.
-  await reviewJob('https://example.test', {
-    listingText: 'Worldwide',
+  const provider = createChatgpt({
+    getCredentials,
     fetch: async (_, init) => {
       const body = JSON.parse(init.body);
       // Assert: the provider prefix and effort suffix are normalized correctly.
@@ -244,13 +256,17 @@ test('model and effort environment settings are used and invalid effort fails be
       return stream(events);
     },
   });
+  await provider.reviewJob('https://example.test', {
+    location: 'Germany',
+    listingText: 'Worldwide',
+  });
   // Arrange: replace the valid effort with an unsupported value.
   process.env.MODEL_EFFORT = 'typo';
   // Act / Assert: invalid effort fails before any retrieval or model request.
   await assert.rejects(
-    reviewJob('https://example.test', {
+    llm.reviewJob('https://example.test', {
+      location: 'Germany',
       listingText: 'Worldwide',
-      fetch: async () => assert.fail('network'),
     }),
     /Invalid MODEL_EFFORT/,
   );
@@ -262,27 +278,25 @@ test('both reviewers require supplied listing text without network access', asyn
     // Arrange: select this reviewer and forbid network access.
     // Act / Assert: omitting listing text fails locally for either reviewer.
     await assert.rejects(
-      review('https://example.test', {
-        fetch: async () => assert.fail('network'),
-      }),
+      review('https://example.test', {}),
       /listingText is required/,
     );
   }
 });
 
 test('both reviewers validate the completed model response', async () => {
+  const provider = createChatgpt({
+    getCredentials,
+    fetch: async () =>
+      stream([{ type: 'response.output_text.delta', delta: '{}' }, events[1]]),
+  });
   // Act / Assert: each reviewer rejects the malformed decision from the shared fixture.
-  for (const review of [llm.reviewJob, llm.reviewStack])
+  for (const review of [provider.reviewJob, provider.reviewStack])
     await assert.rejects(
       review('https://example.test', {
         location: 'Germany',
         skills: [{ Laravel: [] }],
         listingText: 'Worldwide Laravel',
-        fetch: async () =>
-          stream([
-            { type: 'response.output_text.delta', delta: '{}' },
-            events[1],
-          ]),
       }),
       /Invalid ChatGPT/,
     );
@@ -315,9 +329,12 @@ test('constructed provider shares its credential loader and transport across bot
       events[1],
     ]);
   });
-  const provider = createChatgpt({ getCredentials, fetch });
-  const options = {
+  const provider = createChatgpt({
+    getCredentials,
+    fetch,
     authPath: 'credentials.json',
+  });
+  const options = {
     signal,
     location: 'Germany',
     skills: [{ Laravel: [] }],
@@ -335,32 +352,38 @@ test('constructed provider shares its credential loader and transport across bot
   assert.equal(fetch.mock.calls.length, 2);
 });
 
-test('stack review falls back to the full profile skills', async () => {
-  // Arrange: load the expected default skills.
-  const profile = await loadProfile();
-  // Act / Assert: omit skills and obtain the validated stack decision using profile defaults.
-  assert.deepEqual(
-    await llm.reviewStack('https://example.test', {
-      listingText: 'Laravel and React',
-      fetch: async (_url, init) => {
-        const body = JSON.parse(init.body);
-        // Assert: the prompt contains the complete default skill expression.
-        assert.ok(
-          body.input[0].content[0].text.includes(
-            JSON.stringify(profile.skills),
-          ),
-        );
-        return stream([
-          {
-            type: 'response.output_text.delta',
-            delta: JSON.stringify(stackDecision),
-          },
-          { type: 'response.completed' },
-        ]);
-      },
-    }),
-    stackDecision,
-  );
+test('candidate settings are required before credentials or HTTP calls', async () => {
+  const provider = createChatgpt({
+    getCredentials: async () => assert.fail('credentials'),
+    fetch: async () => assert.fail('network'),
+  });
+  for (const location of [undefined, null, '', '   ', 42])
+    await assert.rejects(
+      provider.reviewJob('https://example.test', {
+        listingText: 'Worldwide',
+        location,
+      }),
+      /location is required/,
+    );
+  for (const skills of [undefined, null, [], 'Laravel'])
+    await assert.rejects(
+      provider.reviewStack('https://example.test', {
+        listingText: 'Laravel',
+        skills,
+      }),
+      /skills are required/,
+    );
+  for (const review of [provider.reviewJob, provider.reviewStack]) {
+    for (const listingText of [undefined, null, '', '   '])
+      await assert.rejects(
+        review('https://example.test', {
+          listingText,
+          location: 'Germany',
+          skills: [{ Laravel: [] }],
+        }),
+        /listingText is required/,
+      );
+  }
 });
 
 test('stack review sends full canonical groups with a strict separate schema', async () => {
@@ -371,9 +394,8 @@ test('stack review sends full canonical groups with a strict separate schema', a
   ];
   const listingText = 'Build with Laravel and React';
   // Act: review the listing against the explicitly supplied skill expression.
-  const result = await llm.reviewStack('https://example.test', {
-    skills,
-    listingText,
+  const provider = createChatgpt({
+    getCredentials,
     fetch: async (url, init) => {
       // Assert: stack instructions, canonical groups and strict schema stay location-independent.
       assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
@@ -421,6 +443,10 @@ test('stack review sends full canonical groups with a strict separate schema', a
         { type: 'response.completed' },
       ]);
     },
+  });
+  const result = await provider.reviewStack('https://example.test', {
+    skills,
+    listingText,
   });
   // Assert: the completed response becomes the validated stack decision.
   assert.deepEqual(result, stackDecision);
@@ -484,10 +510,8 @@ test('shared transport rejects HTTP errors, incomplete streams and invalid effor
     // Arrange: inject this table response and its expected error.
     // Act / Assert: transport rejects the failure rather than returning incomplete output.
     await assert.rejects(
-      request(
-        {
-          fetch: async () => response,
-        },
+      createRequest({ getCredentials, fetch: async () => response })(
+        {},
         'instructions',
         'listing text',
         'test',
@@ -498,10 +522,9 @@ test('shared transport rejects HTTP errors, incomplete streams and invalid effor
   }
   // Act / Assert: an unsupported effort is rejected before network access.
   await assert.rejects(
-    request(
+    createRequest(dependencies)(
       {
         effort: 'typo',
-        fetch: async () => assert.fail('network'),
       },
       'instructions',
       'listing text',
@@ -513,25 +536,28 @@ test('shared transport rejects HTTP errors, incomplete streams and invalid effor
 });
 
 test('both reviewers preserve caller cancellation in the shared transport', async () => {
-  for (const review of [llm.reviewJob, llm.reviewStack]) {
+  for (const method of ['reviewJob', 'reviewStack']) {
     // Arrange: give each reviewer a fresh caller-owned signal and cancellation reason.
     const controller = new AbortController();
     const reason = new Error('Stop reviewing');
     // Act / Assert: cancellation during fetch rejects review with the original reason.
+    const provider = createChatgpt({
+      getCredentials,
+      fetch: async (_url, init) => {
+        // Assert: the transport signal starts active and forwards caller cancellation exactly.
+        assert.equal(init.signal.aborted, false);
+        controller.abort(reason);
+        assert.equal(init.signal.aborted, true);
+        assert.equal(init.signal.reason, reason);
+        init.signal.throwIfAborted();
+      },
+    });
     await assert.rejects(
-      review('https://example.test', {
+      provider[method]('https://example.test', {
         location: 'Germany',
         skills: [{ Laravel: [] }],
         listingText: 'Laravel',
         signal: controller.signal,
-        fetch: async (_url, init) => {
-          // Assert: the transport signal starts active and forwards caller cancellation exactly.
-          assert.equal(init.signal.aborted, false);
-          controller.abort(reason);
-          assert.equal(init.signal.aborted, true);
-          assert.equal(init.signal.reason, reason);
-          init.signal.throwIfAborted();
-        },
       }),
       reason,
     );

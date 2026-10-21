@@ -1,18 +1,22 @@
 import {
   AuthenticationError,
-  type AuthOptions,
+  type ModelOptions,
   RateLimitError,
-  type ReviewOptions,
 } from '../types.js';
-import { type Credentials, getCredentials } from './auth.js';
+import {
+  type CredentialOptions,
+  type Credentials,
+  getCredentials,
+} from './auth.js';
 
 export interface RequestDependencies {
-  getCredentials?: (options: AuthOptions) => Promise<Credentials>;
+  getCredentials?: (options: CredentialOptions) => Promise<Credentials>;
   fetch?: typeof fetch;
+  authPath?: string;
 }
 
 export type ChatgptRequest = (
-  options: ReviewOptions,
+  options: ModelOptions,
   instructions: string,
   input: string,
   name: string,
@@ -22,16 +26,21 @@ export type ChatgptRequest = (
 export function createRequest({
   getCredentials: credentials = getCredentials,
   fetch: fetchRequest = (...args) => fetch(...args),
+  authPath,
 }: RequestDependencies = {}): ChatgptRequest {
   return async function request(options, instructions, input, name, schema) {
-    const send = options.fetch ?? fetchRequest;
-    const auth = await credentials({ ...options, fetch: send });
+    options.signal?.throwIfAborted();
     const effort = options.effort ?? process.env.MODEL_EFFORT ?? 'medium';
     if (!['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort))
       throw new Error('Invalid MODEL_EFFORT');
+    const auth = await credentials({
+      authPath,
+      signal: options.signal,
+      fetch: fetchRequest,
+    });
     const timeout = AbortSignal.timeout(120_000);
     // shortcut: subscription backend is undocumented; recheck the contract if requests stop working.
-    const response = await send(
+    const response = await fetchRequest(
       'https://chatgpt.com/backend-api/codex/responses',
       {
         method: 'POST',

@@ -1,5 +1,4 @@
-import { loadProfile } from '../../../profile.js';
-import type { Decision, ReviewOptions } from '../types.js';
+import type { Decision, LocationAssessmentInput } from '../types.js';
 import { type ChatgptRequest, request } from './request.js';
 
 export function locationRule(location: string): string {
@@ -54,12 +53,14 @@ export function parseDecision(text: string): Decision {
 
 export async function reviewJob(
   url: string,
-  options: ReviewOptions = {},
+  options: LocationAssessmentInput,
   send: ChatgptRequest = request,
 ): Promise<Decision> {
-  if (typeof options.listingText !== 'string')
+  if (typeof options?.listingText !== 'string' || !options.listingText.trim())
     throw new Error('listingText is required for reviewJob');
-  const location = options.location ?? (await loadProfile()).location;
+  if (typeof options.location !== 'string' || !options.location.trim())
+    throw new Error('location is required for reviewJob');
+  const location = options.location;
   console.info(`[chatgpt] Checking location: ${url}`);
   const decision = parseDecision(
     await send(

@@ -10,7 +10,8 @@ export function createChatgpt(dependencies?: RequestDependencies): LlmProvider {
     authenticate: (options) =>
       authenticate({
         ...options,
-        fetch: options?.fetch ?? dependencies?.fetch,
+        fetch: dependencies?.fetch,
+        authPath: dependencies?.authPath,
       }),
     reviewJob: (url, options) => reviewJob(url, options, request),
     reviewStack: (url, options) => reviewStack(url, options, request),

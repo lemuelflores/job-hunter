@@ -235,6 +235,16 @@ Legacy job columns remain to preserve historical values and existing database ob
 
 ## 5. External Integrations / APIs
 
+Assessment inputs require saved listing text plus explicit candidate location or
+skills; adapters never load the root profile. `SavedListingInput` and named
+reviewer callbacks let CLI-bound workers receive text and per-operation model,
+effort, and cancellation options without requiring candidate settings again.
+`createChatgpt` constructs both reviewers with one HTTP transport, credential
+loader, and optional credential path; these are not per-assessment overrides.
+OAuth credential operations retain their own low-level options for token exchange
+and storage, while the provider's authentication contract exposes only cancellation
+and authorization notification.
+
 | Service | Purpose | Integration method |
 | --- | --- | --- |
 | Autom.dev | Google search for supported ATS listings | HTTPS GET with `x-api-key` from `AUTOM_API_KEY` |

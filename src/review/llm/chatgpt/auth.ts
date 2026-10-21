@@ -19,6 +19,11 @@ export interface Credentials {
   accountId?: string;
 }
 
+export interface CredentialOptions extends AuthOptions {
+  fetch?: typeof fetch;
+  authPath?: string;
+}
+
 const AUTH_PATH = fileURLToPath(
   new URL('../../../../.auth.json', import.meta.url),
 );
@@ -70,7 +75,7 @@ function claims(token: unknown): {
 
 async function exchange(
   parameters: Record<string, string>,
-  options: AuthOptions,
+  options: CredentialOptions,
   previous?: Credentials,
 ): Promise<Credentials> {
   const timeout = AbortSignal.timeout(30_000);
@@ -131,7 +136,7 @@ async function exchange(
 const credentialRequests = new Map<string, Promise<Credentials>>();
 
 export async function getCredentials(
-  options: AuthOptions = {},
+  options: CredentialOptions = {},
 ): Promise<Credentials> {
   const path = options.authPath ?? AUTH_PATH;
   const pending = credentialRequests.get(path);
@@ -146,7 +151,7 @@ export async function getCredentials(
 }
 
 async function loadCredentials(
-  options: AuthOptions = {},
+  options: CredentialOptions = {},
 ): Promise<Credentials> {
   const path = options.authPath ?? AUTH_PATH;
   const auth = (await readAuth(path)).openai as Credentials | undefined;
@@ -174,7 +179,9 @@ async function loadCredentials(
   return auth;
 }
 
-export async function authenticate(options: AuthOptions = {}): Promise<void> {
+export async function authenticate(
+  options: CredentialOptions = {},
+): Promise<void> {
   const signal = AbortSignal.any([
     AbortSignal.timeout(5 * 60_000),
     ...(options.signal ? [options.signal] : []),

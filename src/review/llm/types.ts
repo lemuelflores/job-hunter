@@ -9,15 +9,22 @@ export interface Decision {
   title: string;
 }
 
-export interface ReviewOptions {
-  location?: string;
-  skills?: SearchTerms;
-  fetch?: typeof fetch;
-  authPath?: string;
+export interface ModelOptions {
   model?: string;
   effort?: string;
   signal?: AbortSignal;
-  listingText?: string;
+}
+
+export interface SavedListingInput extends ModelOptions {
+  listingText: string;
+}
+
+export interface LocationAssessmentInput extends SavedListingInput {
+  location: string;
+}
+
+export interface StackAssessmentInput extends SavedListingInput {
+  skills: SearchTerms;
 }
 
 export interface StackDecision {
@@ -27,16 +34,24 @@ export interface StackDecision {
 }
 
 export interface AuthOptions {
-  fetch?: typeof fetch;
-  authPath?: string;
   signal?: AbortSignal;
   onAuthorize?: (url: string) => void;
 }
 
+export type LocationReviewer = (
+  url: string,
+  input: SavedListingInput,
+) => Promise<Decision>;
+
+export type StackReviewer = (
+  url: string,
+  input: SavedListingInput,
+) => Promise<StackDecision>;
+
 export interface LlmProvider {
   authenticate(options?: AuthOptions): Promise<void>;
-  reviewJob(url: string, options?: ReviewOptions): Promise<Decision>;
-  reviewStack(url: string, options?: ReviewOptions): Promise<StackDecision>;
+  reviewJob(url: string, input: LocationAssessmentInput): Promise<Decision>;
+  reviewStack(url: string, input: StackAssessmentInput): Promise<StackDecision>;
 }
 
 export class AuthenticationError extends Error {}

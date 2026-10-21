@@ -14,7 +14,11 @@ import {
 import type { FetchQueue, ReviewQueues } from './bullmq.js';
 import { loadProfile, type Profile } from './profile.js';
 import { createLlm } from './review/llm/index.js';
-import type { LlmProvider } from './review/llm/types.js';
+import type {
+  LlmProvider,
+  LocationReviewer,
+  StackReviewer,
+} from './review/llm/types.js';
 import { reviewJobs } from './review/review-jobs.js';
 import { STAGES } from './review/stages.js';
 import type { SqliteStore } from './sqlite.js';
@@ -90,12 +94,12 @@ export interface CliDependencies {
   startLocationWorker(
     store: SqliteStore,
     queues: ReviewQueues,
-    reviewLocation: LlmProvider['reviewJob'],
+    reviewLocation: LocationReviewer,
   ): Promise<Worker>;
   startTechWorker(
     store: SqliteStore,
     queues: ReviewQueues,
-    reviewStack: LlmProvider['reviewStack'],
+    reviewStack: StackReviewer,
   ): Promise<Worker>;
 }
 
