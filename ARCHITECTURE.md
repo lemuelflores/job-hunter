@@ -245,6 +245,10 @@ OAuth credential operations retain their own low-level options for token exchang
 and storage, while the provider's authentication contract exposes only cancellation
 and authorization notification.
 
+The CLI renders browser sign-in instructions through `onAuthorize`. OAuth owns
+the callback listener and token exchange, reports the URL through that callback,
+and does not print browser instructions itself.
+
 | Service | Purpose | Integration method |
 | --- | --- | --- |
 | Autom.dev | Google search for supported ATS listings | HTTPS GET with `x-api-key` from `AUTOM_API_KEY` |

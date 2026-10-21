@@ -282,11 +282,7 @@ export async function authenticate(
         return;
       }
       try {
-        (
-          options.onAuthorize ??
-          ((link) =>
-            console.log(`Open this URL in your browser to sign in:\n${link}`))
-        )(url.toString());
+        options.onAuthorize?.(url.toString());
       } catch (error) {
         rejectLogin(error);
       }

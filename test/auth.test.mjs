@@ -98,6 +98,7 @@ test('default login and reviews share app-root .auth.json', async (t) => {
 });
 
 test('browser callback exchanges PKCE code and atomically saves private reusable credentials', async (t) => {
+  const output = t.mock.method(console, 'log', () => {});
   // Arrange: isolate storage and observe the token exchange without contacting OpenAI.
   const { root, authPath } = await setup(t);
   let authorize,
@@ -149,6 +150,11 @@ test('browser callback exchanges PKCE code and atomically saves private reusable
   assert.match(await response.text(), /Signed in/);
   await login.completed;
   assert.equal(calls, 1);
+  assert.equal(
+    output.mock.calls.length,
+    0,
+    'provider leaves presentation to its callback',
+  );
   assert.equal((await stat(authPath)).mode & 0o777, 0o600);
   assert.equal((await stat(join(root, 'credentials'))).mode & 0o777, 0o700);
   assert.deepEqual(await readdir(join(root, 'credentials')), ['auth.json']);
@@ -271,6 +277,20 @@ test('cancellation releases callback port; occupied port fails without contactin
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('authorization callback failures reject login and release the callback listener', async () => {
+  const error = new Error('presentation failed');
+  for (let attempt = 0; attempt < 2; attempt++)
+    await assert.rejects(
+      authenticate({
+        onAuthorize: () => {
+          throw error;
+        },
+        fetch: async () => assert.fail('network'),
+      }),
+      (actual) => actual === error,
+    );
 });
 
 test('refresh persists rotated tokens while preserving unrelated credentials and account ID', async (t) => {

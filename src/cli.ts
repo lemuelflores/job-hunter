@@ -61,7 +61,11 @@ async function authenticate(llm: LlmProvider) {
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   try {
-    await llm.authenticate({ signal: controller.signal });
+    await llm.authenticate({
+      signal: controller.signal,
+      onAuthorize: (url) =>
+        console.log(`Open this URL in your browser to sign in:\n${url}`),
+    });
     console.log('Signed in with ChatGPT.');
   } finally {
     process.off('SIGINT', stop);

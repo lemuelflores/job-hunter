@@ -186,16 +186,25 @@ test('CLI auth routes through the provider and removes signal listeners on succe
   const before = ['SIGINT', 'SIGTERM'].map((event) =>
     process.listenerCount(event),
   );
-  t.mock.method(console, 'log', () => {});
+  const output = t.mock.method(console, 'log', () => {});
   t.mock.method(console, 'error', () => {});
   t.mock.method(llm, 'authenticate', async (options) => {
     calls++;
     // Assert: auth receives a cancellation signal from the CLI.
     assert.ok(options.signal instanceof AbortSignal);
+    assert.equal(typeof options.onAuthorize, 'function');
+    options.onAuthorize('https://auth.example/authorize');
   });
   // Act / Assert: successful authentication restores listeners.
   assert.equal(await main(['auth'], dependencies), 0);
   assert.equal(calls, 1);
+  assert.deepEqual(
+    output.mock.calls.map((call) => call.arguments[0]),
+    [
+      'Open this URL in your browser to sign in:\nhttps://auth.example/authorize',
+      'Signed in with ChatGPT.',
+    ],
+  );
   assert.deepEqual(
     ['SIGINT', 'SIGTERM'].map((event) => process.listenerCount(event)),
     before,
