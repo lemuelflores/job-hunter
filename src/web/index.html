@@ -4,7 +4,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Jobs to review</title>
+    <script defer src="/alpine.js"></script>
     <style>
+    [x-cloak] {
+      /* biome-ignore lint/complexity/noImportantStyles: Hide Alpine templates before initialization regardless of component display styles. */
+      display: none !important;
+    }
     :root {
       color-scheme: light;
       --ink: #21332f;
@@ -355,7 +360,11 @@
     </style>
   </head>
   <body>
-    <main>
+    <main
+      x-data="jobReview()"
+      @popstate.window="restoreView()"
+      @visibilitychange.document="refresh()"
+    >
       <h1>Job listings</h1>
       <div class="toolbar">
         <nav class="toolbar__tabs" aria-label="Job status">
@@ -363,7 +372,8 @@
             class="toolbar__tab"
             type="button"
             data-status="active"
-            aria-pressed="true"
+            :aria-pressed="status === 'active'"
+            @click="selectView({ status: 'active' })"
           >
             Active
           </button>
@@ -371,7 +381,8 @@
             class="toolbar__tab"
             type="button"
             data-status="hidden"
-            aria-pressed="false"
+            :aria-pressed="status === 'hidden'"
+            @click="selectView({ status: 'hidden' })"
           >
             Hidden
           </button>
@@ -379,14 +390,20 @@
             class="toolbar__tab"
             type="button"
             data-status="rejected"
-            aria-pressed="false"
+            :aria-pressed="status === 'rejected'"
+            @click="selectView({ status: 'rejected' })"
           >
             Rejected
           </button>
         </nav>
         <label class="filter"
           >Location eligibility
-          <select id="eligibility" class="filter__select">
+          <select
+            id="eligibility"
+            class="filter__select"
+            :value="eligibility"
+            @change="selectView({ eligibility: $event.target.value })"
+          >
             <option value="all">All</option>
             <option value="eligible">Eligible</option>
             <option value="pending">Pending</option>
@@ -397,7 +414,12 @@
         >
         <label class="filter"
           >Stack assessment
-          <select id="stack" class="filter__select">
+          <select
+            id="stack"
+            class="filter__select"
+            :value="stack"
+            @change="selectView({ stack: $event.target.value })"
+          >
             <option value="all">All</option>
             <option value="not_checked">Not checked / Skipped</option>
             <option value="pending">Pending</option>
@@ -409,13 +431,157 @@
           </select></label
         >
       </div>
-      <div id="notice" class="notice" role="status" aria-live="polite"></div>
+      <div
+        id="notice"
+        class="notice"
+        :class="{ 'notice--error': saveError || loadError }"
+        role="status"
+        aria-live="polite"
+        x-text="notice"
+      ></div>
+      <button
+        x-cloak
+        x-show="loadError"
+        class="button"
+        type="button"
+        @click="load(true)"
+      >
+        Retry
+      </button>
       <section
         id="jobs"
         class="job-list"
         aria-live="polite"
-        aria-busy="false"
-      ></section>
+        :aria-busy="loading"
+        x-cloak
+      >
+        <template x-for="job in visibleJobs" :key="job.reviewKey">
+          <article
+            class="job-card"
+            :data-review-key="job.reviewKey"
+            :aria-labelledby="`job-title-${job.reviewKey}`"
+          >
+            <header class="job-card__header">
+              <div>
+                <h2
+                  class="job-card__title"
+                  :id="`job-title-${job.reviewKey}`"
+                  tabindex="-1"
+                  x-text="job.title || 'Untitled role'"
+                >
+                  Untitled role
+                </h2>
+              </div>
+            </header>
+            <template
+              x-for="stage in (job.stages || []).filter(item => item.error)"
+              :key="stage.stage"
+            >
+              <p
+                class="job-card__error"
+                x-text="`${stage.stage}: ${stage.state} — ${stage.error}`"
+              ></p>
+            </template>
+            <div class="job-card__metadata">
+              <span
+                class="job-card__metadata-item job-card__company"
+                x-text="displayText(job.company, 'Company not provided')"
+              ></span>
+              <span
+                class="job-card__metadata-item"
+                x-text="`Location: ${displayText(job.location, 'Not provided')}`"
+              ></span>
+            </div>
+            <div class="job-card__assessments">
+              <template x-for="panel in assessments(job)" :key="panel.title">
+                <section class="assessment">
+                  <div class="assessment__header">
+                    <h3 class="assessment__title" x-text="panel.title">
+                      Assessment
+                    </h3>
+                    <span
+                      class="assessment__status"
+                      :class="`assessment__status--${panel.status.replaceAll('_', '-')}`"
+                      x-text="panel.label"
+                    ></span>
+                  </div>
+                  <div class="assessment__content">
+                    <p
+                      class="assessment__reason"
+                      :class="{ 'assessment__reason--empty': !panel.reason }"
+                      x-text="panel.reason || 'No assessment available yet.'"
+                    ></p>
+                    <details
+                      class="assessment__evidence"
+                      x-show="panel.evidence"
+                    >
+                      <summary class="assessment__toggle">
+                        Listing evidence
+                      </summary>
+                      <blockquote
+                        class="assessment__quote"
+                        x-text="panel.evidence"
+                      ></blockquote>
+                    </details>
+                  </div>
+                </section>
+              </template>
+            </div>
+            <footer class="job-card__actions">
+              <!-- biome-ignore lint/a11y/useValidAnchor: Alpine binds the validated listing URL. -->
+              <a
+                class="job-card__link"
+                x-show="safeUrl(job.url)"
+                :href="safeUrl(job.url)"
+                target="_blank"
+                rel="noopener noreferrer"
+                >View job ↗</a
+              >
+              <div class="job-card__review-actions">
+                <button
+                  class="button"
+                  type="button"
+                  x-show="status === 'active'"
+                  :disabled="!!pending[job.reviewKey]"
+                  @click="updateStatus(job, 'hidden')"
+                >
+                  Hide
+                </button>
+                <button
+                  class="button button--danger"
+                  type="button"
+                  x-show="status === 'active'"
+                  :disabled="!!pending[job.reviewKey]"
+                  @click="updateStatus(job, 'rejected')"
+                >
+                  Reject
+                </button>
+                <button
+                  class="button"
+                  type="button"
+                  x-show="status !== 'active'"
+                  :disabled="!!pending[job.reviewKey]"
+                  @click="updateStatus(job, 'active')"
+                >
+                  Restore
+                </button>
+              </div>
+            </footer>
+          </article>
+        </template>
+        <div
+          class="empty"
+          x-show="!visibleJobs.length && !loadError && (!loading || cache[status])"
+        >
+          <strong
+            class="empty__title"
+            x-text="status === 'active' ? 'Nothing here yet' : `No ${status} jobs`"
+          ></strong>
+          <span
+            x-text="status === 'active' ? 'Jobs will appear after your next run.' : 'Jobs you move here will stay available for review.'"
+          ></span>
+        </div>
+      </section>
     </main>
     <script id="assessment-logic">
     const stackLabel = (job) => {
@@ -445,413 +611,290 @@
     const matchesAssessments = (job, eligibility, stack) =>
       matchesLocation(job, eligibility) && matchesStack(job, stack);
     </script>
-    <script>
-    (() => {
-      const jobsEl = document.getElementById('jobs');
-      const noticeEl = document.getElementById('notice');
-      const tabs = [...document.querySelectorAll('[data-status]')];
-      const eligibilityFilter = document.getElementById('eligibility');
-      const stackFilter = document.getElementById('stack');
-      let currentStatus = 'active';
-      let request = null;
-      let listingGeneration = 0;
-      let listingState = 'loading';
-      let persistentError = '';
-      const pending = new Map();
-      const knownJobs = new Map();
-      const cache = new Map();
-      const renderedJobs = new WeakMap();
-
-      const setNotice = (message, error = false) => {
-        noticeEl.textContent = message;
-        noticeEl.className = error ? 'notice notice--error' : 'notice';
-      };
-      const setError = (message) => {
-        persistentError = message;
-        setNotice(message, true);
-      };
-      const safeUrl = (value) => {
-        try {
-          const url = new URL(String(value));
-          return url.protocol === 'http:' || url.protocol === 'https:'
-            ? url.href
-            : null;
-        } catch (_) {
-          return null;
-        }
-      };
-      const addText = (parent, tag, text, className) => {
-        const node = document.createElement(tag);
-        if (className) node.className = className;
-        node.textContent = text == null ? '' : String(text);
-        parent.append(node);
-        return node;
-      };
-      const displayCompany = (job) =>
-        (typeof job.company === 'string' ? job.company.trim() : '') || null;
-      const displayLocation = (job) =>
-        (typeof job.location === 'string' ? job.location.trim() : '') ||
-        'Not provided';
-      const jobBusy = (job) => pending.has(String(job.reviewKey));
-      const renderHeading = (card, job) => {
-        const top = document.createElement('header');
-        top.className = 'job-card__header';
-        card.append(top);
-        const heading = document.createElement('div');
-        top.append(heading);
-        const title = addText(
-          heading,
-          'h2',
-          job.title || 'Untitled role',
-          'job-card__title',
-        );
-        title.id = `job-title-${job.reviewKey}`;
-        card.setAttribute('aria-labelledby', title.id);
-      };
-      const renderMetadata = (card, job) => {
-        for (const stage of job.stages || []) {
-          if (!stage.error) continue;
-          addText(
-            card,
-            'p',
-            `${stage.stage}: ${stage.state} — ${stage.error}`,
-            'job-card__error',
-          );
-        }
-        const meta = document.createElement('div');
-        meta.className = 'job-card__metadata';
-        card.append(meta);
-        addText(
-          meta,
-          'span',
-          displayCompany(job) || 'Company not provided',
-          'job-card__metadata-item job-card__company',
-        );
-        addText(
-          meta,
-          'span',
-          `Location: ${displayLocation(job)}`,
-          'job-card__metadata-item',
-        );
-      };
-      const renderAssessments = (card, job) => {
-        const panels = document.createElement('div');
-        panels.className = 'job-card__assessments';
-        card.append(panels);
-        for (const [title, status, label, reason, evidence] of [
-          [
-            'Location eligibility',
-            job.eligibility || 'pending',
-            job.eligibility || 'pending',
-            job.reason,
-            job.evidence,
-          ],
-          [
-            'Stack match',
-            job.stack_status || 'not_checked',
-            stackLabel(job),
-            job.stack_reason,
-            job.stack_evidence,
-          ],
-        ]) {
-          const assessment = document.createElement('section');
-          assessment.className = 'assessment';
-          panels.append(assessment);
-          const header = document.createElement('div');
-          header.className = 'assessment__header';
-          assessment.append(header);
-          addText(header, 'h3', title, 'assessment__title');
-          addText(
-            header,
-            'span',
-            label,
-            `assessment__status assessment__status--${status.replaceAll('_', '-')}`,
-          );
-          const content = document.createElement('div');
-          content.className = 'assessment__content';
-          assessment.append(content);
-          addText(
-            content,
-            'p',
-            reason || 'No assessment available yet.',
-            reason
-              ? 'assessment__reason'
-              : 'assessment__reason assessment__reason--empty',
-          );
-          if (evidence) {
-            const details = document.createElement('details');
-            details.className = 'assessment__evidence';
-            content.append(details);
-            addText(
-              details,
-              'summary',
-              'Listing evidence',
-              'assessment__toggle',
-            );
-            addText(details, 'blockquote', evidence, 'assessment__quote');
-          }
-        }
-      };
-      const renderActions = (card, job, isPending) => {
-        const actions = document.createElement('footer');
-        actions.className = 'job-card__actions';
-        card.append(actions);
-        const externalUrl = safeUrl(job.url);
-        if (externalUrl) {
-          const link = document.createElement('a');
-          link.className = 'job-card__link';
-          link.href = externalUrl;
-          link.target = '_blank';
-          link.rel = 'noopener noreferrer';
-          link.textContent = 'View job ↗';
-          actions.append(link);
-        }
-        const right = document.createElement('div');
-        right.className = 'job-card__review-actions';
-        actions.append(right);
-        if (currentStatus === 'active') {
-          const disabled = isPending || jobBusy(job);
-          const hide = actionButton('Hide', 'hidden', 'button', disabled);
-          const reject = actionButton(
-            'Reject',
-            'rejected',
-            'button button--danger',
-            disabled,
-          );
-          right.append(hide, reject);
-        } else {
-          right.append(
-            actionButton(
-              'Restore',
-              'active',
-              'button',
-              isPending || jobBusy(job),
-            ),
-          );
-        }
-      };
-      const renderJob = (job, isPending = false) => {
-        const card = document.createElement('article');
-        renderedJobs.set(card, JSON.stringify(job));
-        card.className = 'job-card';
-        card.dataset.reviewKey = String(job.reviewKey || '');
-        card.dataset.pending = String(isPending);
-        renderHeading(card, job);
-        renderMetadata(card, job);
-        renderAssessments(card, job);
-        renderActions(card, job, isPending);
-        return card;
-      };
-      const actionButton = (label, status, className, disabled = false) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = className;
-        button.textContent = label;
-        button.disabled = disabled;
-        button.addEventListener('click', () => updateStatus(button, status));
-        return button;
-      };
-      const jobsForStatus = (status, serverJobs = []) => {
-        const jobs = new Map();
-        serverJobs.forEach((job) => {
-          if (job?.reviewKey) {
-            const key = String(job.reviewKey);
-            knownJobs.set(key, job);
-            if (!pending.has(key) || pending.get(key).to === status)
-              jobs.set(key, job);
-          }
-        });
-        knownJobs.forEach((job, key) => {
-          if (pending.get(key)?.to === status) jobs.set(key, job);
-        });
-        return [...jobs.values()]
-          .filter((job) =>
-            matchesAssessments(
-              job,
-              eligibilityFilter?.value || 'all',
-              stackFilter.value,
-            ),
-          )
-          .map((job) => [job, jobBusy(job)]);
-      };
-      const reconcileCards = (jobs) => {
-        const existing = new Map(
-          [...jobsEl.children]
-            .filter((node) => node.classList.contains('job-card'))
-            .map((node) => [node.dataset.reviewKey, node]),
-        );
-        const desiredKeys = new Set(jobs.map(([job]) => String(job.reviewKey)));
-        existing.forEach((card, key) => {
-          if (!desiredKeys.has(key)) {
-            if (card.contains(document.activeElement))
-              tabs.find((tab) => tab.dataset.status === currentStatus)?.focus();
-            card.remove();
-          }
-        });
-        jobs.forEach(([job, isPending]) => {
-          const key = String(job.reviewKey);
-          const card = existing.get(key);
-          if (card) {
-            if (renderedJobs.get(card) !== JSON.stringify(job)) {
-              card.replaceWith(renderJob(job, isPending));
-              return;
-            }
-            const disabled = isPending || jobBusy(job);
-            card.dataset.pending = String(disabled);
-            card.querySelectorAll('button').forEach((button) => {
-              button.disabled = disabled;
-            });
-          } else jobsEl.append(renderJob(job, isPending));
-        });
-      };
-      const renderEmpty = (status) => {
-        const empty = document.createElement('div');
-        empty.className = 'empty';
-        addText(
-          empty,
-          'strong',
-          status === 'active' ? 'Nothing here yet' : `No ${status} jobs`,
-          'empty__title',
-        );
-        addText(
-          empty,
-          'span',
-          status === 'active'
-            ? 'Jobs will appear after your next run or reload.'
-            : 'Jobs you move here will stay available for review.',
-        );
-        jobsEl.append(empty);
-      };
-      const renderSummary = (status, jobs) => {
-        if (!jobs.length && !jobsEl.querySelector('.empty, .list-control')) {
-          renderEmpty(status);
-        }
-        if (jobs.length)
-          jobsEl.querySelector('.empty, .list-control')?.remove();
-        const count = jobs.length
-          ? jobs.length + (jobs.length === 1 ? ' job' : ' jobs')
-          : '';
-        if (!persistentError) setNotice(count);
-      };
-      const renderList = (status, serverJobs, announce = true) => {
-        if (
-          status === currentStatus &&
-          (listingState === 'loading' || listingState === 'error') &&
-          !announce
+    <script id="review-component">
+    const viewOptions = {
+      status: ['active', 'hidden', 'rejected'],
+      eligibility: [
+        'all',
+        'eligible',
+        'pending',
+        'unclear',
+        'ineligible',
+        'error',
+      ],
+      stack: [
+        'all',
+        'not_checked',
+        'pending',
+        'match',
+        'partial_match',
+        'potential_match',
+        'unclear',
+        'error',
+      ],
+    };
+    const readView = (url) =>
+      Object.fromEntries(
+        Object.entries(viewOptions).map(([key, values]) => {
+          const value = url.searchParams.get(key);
+          return [key, values.includes(value) ? value : values[0]];
+        }),
+      );
+    const safeUrl = (value) => {
+      try {
+        const url = new URL(value);
+        return ['http:', 'https:'].includes(url.protocol) ? url.href : null;
+      } catch {
+        return null;
+      }
+    };
+    const displayText = (value, fallback) =>
+      (typeof value === 'string' && value.trim()) || fallback;
+    const assessments = (job) => [
+      {
+        title: 'Location eligibility',
+        status: job.eligibility || 'pending',
+        label: job.eligibility || 'pending',
+        reason: job.reason,
+        evidence: job.evidence,
+      },
+      {
+        title: 'Stack match',
+        status: job.stack_status || 'not_checked',
+        label: stackLabel(job),
+        reason: job.stack_reason,
+        evidence: job.stack_evidence,
+      },
+    ];
+    const fetchJobs = async (status, signal) => {
+      const response = await fetch(`/api/jobs?status=${status}`, { signal });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error || 'Could not load jobs.');
+      if (
+        !Array.isArray(body?.jobs) ||
+        body.jobs.some(
+          (job) => !job || typeof job.reviewKey !== 'string' || !job.reviewKey,
         )
-          return;
-        const jobs = jobsForStatus(status, serverJobs);
-        reconcileCards(jobs);
-        renderSummary(status, jobs);
-      };
-      const showLoadError = (error) => {
-        listingState = 'error';
-        jobsEl.replaceChildren();
-        setError(error.message || 'Could not load jobs.');
-        const retry = document.createElement('button');
-        retry.type = 'button';
-        retry.className = 'list-control button';
-        retry.textContent = 'Retry';
-        retry.addEventListener('click', load);
-        jobsEl.append(retry);
-      };
-      const fetchJobs = async (status, signal) => {
-        const response = await fetch(
-          `/api/jobs?status=${encodeURIComponent(status)}`,
-          { signal },
-        );
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(body.error || 'Could not load jobs.');
-        return Array.isArray(body.jobs) ? body.jobs : [];
-      };
-      const load = async () => {
-        if (request) request.abort();
-        request = new AbortController();
-        const signal = request.signal;
-        const generation = ++listingGeneration;
-        const loadStatus = currentStatus;
-        listingState = 'loading';
-        jobsEl.replaceChildren();
-        jobsEl.setAttribute('aria-busy', 'true');
-        persistentError = '';
-        setNotice('Loading…');
-        try {
-          const jobs = await fetchJobs(loadStatus, signal);
+      )
+        throw new Error('Invalid jobs response.');
+      if (
+        new Set(body.jobs.map((job) => job.reviewKey)).size !== body.jobs.length
+      )
+        throw new Error('Invalid jobs response: duplicate listing keys.');
+      return body.jobs;
+    };
+    window.jobReview = () => {
+      // Keep transport handles outside Alpine's reactive proxies.
+      let request = null;
+      let timer = null;
+      return {
+        ...readView(new URL(location.href)),
+        cache: {},
+        pending: {},
+        loading: false,
+        loadError: '',
+        saveError: '',
+        message: '',
+        safeUrl,
+        displayText,
+        assessments,
+        init() {
+          this.load();
+          timer = setInterval(() => this.refresh(), 5000);
+        },
+        destroy() {
+          clearInterval(timer);
+          this.cancelLoad();
+        },
+        get visibleJobs() {
+          const jobs = new Map(
+            (this.cache[this.status] || []).map((job) => [job.reviewKey, job]),
+          );
+          for (const [key, change] of Object.entries(this.pending)) {
+            if (change.to === this.status) jobs.set(key, change.job);
+            else jobs.delete(key);
+          }
+          return [...jobs.values()].filter((job) =>
+            matchesAssessments(job, this.eligibility, this.stack),
+          );
+        },
+        get notice() {
+          if (this.saveError || this.loadError)
+            return this.saveError || this.loadError;
+          if (this.message) return this.message;
+          if (this.loading && !this.cache[this.status]) return 'Loading…';
+          const count = this.visibleJobs.length;
+          return count ? `${count} ${count === 1 ? 'job' : 'jobs'}` : '';
+        },
+        async selectView(values, writeHistory = true) {
           if (
-            signal.aborted ||
-            generation !== listingGeneration ||
-            currentStatus !== loadStatus
+            Object.entries(values).every(([key, value]) => this[key] === value)
           )
             return;
-          cache.set(loadStatus, jobs);
-          listingState = 'ready';
-          renderList(loadStatus, jobs, true);
-        } catch (error) {
-          if (error.name !== 'AbortError' && generation === listingGeneration) {
-            showLoadError(error);
-          }
-        } finally {
-          if (!signal.aborted && generation === listingGeneration)
-            jobsEl.setAttribute('aria-busy', 'false');
-        }
-      };
-      const restoreStatus = (reviewKey, from, job, error) => {
-        pending.delete(reviewKey);
-        const sourceJobs = cache.get(from) || [];
-        if (!sourceJobs.some((item) => String(item.reviewKey) === reviewKey))
-          cache.set(from, [...sourceJobs, job]);
-        renderList(currentStatus, cache.get(currentStatus) || [], false);
-        setError(
-          `${error.message || 'Could not save that change.'} Try again.`,
-        );
-      };
-      const updateStatus = async (button, status) => {
-        const card = button.closest('.job-card');
-        const reviewKey = card?.dataset.reviewKey;
-        if (!reviewKey || pending.has(reviewKey)) return;
-        const job = knownJobs.get(reviewKey);
-        if (!job) return;
-        const from = currentStatus;
-        pending.set(reviewKey, { from, to: status });
-        renderList(currentStatus, cache.get(currentStatus) || [], false);
-        try {
-          const response = await fetch('/api/jobs/status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reviewKey, status }),
+          const previousStatus = this.status;
+          await this.preservePosition(() => {
+            Object.assign(this, values);
+            this.saveError = '';
+            this.loadError = '';
+            this.message = '';
           });
-          const body = await response.json().catch(() => ({}));
-          if (!response.ok)
-            throw new Error(body.error || 'Could not save that change.');
-          pending.delete(reviewKey);
-          await load();
+          if (writeHistory) {
+            const url = new URL(location.href);
+            for (const key of Object.keys(viewOptions)) {
+              if (this[key] === viewOptions[key][0])
+                url.searchParams.delete(key);
+              else url.searchParams.set(key, this[key]);
+            }
+            history.pushState(null, '', url);
+          }
+          if (previousStatus !== this.status) return this.load(true);
+        },
+        restoreView() {
+          return this.selectView(readView(new URL(location.href)), false);
+        },
+        refresh() {
+          if (document.hidden) return;
+          return this.load();
+        },
+        cancelLoad() {
+          request?.abort();
+          request = null;
+          this.loading = false;
+        },
+        async load(force = false) {
+          if (request && !force) return;
+          this.cancelLoad();
+          const controller = new AbortController();
+          request = controller;
+          const status = this.status;
+          this.loading = true;
+          try {
+            const jobs = await fetchJobs(status, controller.signal);
+            if (request !== controller || this.status !== status) return;
+            await this.preservePosition(() => {
+              this.cache[status] = jobs;
+              this.loadError = '';
+            });
+          } catch (error) {
+            if (request !== controller) return;
+            await this.preservePosition(() => {
+              this.loadError = error.message || 'Could not load jobs.';
+            });
+          } finally {
+            if (request === controller) {
+              request = null;
+              this.loading = false;
+            }
+          }
+        },
+        async updateStatus(job, to) {
+          const key = job.reviewKey;
+          if (this.pending[key]) return;
+          const from = this.status;
+          const index = (this.cache[from] || []).findIndex(
+            (item) => item.reviewKey === key,
+          );
+          this.cancelLoad();
+          await this.preservePosition(() => {
+            this.pending[key] = { from, to, job };
+            this.saveError = '';
+            this.message = '';
+          });
+          try {
+            const response = await fetch('/api/jobs/status', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ reviewKey: key, status: to }),
+            });
+            const body = await response.json();
+            if (!response.ok || body?.ok !== true)
+              throw new Error(body?.error || 'Could not save that change.');
+          } catch (error) {
+            await this.preservePosition(() => {
+              const jobs = this.cache[from] || [];
+              if (!jobs.some((item) => item.reviewKey === key)) {
+                const restored = [...jobs];
+                restored.splice(Math.max(index, 0), 0, job);
+                this.cache[from] = restored;
+              }
+              delete this.pending[key];
+              this.saveError = `${error.message || 'Could not save that change.'} Try again.`;
+            });
+            return;
+          }
+          // A read started before the save completed cannot establish current membership.
+          this.cancelLoad();
+          await this.preservePosition(() => {
+            for (const status of Object.keys(this.cache)) {
+              this.cache[status] = this.cache[status].filter(
+                (item) => item.reviewKey !== key,
+              );
+            }
+            if (this.cache[to]) this.cache[to].push(job);
+            delete this.pending[key];
+          });
+          await this.load(true);
           if (
-            !persistentError &&
-            status === 'active' &&
+            to === 'active' &&
             job.stages?.some((stage) => stage.state === 'pending')
           )
-            setNotice(
-              'Restored with unfinished checks. Run pnpm job-hunter repair to restore missing queue work.',
+            this.message =
+              'Restored with unfinished checks. Run pnpm job-hunter repair to restore missing queue work.';
+        },
+        async preservePosition(change) {
+          const cards = [...document.querySelectorAll('.job-card')];
+          const positions = cards.map((card) => ({
+            key: card.dataset.reviewKey,
+            top: card.getBoundingClientRect().top,
+            bottom: card.getBoundingClientRect().bottom,
+          }));
+          const firstVisible = positions.findIndex(
+            (position) => position.bottom > 0,
+          );
+          const anchors =
+            firstVisible < 0
+              ? []
+              : [
+                  ...positions.slice(firstVisible),
+                  ...positions.slice(0, firstVisible).reverse(),
+                ];
+          const focused = cards.findIndex((card) =>
+            card.contains(document.activeElement),
+          );
+          const focusOrder =
+            focused < 0
+              ? []
+              : [
+                  ...cards.slice(focused + 1),
+                  ...cards.slice(0, focused).reverse(),
+                ].map((card) => card.dataset.reviewKey);
+          const activeElement = document.activeElement;
+          change();
+          await this.$nextTick();
+          const remaining = new Map(
+            [...document.querySelectorAll('.job-card')].map((card) => [
+              card.dataset.reviewKey,
+              card,
+            ]),
+          );
+          const anchor = anchors.find((position) =>
+            remaining.has(position.key),
+          );
+          if (anchor)
+            window.scrollBy(
+              0,
+              remaining.get(anchor.key).getBoundingClientRect().top -
+                anchor.top,
             );
-        } catch (error) {
-          restoreStatus(reviewKey, from, job, error);
-        }
+          if (focused < 0 || activeElement.isConnected) return;
+          const nextKey = focusOrder.find((key) => remaining.has(key));
+          const target = nextKey
+            ? remaining.get(nextKey).querySelector('h2')
+            : document.querySelector(`[data-status="${this.status}"]`);
+          target?.focus({ preventScroll: true });
+        },
       };
-      tabs.forEach((tab) => {
-        tab.addEventListener('click', () => {
-          if (tab.dataset.status !== currentStatus) {
-            currentStatus = tab.dataset.status;
-            tabs.forEach((item) => {
-              item.setAttribute('aria-pressed', String(item === tab));
-            });
-            load();
-          }
-        });
-      });
-      eligibilityFilter?.addEventListener('change', load);
-      stackFilter.addEventListener('change', load);
-      load();
-    })();
+    };
     </script>
   </body>
 </html>

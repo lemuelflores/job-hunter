@@ -16,6 +16,7 @@ export const UI_HTML = readFileSync(
   new URL('./index.html', import.meta.url),
   'utf8',
 );
+const ALPINE_JS = readFileSync(new URL('./alpine.js', import.meta.url));
 
 const MAX_BODY_BYTES = 16 * 1024;
 
@@ -110,6 +111,14 @@ async function routeRequest(
       'cache-control': 'no-store',
     });
     response.end(UI_HTML);
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/alpine.js') {
+    response.writeHead(200, {
+      'content-type': 'text/javascript; charset=utf-8',
+      'cache-control': 'no-store',
+    });
+    response.end(ALPINE_JS);
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/jobs') {

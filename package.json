@@ -11,7 +11,7 @@
   "scripts": {
     "check": "biome check .",
     "fix": "biome check --write .",
-    "build": "tsc -p tsconfig.profile.json && tsc -p tsconfig.json && cp src/web/index.html dist/web/index.html",
+    "build": "tsc -p tsconfig.profile.json && tsc -p tsconfig.json && cp src/web/index.html dist/web/index.html && cp node_modules/alpinejs/dist/cdn.min.js dist/web/alpine.js",
     "test": "pnpm build && node --test test/*.test.mjs",
     "test:queue": "pnpm build && node --test test/workers.queue.mjs",
     "job-hunter": "node dist/entrypoints/cli.js"
@@ -23,6 +23,7 @@
     "typescript": "^5.8.0"
   },
   "dependencies": {
+    "alpinejs": "3.17.5",
     "bullmq": "6.3.17",
     "citty": "^0.2.2",
     "entities": "^8.1.0",

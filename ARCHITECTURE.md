@@ -103,15 +103,19 @@ Compose uses two processing containers: `scheduler` only produces discovery task
 
 **Name:** Local job-review UI.
 
-**Description:** `src/web/index.html` displays saved listings, eligibility and stack assessments, filtering, and active/hidden/rejected review states. Users can change an individual listing's state. Browser state and rendering live in the same document; there is no frontend framework or bundler. `src/web/server.ts` loads the colocated HTML for the HTTP server.
+**Description:** `src/web/index.html` displays saved listings, eligibility and stack assessments, filtering, and active/hidden/rejected review states. Users can change an individual listing's state. One Alpine.js component and keyed templates own browser state and rendering in the same document, without a bundler. Listing/model text uses `x-text`, never HTML interpretation; external links accept only HTTP(S). `src/web/server.ts` loads the colocated HTML and locally built Alpine asset for the HTTP server.
 
 Listings use scan-first cards: role/company/location lead, independent location and stack assessment rows place labels/statuses on the left and summaries/evidence on the right, native `details` elements disclose supporting evidence, and a footer groups the external listing link and review actions. Assessment columns stack on mobile. Component styles use BEM block, element, and modifier classes.
 
 Optimistic status changes apply only while their save requests are pending. Successful saves reload server state rather than retaining local overrides that could hide changes from another tab. Restoring a listing with pending checks shows the explicit `repair` command; status changes do not enqueue processing.
 
-**Technologies:** Plain HTML, CSS, JavaScript, browser Fetch API.
+The URL owns validated `status`, `eligibility`, and `stack` selections, including browser back/forward navigation. Reading position is not stored; full reload scrolling is left to the browser. In-page reconciliation anchors the first visible surviving card (then later/earlier cards as fallback) and keeps keyed card/assessment DOM, preserving evidence disclosures. If a focused card disappears, focus moves to the next surviving card heading, then the previous heading, then the selected status button, without scrolling for focus.
 
-**Deployment:** Served by the application at `http://127.0.0.1:3000`. Build copies the HTML into `dist/web/index.html`; applying UI changes requires rebuilding and restarting the server.
+The component polls the selected status every five seconds while visible and on visibility return, admits at most one current listing read, and retains cached results on refresh errors with an explicit retry control. Status changes and successful saves invalidate older reads; pending moves overlay server data until the save resolves. Save failures restore source membership, while successful saves clear the overlay and fetch authoritative state. A failed follow-up read does not roll back a successful save.
+
+**Technologies:** HTML, CSS, JavaScript, Alpine.js 3.17.5, browser Fetch API.
+
+**Deployment:** Served by the application at `http://127.0.0.1:3000`. Build copies the HTML into `dist/web/index.html` and the pinned Alpine package's prebuilt browser script into `dist/web/alpine.js`. An explicit `GET /alpine.js` route serves it locally behind the same Host checks; no CDN, bundler, or general static-file serving is used. Applying UI changes requires rebuilding and restarting the server.
 
 ### 3.2. Backend Services
 
@@ -181,6 +185,7 @@ Workers drain active tasks during graceful shutdown. BullMQ recovers stalled del
 | Route | Responsibility |
 | --- | --- |
 | `GET /` | Serve UI HTML |
+| `GET /alpine.js` | Serve the pinned local Alpine browser script |
 | `GET /api/jobs?status=active` | Read active, hidden, or rejected listings |
 | `POST /api/jobs/status` | Change one listing's user review status |
 
@@ -298,7 +303,7 @@ App containers use `${UID:-1000}:${GID:-1000}` to keep bind-mounted database and
 
 **Local setup:** See [README.md](README.md). Use Node.js 22.18+ and pnpm; install with `pnpm install`, configure `.env` from `.env.example`, edit `profile.ts`, and run `pnpm build`. Authenticate with `pnpm job-hunter auth` before model processing. Redis and a running review worker are required for queued assessments; Compose still provisions Firecrawl although supported ATS listings now use direct APIs.
 
-Application configuration/database paths resolve relative to the application directory, not the shell's current directory. Build type-checks the root profile separately, compiles application TypeScript, and copies UI HTML. Node imports the root TypeScript profile at runtime; restart long-running workers after profile changes.
+Application configuration/database paths resolve relative to the application directory, not the shell's current directory. Build type-checks the root profile separately, compiles application TypeScript, and copies UI HTML and the Alpine browser script. Node imports the root TypeScript profile at runtime; restart long-running workers after profile changes.
 
 **Testing frameworks:** Node's built-in test runner and assertions. Business tests call application operations directly with in-memory SQLite and real API/model adapters, replacing only external HTTP and credential loading. No Redis, consumer startup, queue polling, or retry timers are used for business cases. Temporary database files are used where persistence across connections matters. The default suite requires neither Redis nor Docker. Separately invoked queue checks run actual consumers against an isolated test Redis service; they cover application-owned dispatch, failure bookkeeping, recovery boundaries, and process lifecycle, not BullMQ's deduplication, reconnection, retry engine, or stalled-task guarantees.
 
@@ -312,7 +317,7 @@ temporary directories on completion.
 - `workflows.test.mjs`: direct discovery URL acceptance/canonicalization, persistence and partial-success outcomes; ATS routing and terminal/transient policy; saved-text handoff through both real model adapters; independent assessments, checkpoint reuse, cancellation, and inactive/missing/readiness guards. Real in-memory SQLite and fixture external HTTP/credentials make outcomes deterministic without queue delivery.
 - `workers.queue.mjs`: queued discovery-to-assessment smoke coverage (including dispatch before partial-search failure), exhausted-delivery bookkeeping, targeted retry/repair, stale failure generations, interrupted replacement enqueue, crawl redelivery fan-out, production review waiting/selection/cancellation, CLI startup/draining/cleanup, and scheduler admission. Each case has isolated temporary SQLite storage and a random queue prefix. Fixture delivery allows one attempt to check exhaustion without exercising BullMQ's retry engine. Run explicitly through `pnpm test:queue` with `TEST_REDIS_URL` (default `redis://127.0.0.1:6380`). Compose's optional `redis-test` service uses the `test` profile, ephemeral storage, and loopback port 6380; the suite removes its namespaces, not the service.
 - `sqlite.integration.test.mjs`: persistence, transactions, stage-state transitions, and migrations, without running processors.
-- `cli.test.mjs`: command routing, arguments, help, and application-relative paths; `web.test.mjs`: HTTP behavior, server lifecycle, and pure UI assessment logic.
+- `cli.test.mjs`: command routing, arguments, help, and application-relative paths; `web.test.mjs`: HTTP behavior, local Alpine delivery, server lifecycle, pure UI assessment logic, and the production component's URL, refresh, mutation/rollback, and stale-response transitions under controlled HTTP. Node VM component tests do not exercise Alpine's DOM renderer or establish real-browser scroll/focus behavior.
 - `api-clients.test.mjs`: Ashby, Greenhouse, Lever, and Firecrawl request/response contracts, HTTP failures, timeout and cancellation with mocked network responses. `ashby.test.mjs`, `greenhouse.test.mjs`, `lever.test.mjs`, and `firecrawl.test.mjs`: extraction policy and rendering. `auth.test.mjs`: authentication, real credential storage, and refresh-to-request integration; `chatgpt.test.mjs`: model adapters constructed with fake credential loading and HTTP transport; `llm.test.mjs`: provider selection.
 - `google.test.mjs`: search response validation, pagination, and preservation of completed pages after failures.
 
@@ -320,12 +325,12 @@ Real SQLite is appropriate in HTTP and workflow tests; those suites assert their
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm build` | Profile type-check, TypeScript compilation, UI copy |
+| `pnpm build` | Profile type-check, TypeScript compilation, UI/Alpine copy |
 | `pnpm check` | Biome lint/format checks, including inline UI code |
 | `pnpm test` | Build and run `test/*.test.mjs`; no Redis/Docker required |
 | `pnpm test:queue` | Build and run `test/workers.queue.mjs`; isolated test Redis required |
 
-**Code quality tools:** TypeScript and Biome 2.5.15. No frontend build framework is needed. Tests do not require paid search/model calls.
+**Code quality tools:** TypeScript and Biome 2.5.15. No frontend bundler is needed. Tests do not require paid search/model calls.
 
 ## 9. Future Considerations / Roadmap
 

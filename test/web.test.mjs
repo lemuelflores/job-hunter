@@ -18,70 +18,56 @@ const { stackLabel, matchesAssessments } = runInNewContext(
   ({ stackLabel, matchesAssessments });`,
 );
 
-// Run the browser state transitions with a small DOM double and controlled HTTP.
-function browser(fetch) {
-  const element = () => ({
-    children: [],
-    dataset: {},
-    className: '',
-    value: 'all',
-    append(...nodes) {
-      for (const node of nodes) {
-        node.parent = this;
-        this.children.push(node);
-      }
-    },
-    replaceChildren() {
-      this.children = [];
-    },
-    remove() {
-      this.parent.children = this.parent.children.filter(
-        (node) => node !== this,
-      );
-    },
-    contains() {
-      return false;
-    },
-    get classList() {
-      return { contains: (name) => this.className.split(' ').includes(name) };
-    },
-    querySelector() {
-      return this.children.find((node) =>
-        ['empty', 'list-control button'].includes(node.className),
-      );
-    },
-    querySelectorAll() {
-      return [];
-    },
-    setAttribute() {},
-    addEventListener() {},
-  });
-  const nodes = Object.fromEntries(
-    ['jobs', 'notice', 'eligibility', 'stack'].map((id) => [id, element()]),
-  );
-  const scripts = [...UI_HTML.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+// Test the production Alpine component's state, not a reimplementation of its DOM.
+function browser(fetch, href = 'http://localhost/') {
+  const location = { href };
+  const history = [];
+  const document = { hidden: false, querySelectorAll: () => [] };
+  const window = { scrollBy() {} };
+  const timers = new Map();
   const ui = runInNewContext(
-    `${scripts[0][1]}\n${scripts[1][1].replace(/load\(\);\s*\}\)\(\);\s*$/, 'return { load, updateStatus, show: (status) => { currentStatus = status; return load(); } }; })();')}`,
+    `${UI_HTML.match(/<script id="assessment-logic">([\s\S]*?)<\/script>/)[1]}
+    ${UI_HTML.match(/<script id="review-component">([\s\S]*?)<\/script>/)[1]}
+    window.jobReview();`,
     {
       URL,
       AbortController,
       fetch,
-      document: {
-        createElement: element,
-        getElementById: (id) => nodes[id],
-        querySelectorAll: () => [],
+      location,
+      document,
+      history: {
+        pushState: (_state, _unused, url) => {
+          location.href = String(url);
+          history.push(location.href);
+        },
       },
+      setInterval: (callback, delay) => {
+        timers.set(callback, delay);
+        return callback;
+      },
+      clearInterval: (timer) => timers.delete(timer),
+      window,
     },
   );
+  ui.$nextTick = async () => {};
   return {
-    ...ui,
-    notice: nodes.notice,
-    keys: () =>
-      nodes.jobs.children
-        .filter((node) => node.className === 'job-card')
-        .map((node) => node.dataset.reviewKey),
+    ui,
+    location,
+    history,
+    document,
+    window,
+    timers,
+    load: () => ui.load(),
+    show: (status) => ui.selectView({ status }),
+    get notice() {
+      return { textContent: ui.notice };
+    },
+    keys: () => Array.from(ui.visibleJobs, (job) => job.reviewKey),
     change: (reviewKey, status) =>
-      ui.updateStatus({ closest: () => ({ dataset: { reviewKey } }) }, status),
+      ui.updateStatus(
+        ui.visibleJobs.find((job) => job.reviewKey === reviewKey),
+        status,
+      ),
   };
 }
 
@@ -185,130 +171,249 @@ test('UI labels every stack state and distinguishes skipped assessments', () => 
   assert.equal(stackLabel({}), 'Not checked');
 });
 
-test('UI cards group statuses, reasons and expandable evidence without interpreting listing HTML', () => {
-  const element = (tag) => ({
-    tag,
-    children: [],
-    dataset: {},
-    attributes: {},
-    append(...nodes) {
-      this.children.push(...nodes);
-    },
-    setAttribute(name, value) {
-      this.attributes[name] = value;
-    },
-    addEventListener() {},
-  });
-  const scripts = [...UI_HTML.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
-  const { renderJob } = runInNewContext(
-    `${scripts[0][1]}\n${scripts[1][1].replace(/load\(\);\s*\}\)\(\);\s*$/, 'return { renderJob }; })();')}`,
-    {
-      URL,
-      document: {
-        createElement: element,
-        getElementById: () => element('div'),
-        querySelectorAll: () => [],
-      },
-    },
-  );
-  const descendants = (node) => [node, ...node.children.flatMap(descendants)];
-  const job = {
-    reviewKey: '1',
-    title: '<img src=x onerror=alert(1)>',
-    company: 'Example',
-    location: 'Worldwide',
-    eligibility: 'eligible',
-    reason: 'Remote from your location',
-    evidence: 'Work from anywhere',
-    stack_status: 'partial_match',
-    stack_reason: 'Some core skills match',
-    stack_evidence: 'TypeScript and Go',
-    url: 'https://example.com/job',
-    stages: [{ stage: 'stack', state: 'pending', error: 'Temporary failure' }],
+test('URL selections validate, survive reconstruction and restore on history navigation', async () => {
+  const requests = [];
+  const fetch = async (path) => {
+    requests.push(path);
+    return Response.json({ jobs: [] });
   };
-  const card = renderJob(job);
-  const nodes = descendants(card);
-  assert.equal(card.className, 'job-card');
-  assert.equal(card.attributes['aria-labelledby'], 'job-title-1');
-  assert.equal(nodes.find((node) => node.tag === 'h2').textContent, job.title);
-  assert.ok(nodes.some((node) => node.textContent === 'Location: Worldwide'));
-  const metadata = nodes.find(
-    (node) => node.className === 'job-card__metadata',
+  const first = browser(
+    fetch,
+    'http://localhost/?status=hidden&eligibility=eligible&stack=match&other=kept',
   );
-  assert.equal(metadata.children[0].textContent, 'Example');
-  assert.equal(metadata.children[1].textContent, 'Location: Worldwide');
-  for (const [fields, company, location] of [
-    [{}, 'Company not provided', 'Not provided'],
-    [{ company: '  ', location: '  ' }, 'Company not provided', 'Not provided'],
-    [{ company: null, location: null }, 'Company not provided', 'Not provided'],
-    [{ company: 42, location: 42 }, 'Company not provided', 'Not provided'],
-    [{ company: ' Example ', location: ' Worldwide ' }, 'Example', 'Worldwide'],
-    [{ eligibility: 'error' }, 'Company not provided', 'Not provided'],
-    [
-      { eligibility: 'unclear', location: 'Europe' },
-      'Company not provided',
-      'Europe',
-    ],
-    [
-      { eligibility: 'unclear', location: 'Unclear' },
-      'Company not provided',
-      'Unclear',
-    ],
-  ]) {
-    const row = descendants(renderJob({ reviewKey: '3', ...fields })).find(
-      (node) => node.className === 'job-card__metadata',
-    );
-    assert.equal(row.children[0].textContent, company);
-    assert.equal(row.children[1].textContent, `Location: ${location}`);
-  }
-  assert.ok(nodes.some((node) => node.className === 'job-card__error'));
-  const panels = nodes.filter((node) => node.className === 'assessment');
-  assert.equal(panels.length, 2);
-  for (const [index, reason, evidence, status] of [
-    [0, job.reason, job.evidence, 'eligible'],
-    [1, job.stack_reason, job.stack_evidence, 'partial-match'],
-  ]) {
-    const contents = descendants(panels[index]);
-    assert.equal(panels[index].children[0].className, 'assessment__header');
-    assert.equal(panels[index].children[1].className, 'assessment__content');
-    assert.equal(panels[index].children[1].children[0].textContent, reason);
-    assert.ok(contents.some((node) => node.textContent === reason));
-    assert.ok(
-      contents.some((node) => node.className?.endsWith(`__status--${status}`)),
-    );
-    const details = contents.find((node) => node.tag === 'details');
-    assert.equal(details.attributes.open, undefined);
-    assert.equal(details.children[0].tag, 'summary');
-    assert.equal(details.children[1].textContent, evidence);
-  }
-  const link = nodes.find((node) => node.tag === 'a');
-  assert.equal(link.href, job.url);
-  assert.equal(link.rel, 'noopener noreferrer');
+  assert.equal(first.ui.status, 'hidden');
+  assert.equal(first.ui.eligibility, 'eligible');
+  assert.equal(first.ui.stack, 'match');
+  await first.ui.selectView({ status: 'hidden' });
+  assert.equal(
+    first.history.length,
+    0,
+    'reselecting a tab must not add history',
+  );
+  await first.ui.selectView({ stack: 'pending' });
+  assert.equal(requests.length, 0, 'filtering needs no network request');
+  const reloaded = browser(fetch, first.location.href);
+  assert.equal(reloaded.ui.stack, 'pending');
+  assert.equal(new URL(first.location.href).searchParams.get('other'), 'kept');
+  first.location.href =
+    'http://localhost/?status=rejected&eligibility=unclear&stack=partial_match';
+  await first.ui.restoreView();
+  assert.equal(first.ui.status, 'rejected');
+  assert.equal(first.ui.eligibility, 'unclear');
+  assert.equal(first.ui.stack, 'partial_match');
+  assert.deepEqual(requests, ['/api/jobs?status=rejected']);
+  assert.equal(
+    first.history.length,
+    1,
+    'popstate must not add a history entry',
+  );
+  const invalid = browser(
+    fetch,
+    'http://localhost/?status=__proto__&eligibility=bad&stack=bad',
+  );
+  assert.equal(invalid.ui.status, 'active');
+  assert.equal(invalid.ui.eligibility, 'all');
+  assert.equal(invalid.ui.stack, 'all');
+});
+
+test('visible polling admits only one read, retains data on errors and cleans up', async () => {
+  let calls = 0;
+  const read = Promise.withResolvers();
+  const page = browser(async () => {
+    calls++;
+    if (calls === 1) return Response.json({ jobs: [{ reviewKey: '1' }] });
+    return read.promise;
+  });
+  await page.load();
+  page.document.hidden = true;
+  await page.ui.refresh();
+  assert.equal(calls, 1);
+  page.document.hidden = false;
+  const refreshing = page.ui.refresh();
+  await page.ui.refresh();
+  assert.equal(calls, 2);
+  assert.deepEqual(page.keys(), ['1']);
+  read.resolve(Response.json({ error: 'Offline' }, { status: 503 }));
+  await refreshing;
+  assert.deepEqual(page.keys(), ['1']);
+  assert.match(page.notice.textContent, /Offline/);
+  assert.equal(page.ui.loading, false);
+  page.ui.init();
+  assert.deepEqual([...page.timers.values()], [5000]);
+  page.ui.destroy();
+  assert.equal(page.timers.size, 0);
+});
+
+test('stale reads cannot replace a newly selected status even if abort is ignored', async () => {
+  const old = Promise.withResolvers();
+  const page = browser(async (path) =>
+    path.endsWith('active')
+      ? old.promise
+      : Response.json({ jobs: [{ reviewKey: '2' }] }),
+  );
+  const loading = page.load();
+  await page.show('hidden');
+  old.resolve(Response.json({ jobs: [{ reviewKey: '1' }] }));
+  await loading;
+  assert.deepEqual(page.keys(), ['2']);
+  assert.equal(page.ui.loading, false);
+});
+
+test('reads cannot undo pending saves and pre-save responses cannot undo reconciliation', async () => {
+  let status = 'active';
+  const saving = Promise.withResolvers();
+  const stale = Promise.withResolvers();
+  let reads = 0;
+  const page = browser(async (_path, options) => {
+    if (options?.method === 'POST') {
+      await saving.promise;
+      status = 'hidden';
+      return Response.json({ ok: true });
+    }
+    reads++;
+    if (reads === 3) return stale.promise;
+    return Response.json({
+      jobs: status === 'active' ? [{ reviewKey: '1' }] : [],
+    });
+  });
+  await page.load();
+  const mutation = page.change('1', 'hidden');
+  await page.ui.refresh();
   assert.deepEqual(
-    nodes
-      .filter((node) => node.tag === 'button')
-      .map((node) => node.textContent),
-    ['Hide', 'Reject'],
+    page.keys(),
+    [],
+    'fresh source reads cannot undo a pending move',
   );
-  const pending = descendants(
-    renderJob({ reviewKey: '2', url: 'javascript:alert(1)' }, true),
+  const oldRead = page.ui.refresh();
+  saving.resolve();
+  await mutation;
+  assert.deepEqual(page.keys(), []);
+  stale.resolve(Response.json({ jobs: [{ reviewKey: '1' }] }));
+  await oldRead;
+  assert.deepEqual(page.keys(), []);
+  assert.equal(Object.keys(page.ui.pending).length, 0);
+  status = 'active';
+  await page.ui.refresh();
+  assert.deepEqual(
+    page.keys(),
+    ['1'],
+    'later changes from other tabs remain authoritative',
   );
+});
+
+test('a successful save with a failed reconciliation stays saved and retries reads', async () => {
+  let reads = 0;
+  const page = browser(async (_path, options) => {
+    if (options?.method === 'POST') return Response.json({ ok: true });
+    reads++;
+    if (reads === 1)
+      return Response.json({ jobs: [{ reviewKey: '1' }, { reviewKey: '2' }] });
+    if (reads === 2) throw new Error('Offline');
+    return Response.json({ jobs: [{ reviewKey: '2' }, { reviewKey: '3' }] });
+  });
+  await page.load();
+  await page.change('1', 'hidden');
+  assert.deepEqual(page.keys(), ['2']);
+  assert.equal(page.ui.saveError, '');
+  assert.match(page.ui.loadError, /Offline/);
+  await page.ui.refresh();
+  assert.deepEqual(page.keys(), ['2', '3']);
+  assert.equal(page.ui.loadError, '');
+});
+
+test('malformed reads retain existing cards instead of looking like an empty result', async () => {
+  let response = { jobs: [{ reviewKey: '1' }] };
+  const page = browser(async () => Response.json(response));
+  await page.load();
+  for (response of [
+    null,
+    {},
+    { jobs: [null] },
+    { jobs: [{ reviewKey: 1 }] },
+    { jobs: [{ reviewKey: '1' }, { reviewKey: '1' }] },
+  ]) {
+    await page.load();
+    assert.deepEqual(page.keys(), ['1']);
+    assert.match(page.ui.loadError, /Invalid jobs/);
+  }
+});
+
+test('continuity anchors a surviving neighbor and transfers focus without scrolling', async () => {
+  const page = browser();
+  const focused = { isConnected: true };
+  const focusCalls = [];
+  const scrollCalls = [];
+  const card = (key, top) => ({
+    dataset: { reviewKey: key },
+    top,
+    getBoundingClientRect() {
+      return { top: this.top, bottom: this.top + 300 };
+    },
+    contains: (element) => element === focused && key === '2',
+    querySelector: () => ({
+      focus: (options) => focusCalls.push([key, options.preventScroll]),
+    }),
+  });
+  const first = card('1', -400);
+  const second = card('2', -50);
+  const third = card('3', 274);
+  let cards = [first, second, third];
+  page.document.activeElement = focused;
+  page.document.querySelectorAll = () => cards;
+  page.window.scrollBy = (x, y) => scrollCalls.push([x, y]);
+  await page.ui.preservePosition(() => {
+    cards = [first, third];
+    third.top -= 324;
+    focused.isConnected = false;
+  });
+  assert.deepEqual(scrollCalls, [[0, -324]]);
+  assert.deepEqual(focusCalls, [['3', true]]);
+  // With no surviving cards, the selected tab is the only useful focus fallback.
+  focusCalls.length = 0;
+  page.document.activeElement = focused;
+  first.contains = () => true;
+  page.document.querySelector = (selector) => ({
+    focus: (options) => focusCalls.push([selector, options.preventScroll]),
+  });
+  await page.ui.preservePosition(() => {
+    cards = [];
+  });
+  assert.deepEqual(focusCalls, [['[data-status="active"]', true]]);
+});
+
+test('UI presentation helpers retain assessment data, metadata fallbacks and safe links', () => {
+  const { ui } = browser();
+  const job = {
+    eligibility: 'eligible',
+    reason: 'Remote',
+    evidence: '<b>Anywhere</b>',
+    stack_status: 'partial_match',
+    stack_reason: 'TypeScript',
+    stack_evidence: 'Go',
+  };
+  const [location, stack] = ui.assessments(job);
+  assert.equal(location.reason, job.reason);
+  assert.equal(location.evidence, job.evidence);
+  assert.equal(stack.label, 'partial match');
+  assert.equal(stack.reason, job.stack_reason);
+  assert.equal(stack.evidence, job.stack_evidence);
+  for (const value of [null, undefined, 42, '', '  '])
+    assert.equal(ui.displayText(value, 'Not provided'), 'Not provided');
+  assert.equal(ui.displayText(' Example ', 'Not provided'), 'Example');
   assert.equal(
-    pending.some((node) => node.tag === 'a'),
-    false,
+    ui.safeUrl('https://example.com/job'),
+    'https://example.com/job',
   );
-  assert.equal(pending.filter((node) => node.tag === 'details').length, 0);
-  assert.equal(
-    pending.filter(
-      (node) => node.textContent === 'No assessment available yet.',
-    ).length,
-    2,
-  );
-  assert.ok(
-    pending
-      .filter((node) => node.tag === 'button')
-      .every((node) => node.disabled),
-  );
+  for (const value of [
+    'javascript:alert(1)',
+    'data:text/html,test',
+    '/relative',
+    null,
+  ])
+    assert.equal(ui.safeUrl(value), null);
+  assert.match(UI_HTML, /x-for="job in visibleJobs" :key="job.reviewKey"/);
+  assert.match(UI_HTML, /x-text="job.title/);
+  assert.doesNotMatch(UI_HTML, /x-html|innerHTML/);
 });
 
 test('UI assessment filters work independently and in combination', () => {
@@ -472,6 +577,16 @@ test('HTTP UI lists eligibility and persists individual listing statuses', async
   assert.equal(page.status, 200);
   assert.equal(page.headers.get('content-type'), 'text/html; charset=utf-8');
   assert.equal(await page.text(), UI_HTML);
+  const alpine = await get('/alpine.js');
+  assert.equal(alpine.status, 200);
+  assert.equal(
+    alpine.headers.get('content-type'),
+    'text/javascript; charset=utf-8',
+  );
+  assert.equal(alpine.headers.get('cache-control'), 'no-store');
+  assert.match(await alpine.text(), /Alpine/);
+  assert.match(UI_HTML, /<script defer src="\/alpine.js"><\/script>/);
+  assert.equal((await get('/node_modules/alpinejs/package.json')).status, 404);
   assert.match(UI_HTML, /Location eligibility/);
   // Act: retrieve the active listings through the API.
   const jobs = (await (await get('/api/jobs')).json()).jobs;
