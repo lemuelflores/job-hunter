@@ -1,9 +1,38 @@
 import { DatabaseSync } from 'node:sqlite';
+import * as v from 'valibot';
 import type { StackDecision } from './review/llm/types.js';
 import { STAGES, type Stage } from './review/stages.js';
 
 export const REVIEW_STATUSES = ['active', 'hidden', 'rejected'] as const;
 export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
+
+const ReviewReasonSchema = v.pipe(
+  v.string(),
+  v.maxLength(5000),
+  v.trim(),
+  v.nonEmpty(),
+);
+const ReviewEvidenceSchema = v.pipe(v.string(), v.maxLength(5000));
+const ReviewMetadataSchema = v.pipe(v.string(), v.maxLength(1000));
+const LocationReviewSchema = v.object({
+  eligibility: v.picklist(['eligible', 'ineligible', 'unclear', 'error']),
+  reason: ReviewReasonSchema,
+  evidence: ReviewEvidenceSchema,
+  company: ReviewMetadataSchema,
+  location: ReviewMetadataSchema,
+  title: ReviewMetadataSchema,
+});
+const StackReviewSchema = v.object({
+  status: v.picklist([
+    'match',
+    'partial_match',
+    'potential_match',
+    'unclear',
+    'error',
+  ]),
+  reason: ReviewReasonSchema,
+  evidence: ReviewEvidenceSchema,
+});
 
 export { STAGES, type Stage } from './review/stages.js';
 export interface StageState {
@@ -340,11 +369,14 @@ export class SqliteStore {
     if (
       !Number.isSafeInteger(id) ||
       id < 1 ||
-      !['eligible', 'ineligible', 'unclear', 'error'].includes(eligibility) ||
-      !reason.trim() ||
-      reason.length > 5000 ||
-      evidence.length > 5000 ||
-      [company, location, title].some((value) => value.length > 1000)
+      !v.safeParse(LocationReviewSchema, {
+        eligibility,
+        reason,
+        evidence,
+        company,
+        location,
+        title,
+      }).success
     )
       throw new Error('Invalid review');
     this.completeStage(id, 'location', () => {
@@ -392,18 +424,7 @@ export class SqliteStore {
     if (
       !Number.isSafeInteger(id) ||
       id < 1 ||
-      ![
-        'match',
-        'partial_match',
-        'potential_match',
-        'unclear',
-        'error',
-      ].includes(decision.status) ||
-      typeof decision.reason !== 'string' ||
-      !decision.reason.trim() ||
-      decision.reason.length > 5000 ||
-      typeof decision.evidence !== 'string' ||
-      decision.evidence.length > 5000
+      !v.safeParse(StackReviewSchema, decision).success
     )
       throw new Error('Invalid stack review');
     this.completeStage(id, 'stack', () => {

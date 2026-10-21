@@ -76,6 +76,64 @@ test('invalid results and completed-stage guards reject unsafe writes', (t) => {
   assert.throws(() => store.reviewStack(1, stack), /not pending/);
 });
 
+test('review validation preserves pending data and accepts storage error decisions at length limits', (t) => {
+  const store = fixture(t);
+  const before = store.getJob(1);
+  const stages = store.stages(1);
+  for (const id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(
+      () => store.review(id, 'eligible', 'Valid'),
+      /Invalid review/,
+    );
+    assert.throws(() => store.reviewStack(id, stack), /Invalid stack review/);
+  }
+  for (const [reason, evidence, company, location, title] of [
+    [' \t'],
+    [null],
+    ['x'.repeat(5001)],
+    ['Valid', 'x'.repeat(5001)],
+    ['Valid', null],
+    ['Valid', '', 'x'.repeat(1001)],
+    ['Valid', '', '', 'x'.repeat(1001)],
+    ['Valid', '', '', '', 'x'.repeat(1001)],
+  ]) {
+    assert.throws(
+      () =>
+        store.review(1, 'eligible', reason, evidence, company, location, title),
+      /Invalid review/,
+    );
+  }
+  for (const decision of [
+    null,
+    {},
+    { ...stack, reason: ' \t' },
+    { ...stack, reason: null },
+    { ...stack, reason: 'x'.repeat(5001) },
+    { ...stack, evidence: null },
+    { ...stack, evidence: 'x'.repeat(5001) },
+  ]) {
+    assert.throws(() => store.reviewStack(1, decision), /Invalid stack review/);
+  }
+  assert.deepEqual(store.getJob(1), before);
+  assert.deepEqual(store.stages(1), stages);
+
+  const reason = ` ${'x'.repeat(4998)} `;
+  const evidence = 'x'.repeat(5000);
+  const metadata = 'x'.repeat(1000);
+  store.review(1, 'error', reason, evidence, metadata, metadata, metadata);
+  store.reviewStack(1, { status: 'error', reason, evidence, extra: 'ignored' });
+  const saved = store.getJob(1);
+  assert.equal(saved.eligibility, 'error');
+  assert.equal(saved.reason, reason);
+  assert.equal(saved.evidence, evidence);
+  assert.equal(saved.company, metadata);
+  assert.equal(saved.location, metadata);
+  assert.equal(saved.title, metadata);
+  assert.equal(saved.stack_status, 'error');
+  assert.equal(saved.stack_reason, reason);
+  assert.equal(saved.stack_evidence, evidence);
+});
+
 test('a failed result write rolls back stage completion and permits retry', async (t) => {
   // Arrange: use a second database connection to force result writes to fail.
   const root = await mkdtemp(join(tmpdir(), 'job-rollback-'));
