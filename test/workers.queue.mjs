@@ -6,15 +6,17 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { FetchQueue, ReviewQueues } from '../dist/bullmq.js';
-import { main } from '../dist/cli.js';
 import { startFetchScheduler } from '../dist/discovery/scheduler.js';
-import { startFetchWorker } from '../dist/discovery/worker.js';
+import { main } from '../dist/entrypoints/cli.js';
+import {
+  startCrawlWorker,
+  startFetchWorker,
+  startLocationWorker,
+  startTechWorker,
+} from '../dist/entrypoints/workers.js';
 import { loadProfile } from '../dist/profile.js';
-import { startCrawlWorker } from '../dist/review/crawl.js';
 import { createLlm } from '../dist/review/llm/index.js';
-import { startLocationWorker } from '../dist/review/location-check.js';
 import { reviewJobs } from '../dist/review/review-jobs.js';
-import { startTechWorker } from '../dist/review/tech-check.js';
 import { SqliteStore } from '../dist/sqlite.js';
 import {
   externalFixture,

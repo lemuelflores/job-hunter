@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { discoverJobs } from '../dist/discovery/discover.js';
 import { buildQueryMatrix } from '../dist/discovery/google.js';
-import { discoverJobs } from '../dist/discovery/worker.js';
 import { crawlJob } from '../dist/review/crawl.js';
 import { checkLocation } from '../dist/review/location-check.js';
 import { checkTech } from '../dist/review/tech-check.js';

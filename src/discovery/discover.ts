@@ -1,4 +1,3 @@
-import type { FetchQueue, ReviewQueues } from '../bullmq.js';
 import type { Profile } from '../profile.js';
 import type { SqliteStore } from '../sqlite.js';
 import {
@@ -37,19 +36,4 @@ export async function discoverJobs(
     pending: store.pendingCount(),
     failures: searched.failures.map((item) => `${item.query}: ${item.error}`),
   };
-}
-
-export function startFetchWorker(
-  store: SqliteStore,
-  queues: ReviewQueues,
-  queue: FetchQueue,
-  profile: Profile,
-) {
-  return queue.startWorker(async () => {
-    const { ids, ...outcome } = await discoverJobs(store, profile);
-    for (const id of ids) await queues.scheduleListing(store, id);
-    outcome.pending = store.pendingCount();
-    console.log(JSON.stringify(outcome));
-    if (outcome.failures.length) throw new Error(outcome.failures.join('; '));
-  });
 }

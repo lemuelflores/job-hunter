@@ -4,7 +4,7 @@ import { cp, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { main } from '../dist/cli.js';
+import { main } from '../dist/entrypoints/cli.js';
 import { SqliteStore } from '../dist/sqlite.js';
 
 // Shared Arrange: copy the application so path and broken-installation checks stay isolated.
@@ -16,10 +16,14 @@ async function fixture(t) {
   await symlink(resolve('node_modules'), join(root, 'node_modules'), 'dir');
   await cp(resolve('profile.ts'), join(root, 'profile.ts'));
   const cli = (...args) =>
-    spawnSync(process.execPath, [join(root, 'dist/cli.js'), ...args], {
-      cwd: tmpdir(),
-      encoding: 'utf8',
-    });
+    spawnSync(
+      process.execPath,
+      [join(root, 'dist/entrypoints/cli.js'), ...args],
+      {
+        cwd: tmpdir(),
+        encoding: 'utf8',
+      },
+    );
   return { root, cli };
 }
 
@@ -44,7 +48,7 @@ test('jobs reads the app-local database from another cwd without initializing a 
   // Act: list jobs with an unsupported provider configured.
   const withoutModel = spawnSync(
     process.execPath,
-    [join(root, 'dist/cli.js'), 'jobs'],
+    [join(root, 'dist/entrypoints/cli.js'), 'jobs'],
     {
       cwd: tmpdir(),
       encoding: 'utf8',

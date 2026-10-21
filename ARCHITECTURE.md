@@ -9,24 +9,26 @@ Job Hunter is a local, single-user application that discovers jobs, assesses rem
 ```text
 job-hunter/
 ├── src/
-│   ├── cli.ts                 # Commands, dependency construction, shutdown
+│   ├── entrypoints/
+│   │   ├── cli.ts             # Commands, dependency construction, shutdown
+│   │   └── workers.ts         # Four queue consumers and downstream delivery
 │   ├── discovery/
 │   │   ├── scheduler.ts       # UTC cron producer for queued discovery
-│   │   ├── worker.ts          # Direct discovery operation and queue consumer
+│   │   ├── discover.ts        # Direct discovery operation and persistence
 │   │   ├── job-url.ts         # ATS listing URL validation and normalization
 │   │   └── google.ts          # Query construction, search types, Autom.dev requests
 │   ├── review/
 │   │   ├── review-jobs.ts     # Enqueue unfinished listings and wait for outcomes
 │   │   ├── stages.ts          # Shared processing-stage names and type
-│   │   ├── crawl.ts           # Direct extraction/persistence and crawl consumer fan-out
+│   │   ├── crawl.ts           # Extraction routing, policy, and persistence
 │   │   ├── extraction/
 │   │   │   ├── types.ts       # Provider-neutral extraction contract and page errors
 │   │   │   ├── ashby.ts       # Board API client, posting selection, text rendering
 │   │   │   ├── greenhouse.ts  # Single-job API client, HTML-to-text extraction
 │   │   │   ├── lever.ts       # Global/EU posting API client, listing rendering
 │   │   │   └── firecrawl.ts   # Scrape API client, Markdown and page-error handling
-│   │   ├── location-check.ts  # Direct location assessment/persistence and consumer
-│   │   ├── tech-check.ts      # Direct stack assessment/persistence and consumer
+│   │   ├── location-check.ts  # Direct location assessment and persistence
+│   │   ├── tech-check.ts      # Direct stack assessment and persistence
 │   │   └── llm/
 │   │       ├── types.ts       # Provider contract and assessment types
 │   │       ├── index.ts       # Provider selection
@@ -62,7 +64,7 @@ job-hunter/
 
 The tree focuses on application code and operational files. Dependencies, tooling metadata, and local scratch artifacts are omitted.
 
-Feature directories own their workflows and workers. `review/` operations load saved listings, call integrations, and persist results; `review/llm/chatgpt/` owns provider-specific prompts, requests, and response validation without database writes. Ashby, Greenhouse, Lever, and Firecrawl are sibling strategies in `review/extraction/`, selected within `review/crawl.ts`; none uses another. Each provider module co-locates its HTTP client, Valibot response contract, and extraction logic. API functions return structured data; extraction functions call them to select/render a listing and apply page-error policy. Shared request options and page errors live in `review/extraction/types.ts`. Shared queue delivery and storage remain at the source root. File names use `tech-check`, while the existing queue and database stage remains named `stack`.
+Feature directories own their workflows; `entrypoints/` owns CLI composition and queue consumer wiring. Feature operations do not import entrypoints. `review/` operations load saved listings, call integrations, and persist results; `review/llm/chatgpt/` owns provider-specific prompts, requests, and response validation without database writes. Ashby, Greenhouse, Lever, and Firecrawl are sibling strategies in `review/extraction/`, selected within `review/crawl.ts`; none uses another. Each provider module co-locates its HTTP client, Valibot response contract, and extraction logic. API functions return structured data; extraction functions call them to select/render a listing and apply page-error policy. Shared request options and page errors live in `review/extraction/types.ts`. Shared queue delivery and storage remain at the source root. Operations intentionally accept the concrete SQLite store; no storage abstraction is required. File names use `tech-check`, while the existing queue and database stage remains named `stack`.
 
 ## 2. High-Level System Diagram
 
@@ -123,11 +125,11 @@ composition does not load the database implementation.
 
 **Name:** Command entry point and fetch worker.
 
-**Description:** `src/cli.ts` loads root-relative configuration, constructs dependencies only for commands that need them, dispatches commands, handles sign-in cancellation, and closes shared resources. Commands include `auth`, `fetch`, `scheduler`, `workers`, `review`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`. Feature modules own workflow lifecycles: `src/review/review-jobs.ts` owns review enqueueing and outcome waiting, and `src/web/server.ts` owns server startup and graceful shutdown.
+**Description:** `src/entrypoints/cli.ts` loads root-relative configuration, constructs dependencies only for commands that need them, dispatches commands, handles sign-in cancellation, and closes shared resources. Commands include `auth`, `fetch`, `scheduler`, `workers`, `review`, `repair`, `retry`, `stack-backfill`, `serve`, and `jobs`. Feature modules own workflow lifecycles: `src/review/review-jobs.ts` owns review enqueueing and outcome waiting, and `src/web/server.ts` owns server startup and graceful shutdown.
 
 `src/discovery/google.ts` builds one combined Google query across Ashby, Lever, and Greenhouse. All title, skill, and search-location terms come from the root profile: array groups are ANDed; canonical names and aliases within a group are ORed. Titles use `intitle:` and skills match page-wide. The builder adds neither a profession nor a remote clause. `searchLocation` controls discovery alternatives; `location` is the candidate's residence for assessment.
 
-`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. The directly callable `discoverJobs` in `src/discovery/worker.ts` validates and canonicalizes URLs through `src/discovery/job-url.ts` before passing accepted results to SQLite. It returns discovered unfinished listing IDs and an outcome (added/pending counts and query failures). The consumer schedules those IDs before logging the outcome and throwing for partial query failures. SQLite persists the supplied URLs and deduplicates by URL; it does not own ATS URL rules. Fetching does not assess jobs.
+`src/discovery/google.ts` calls Autom.dev, paginates, and deduplicates results; fetching requests up to 100 results. The directly callable `discoverJobs` in `src/discovery/discover.ts` validates and canonicalizes URLs through `src/discovery/job-url.ts` before passing accepted results to SQLite. It returns discovered unfinished listing IDs and an outcome (added/pending counts and query failures). The consumer schedules those IDs before logging the outcome and throwing for partial query failures. SQLite persists the supplied URLs and deduplicates by URL; it does not own ATS URL rules. Fetching does not assess jobs.
 
 Valibot validates search response containers and pagination; malformed result entries are skipped and invalid optional snippets/positions are omitted. If a later page fails, completed pages still reach persistence and scheduling alongside a reported query failure. Ashby and Lever UUIDs are normalized to lowercase without changing board-name casing.
 
@@ -137,7 +139,7 @@ Autom error messages are preserved verbatim, with an HTTP-status fallback only f
 
 `ReviewQueues` manages the three listing-stage queues and their persistence-aware recovery; `FetchQueue` independently manages discovery delivery. Assessment workers receive only their respective review method, with candidate settings attached by the CLI.
 
-`FetchQueue` in `src/bullmq.ts` owns a separate `fetch` queue with prefix `job-hunter`. Cron and manual `fetch` enqueue one complete discovery run with empty payload and BullMQ simple deduplication ID `fetch`, held until completion or failure. Global and local concurrency are one. `src/discovery/worker.ts` exposes `startFetchWorker`, which calls `discoverJobs` and owns downstream delivery and outcome logging. The CLI supplies the shared profile and starts this consumer alongside the review consumers in `workers`. All consumers drain active work before queues and SQLite close. Discovery is not a listing stage and has no `job_stages` row. Each task allows one attempt; partial search failures preserve successful results and mark the run failed without repeating paid searches automatically. Completed tasks are removed and the most recent 20 failures retained; a later trigger can run after either outcome. BullMQ stalled delivery recovery can still repeat external searches after a crash.
+`FetchQueue` in `src/bullmq.ts` owns a separate `fetch` queue with prefix `job-hunter`. Cron and manual `fetch` enqueue one complete discovery run with empty payload and BullMQ simple deduplication ID `fetch`, held until completion or failure. Global and local concurrency are one. `src/entrypoints/workers.ts` exposes `startFetchWorker`, which calls `discoverJobs` and owns downstream delivery and outcome logging. The CLI supplies the shared profile and starts this consumer alongside the review consumers in `workers`. All consumers drain active work before queues and SQLite close. Discovery is not a listing stage and has no `job_stages` row. Each task allows one attempt; partial search failures preserve successful results and mark the run failed without repeating paid searches automatically. Completed tasks are removed and the most recent 20 failures retained; a later trigger can run after either outcome. BullMQ stalled delivery recovery can still repeat external searches after a crash.
 
 **Technologies:** Node.js 22.18+, TypeScript ESM, native Fetch API, node-cron.
 
@@ -147,7 +149,7 @@ Autom error messages are preserved verbatim, with an HTTP-status fallback only f
 
 **Name:** Independent crawl, location, and stack consumers.
 
-**Description:** `src/review/crawl.ts`, `location-check.ts`, and `tech-check.ts` co-locate directly callable `crawlJob`, `checkLocation`, and `checkTech` operations with their consumer starters. Operations accept a store and listing ID, own active/readiness checks, checkpoint reuse, integration calls, and persistence, and propagate transient errors without marking delivery exhausted. Assessments receive only their LLM method; extraction accepts an optional listing extractor. `src/bullmq.ts` owns worker creation, delivery ID validation, attempts/backoff, failure bookkeeping, and recovery. Workers call the same operations as direct tests. The crawl consumer checks SQLite after the operation and enqueues missing assessments, including redelivery after a completed extraction checkpoint. The CLI starts all three consumers alongside discovery in one `workers` process and closes started consumers on shutdown or partial startup failure. Shutdown drains active tasks rather than cancelling their external calls. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
+**Description:** `src/review/crawl.ts`, `location-check.ts`, and `tech-check.ts` own directly callable `crawlJob`, `checkLocation`, and `checkTech` operations. Their consumer starters live together in `src/entrypoints/workers.ts`. Operations accept a store and listing ID, own active/readiness checks, checkpoint reuse, integration calls, and persistence, and propagate transient errors without marking delivery exhausted. Assessments receive only their LLM method; extraction accepts an optional listing extractor, with production provider selection remaining inside `crawlJob`. `src/bullmq.ts` owns worker creation, delivery ID validation, attempts/backoff, failure bookkeeping, and recovery. Workers call the same operations as direct tests. The crawl consumer checks SQLite after the operation and enqueues missing assessments, including redelivery after a completed extraction checkpoint. The CLI starts all three consumers alongside discovery in one `workers` process and closes started consumers on shutdown or partial startup failure. Shutdown drains active tasks rather than cancelling their external calls. Each stage has local and global concurrency one, so different stages can run concurrently but the same stage does not execute in parallel.
 
 Queues use prefix `job-hunter`, names `crawl`, `location`, and `stack`, payload `{ id }`, and stable per-queue IDs `listing-N`. Crawling saves listing text once and schedules both assessments. `src/review/crawl.ts` routes Ashby, Greenhouse, and Lever URLs to their unauthenticated public APIs. The Ashby adapter selects the exact UUID from the board response and saves its plain description with title, primary/secondary locations, address, workplace type, raw remote flag, employment type, department/team, and compensation metadata when provided. It does not interpret `isRemote` as fully remote; workplace type can still be Hybrid. The Greenhouse adapter requests one job with pay transparency enabled, verifies its returned posting ID, and saves all metadata plus its entity-decoded, HTML-to-text description. Lever requests one posting from the global or EU API matching the listing hostname and verifies its UUID. It saves opaque metadata plus the combined plain description, HTML-to-text lists with headings, closing text, and salary description, excluding duplicate HTML and opening/body fields. Processors consult SQLite before work; completed stages cannot overwrite saved results. Redelivered crawl tasks can enqueue missing assessments without extracting again.
 

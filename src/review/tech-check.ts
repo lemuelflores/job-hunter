@@ -1,4 +1,3 @@
-import type { ReviewQueues } from '../bullmq.js';
 import type { SqliteStore } from '../sqlite.js';
 import type { StackReviewer } from './llm/types.js';
 
@@ -18,18 +17,4 @@ export async function checkTech(
   });
   signal?.throwIfAborted();
   store.reviewStack(id, decision);
-}
-
-export function startTechWorker(
-  store: SqliteStore,
-  queues: ReviewQueues,
-  reviewStack: StackReviewer,
-  signal?: AbortSignal,
-) {
-  return queues.startWorker(
-    store,
-    'stack',
-    (id) => checkTech(store, id, reviewStack, signal),
-    signal,
-  );
 }

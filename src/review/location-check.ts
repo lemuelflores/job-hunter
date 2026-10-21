@@ -1,4 +1,3 @@
-import type { ReviewQueues } from '../bullmq.js';
 import type { SqliteStore } from '../sqlite.js';
 import type { LocationReviewer } from './llm/types.js';
 
@@ -25,19 +24,5 @@ export async function checkLocation(
     decision.company,
     decision.location,
     decision.title,
-  );
-}
-
-export function startLocationWorker(
-  store: SqliteStore,
-  queues: ReviewQueues,
-  reviewLocation: LocationReviewer,
-  signal?: AbortSignal,
-) {
-  return queues.startWorker(
-    store,
-    'location',
-    (id) => checkLocation(store, id, reviewLocation, signal),
-    signal,
   );
 }

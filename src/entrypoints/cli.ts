@@ -11,19 +11,19 @@ import {
   renderUsage,
   runCommand,
 } from 'citty';
-import type { FetchQueue, ReviewQueues } from './bullmq.js';
-import { loadProfile, type Profile } from './profile.js';
-import { createLlm } from './review/llm/index.js';
+import type { FetchQueue, ReviewQueues } from '../bullmq.js';
+import { loadProfile, type Profile } from '../profile.js';
+import { createLlm } from '../review/llm/index.js';
 import type {
   LlmProvider,
   LocationReviewer,
   StackReviewer,
-} from './review/llm/types.js';
-import { reviewJobs } from './review/review-jobs.js';
-import { STAGES } from './review/stages.js';
-import type { SqliteStore } from './sqlite.js';
+} from '../review/llm/types.js';
+import { reviewJobs } from '../review/review-jobs.js';
+import { STAGES } from '../review/stages.js';
+import type { SqliteStore } from '../sqlite.js';
 
-const ROOT = fileURLToPath(new URL('../', import.meta.url));
+const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const stageArg = {
   type: 'enum',
   options: [...STAGES],
@@ -111,35 +111,35 @@ const defaults: CliDependencies = {
   loadProfile,
   createLlm,
   createStore: async () => {
-    const { SqliteStore } = await import('./sqlite.js');
+    const { SqliteStore } = await import('../sqlite.js');
     return new SqliteStore(resolve(ROOT, 'jobs.sqlite'));
   },
   createReviewQueues: async () => {
-    const { ReviewQueues } = await import('./bullmq.js');
+    const { ReviewQueues } = await import('../bullmq.js');
     return new ReviewQueues();
   },
   createFetchQueue: async () => {
-    const { FetchQueue } = await import('./bullmq.js');
+    const { FetchQueue } = await import('../bullmq.js');
     return new FetchQueue();
   },
   startFetchScheduler: async (queue) => {
-    const { startFetchScheduler } = await import('./discovery/scheduler.js');
+    const { startFetchScheduler } = await import('../discovery/scheduler.js');
     return startFetchScheduler(queue);
   },
   startFetchWorker: async (store, queues, queue, profile) => {
-    const { startFetchWorker } = await import('./discovery/worker.js');
+    const { startFetchWorker } = await import('./workers.js');
     return startFetchWorker(store, queues, queue, profile);
   },
   startCrawlWorker: async (store, queues) => {
-    const { startCrawlWorker } = await import('./review/crawl.js');
+    const { startCrawlWorker } = await import('./workers.js');
     return startCrawlWorker(store, queues);
   },
   startLocationWorker: async (store, queues, reviewLocation) => {
-    const { startLocationWorker } = await import('./review/location-check.js');
+    const { startLocationWorker } = await import('./workers.js');
     return startLocationWorker(store, queues, reviewLocation);
   },
   startTechWorker: async (store, queues, reviewStack) => {
-    const { startTechWorker } = await import('./review/tech-check.js');
+    const { startTechWorker } = await import('./workers.js');
     return startTechWorker(store, queues, reviewStack);
   },
 };
@@ -312,7 +312,7 @@ export async function main(
       },
       run: async ({ args }) => {
         const port = integer(args.port, 65535);
-        const { serveReviewServer } = await import('./web/server.js');
+        const { serveReviewServer } = await import('../web/server.js');
         return serveReviewServer(await database(), port);
       },
     }),

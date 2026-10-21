@@ -1,4 +1,3 @@
-import type { ReviewQueues } from '../bullmq.js';
 import type { SqliteStore } from '../sqlite.js';
 import { fetchAshbyListing } from './extraction/ashby.js';
 import { scrapeListing as firecrawlListing } from './extraction/firecrawl.js';
@@ -43,24 +42,4 @@ export async function crawlJob(
   }
   signal?.throwIfAborted();
   store.saveListingText(id, text);
-}
-
-export function startCrawlWorker(
-  store: SqliteStore,
-  queues: ReviewQueues,
-  scrape?: ListingExtractor,
-  signal?: AbortSignal,
-) {
-  return queues.startWorker(
-    store,
-    'crawl',
-    async (id) => {
-      await crawlJob(store, id, scrape, signal);
-      // Redelivery repairs a save/enqueue interruption without extracting again.
-      for (const evaluation of ['location', 'stack'] as const)
-        if (store.needsStage(id, evaluation))
-          await queues.enqueue(evaluation, id);
-    },
-    signal,
-  );
 }

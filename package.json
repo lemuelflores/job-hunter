@@ -6,7 +6,7 @@
     "node": ">=22.18.0"
   },
   "bin": {
-    "job-hunter": "dist/cli.js"
+    "job-hunter": "dist/entrypoints/cli.js"
   },
   "scripts": {
     "check": "biome check .",
@@ -14,7 +14,7 @@
     "build": "tsc -p tsconfig.profile.json && tsc -p tsconfig.json && cp src/web/index.html dist/web/index.html",
     "test": "pnpm build && node --test test/*.test.mjs",
     "test:queue": "pnpm build && node --test test/workers.queue.mjs",
-    "job-hunter": "node dist/cli.js"
+    "job-hunter": "node dist/entrypoints/cli.js"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
