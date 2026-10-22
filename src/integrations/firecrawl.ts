@@ -3,7 +3,7 @@ import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from './types.js';
+} from './extraction.js';
 
 const PageUrl = v.pipe(
   v.string(),

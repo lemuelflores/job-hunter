@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path';
-import { loadEnvFile } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import type { Worker } from 'bullmq';
@@ -12,26 +11,24 @@ import {
   renderUsage,
   runCommand,
 } from 'citty';
+import { STAGES } from '../core/stages.js';
 import type {
   DiscoveryQueue,
   DiscoveryTarget,
   ReviewQueues,
-} from '../bullmq.js';
-import type { FreehireConfig } from '../discovery/freehire.js';
-import { GOOGLE_ATS, type GoogleAts } from '../discovery/job-url.js';
-import type { DiscoverySchedules } from '../discovery/scheduler.js';
-import { loadProfile, type Profile } from '../profile.js';
-import { createLlm } from '../review/llm/index.js';
+} from '../infra/bullmq.js';
+import { loadEnvironment, type Profile } from '../infra/config.js';
+import type { SqliteStore } from '../infra/sqlite.js';
 import type {
   LlmProvider,
   LocationReviewer,
   StackReviewer,
-} from '../review/llm/types.js';
-import { reviewJobs } from '../review/review-jobs.js';
-import { STAGES } from '../review/stages.js';
-import type { SqliteStore } from '../sqlite.js';
+} from '../integrations/llm/types.js';
+import type { FreehireConfig } from '../integrations/search/freehire.js';
+import { reviewJobs } from '../workflow/review-jobs.js';
+import { cliDependencies, GOOGLE_ATS, type GoogleAts } from './compose.js';
+import type { DiscoverySchedules } from './scheduler.js';
 
-const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const stageArg = {
   type: 'enum',
   options: [...STAGES],
@@ -78,14 +75,6 @@ async function authenticate(llm: LlmProvider) {
   } finally {
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
-  }
-}
-
-function loadEnvironment() {
-  try {
-    loadEnvFile(resolve(ROOT, '.env'));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 }
 
@@ -142,54 +131,11 @@ export interface CliDependencies {
   ): Promise<Worker>;
 }
 
-const defaults: CliDependencies = {
-  loadProfile,
-  createLlm,
-  createStore: async () => {
-    const { SqliteStore } = await import('../sqlite.js');
-    return new SqliteStore(resolve(ROOT, 'jobs.sqlite'));
-  },
-  createReviewQueues: async () => {
-    const { ReviewQueues } = await import('../bullmq.js');
-    return new ReviewQueues();
-  },
-  createDiscoveryQueue: async (source) => {
-    const { DiscoveryQueue } = await import('../bullmq.js');
-    return new DiscoveryQueue(source);
-  },
-  startDiscoveryScheduler: async (options) => {
-    const { startDiscoveryScheduler } = await import(
-      '../discovery/scheduler.js'
-    );
-    return startDiscoveryScheduler(options);
-  },
-  startGoogleWorker: async (store, queues, queue, profile, ats) => {
-    const { startGoogleWorker } = await import('./workers.js');
-    return startGoogleWorker(store, queues, queue, profile, ats);
-  },
-  startFreehireWorker: async (store, queues, queue, config) => {
-    const { startFreehireWorker } = await import('./workers.js');
-    return startFreehireWorker(store, queues, queue, config);
-  },
-  startCrawlWorker: async (store, queues) => {
-    const { startCrawlWorker } = await import('./workers.js');
-    return startCrawlWorker(store, queues);
-  },
-  startLocationWorker: async (store, queues, reviewLocation) => {
-    const { startLocationWorker } = await import('./workers.js');
-    return startLocationWorker(store, queues, reviewLocation);
-  },
-  startTechWorker: async (store, queues, reviewStack) => {
-    const { startTechWorker } = await import('./workers.js');
-    return startTechWorker(store, queues, reviewStack);
-  },
-};
-
 export async function main(
   argv = process.argv.slice(2),
   dependencies: Partial<CliDependencies> = {},
 ): Promise<number> {
-  const deps = { ...defaults, ...dependencies };
+  const deps = { ...cliDependencies, ...dependencies };
   let store: SqliteStore | undefined;
   let queues: ReviewQueues | undefined;
   const discoveryQueues: Partial<Record<DiscoveryTarget, DiscoveryQueue>> = {};
@@ -322,10 +268,15 @@ export async function main(
       run: async ({ args }) => {
         const limit =
           args.limit === undefined ? undefined : integer(args.limit);
+        const store = await database();
+        const queues = await reviewQueues();
         report(
           await reviewJobs(
-            await database(),
-            await reviewQueues(),
+            store,
+            async (stage, id) => {
+              await queues.enqueue(stage, id);
+            },
+            (id) => queues.syncFailures(store, id),
             limit,
             processingSignal(),
           ),

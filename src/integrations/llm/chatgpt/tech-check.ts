@@ -1,5 +1,6 @@
 import * as v from 'valibot';
-import type { StackAssessmentInput, StackDecision } from '../types.js';
+import type { StackDecision } from '../../../core/listing.js';
+import type { StackAssessmentInput } from '../types.js';
 import { type ChatgptRequest, request } from './request.js';
 
 const stackSchema = {

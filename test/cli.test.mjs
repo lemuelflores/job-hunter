@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { main } from '../dist/entrypoints/cli.js';
-import { SqliteStore } from '../dist/sqlite.js';
+import { SqliteStore } from '../dist/infra/sqlite.js';
 
 // Shared Arrange: copy the application so path and broken-installation checks stay isolated.
 async function fixture(t) {
@@ -172,7 +172,7 @@ test('CLI loads profiles only for commands that need them', async (t) => {
 test('CLI help works without the database implementation installed', async (t) => {
   // Arrange: remove the copied database module.
   const { root, cli } = await fixture(t);
-  await rm(join(root, 'dist/sqlite.js'));
+  await rm(join(root, 'dist/infra/sqlite.js'));
   for (const args of [[], ['--help'], ['review', '--help'], ['retry', '-h']]) {
     // Act: request global or command-specific usage.
     const help = cli(...args);
@@ -208,7 +208,7 @@ test('queue module imports without loading SQLite or connecting to Redis', () =>
         throw new Error('SQLite loading denied');
       return nextResolve(specifier, context);
     }});
-    await import(${JSON.stringify(new URL('../dist/bullmq.js', import.meta.url).href)});
+    await import(${JSON.stringify(new URL('../dist/infra/bullmq.js', import.meta.url).href)});
   `,
     ],
     { encoding: 'utf8', timeout: 10000 },

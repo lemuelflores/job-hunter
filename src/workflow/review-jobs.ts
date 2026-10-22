@@ -1,15 +1,19 @@
 import timers from 'node:timers/promises';
-import type { ReviewQueues } from '../bullmq.js';
-import type { SqliteStore } from '../sqlite.js';
+import type { SqliteStore } from '../infra/sqlite.js';
+import {
+  type EnqueueStage,
+  enqueueMissingStages,
+  type SyncListingFailures,
+} from './enqueue.js';
 
 async function reviewOutcome(
   store: SqliteStore,
-  queues: ReviewQueues,
+  syncFailures: SyncListingFailures,
   id: number,
 ) {
   if (store.getJob(id)?.status !== 'active')
     return [`Job ${id}: no longer active`];
-  await queues.syncFailures(store, id);
+  await syncFailures(id);
   const states = store.stages(id);
   const crawlFailed =
     store.getJob(id)?.listing_text === null &&
@@ -22,21 +26,25 @@ async function reviewOutcome(
 
 export async function reviewJobs(
   store: SqliteStore,
-  queues: ReviewQueues,
+  enqueue: EnqueueStage,
+  syncFailures: SyncListingFailures,
   limit?: number,
   signal?: AbortSignal,
 ) {
   if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1))
     throw new Error('Invalid review limit');
   const jobs = store.unfinished(limit);
-  for (const job of jobs) await queues.scheduleListing(store, job.id);
+  for (const job of jobs) {
+    await syncFailures(job.id);
+    await enqueueMissingStages(store, job.id, enqueue);
+  }
   const failures: string[] = [];
   let reviewed = 0;
   const waiting = new Set(jobs.map((job) => job.id));
   while (waiting.size) {
     signal?.throwIfAborted();
     for (const id of waiting) {
-      const errors = await reviewOutcome(store, queues, id);
+      const errors = await reviewOutcome(store, syncFailures, id);
       if (errors === null) continue;
       failures.push(...errors);
       if (!errors.length) reviewed++;

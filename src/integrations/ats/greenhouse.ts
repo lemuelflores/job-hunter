@@ -1,12 +1,34 @@
 import { decodeHTML } from 'entities';
 import { convert } from 'html-to-text';
 import * as v from 'valibot';
-import { normalizeJobUrl } from '../../discovery/job-url.js';
 import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from './types.js';
+} from '../extraction.js';
+import type { AtsDefinition } from './types.js';
+import { parseListingUrl } from './url.js';
+
+const hosts = ['job-boards.greenhouse.io', 'boards.greenhouse.io'] as const;
+
+export function normalizeGreenhouseUrl(raw: string): string | null {
+  const parsed = parseListingUrl(raw, hosts);
+  if (
+    parsed?.parts.length !== 3 ||
+    parsed.parts[1] !== 'jobs' ||
+    !/^\d+$/.test(parsed.parts[2])
+  )
+    return null;
+  parsed.url.hostname = hosts[0];
+  return parsed.url.href;
+}
+
+export const greenhouse = {
+  selector: 'greenhouse',
+  hosts,
+  normalizeUrl: normalizeGreenhouseUrl,
+  extract: fetchGreenhouseListing,
+} as const satisfies AtsDefinition;
 
 const JobResponse = v.looseObject({
   id: v.pipe(v.number(), v.safeInteger(), v.minValue(1)),
@@ -49,7 +71,7 @@ export async function fetchGreenhouseListing(
   url: string,
   options: ExtractionOptions = {},
 ): Promise<ExtractedListing> {
-  const validated = normalizeJobUrl(url);
+  const validated = normalizeGreenhouseUrl(url);
   if (!validated) throw new Error('Invalid Greenhouse listing URL');
   const parsed = new URL(validated);
   if (parsed.hostname !== 'job-boards.greenhouse.io')

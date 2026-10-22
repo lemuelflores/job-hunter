@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { SqliteStore } from '../dist/sqlite.js';
+import { SqliteStore } from '../dist/infra/sqlite.js';
 import {
   listenReviewServer,
   serveReviewServer,

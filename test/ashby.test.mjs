@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fetchAshbyListing } from '../dist/review/extraction/ashby.js';
-import { PageError } from '../dist/review/extraction/types.js';
+import { fetchAshbyListing } from '../dist/integrations/ats/ashby.js';
+import { PageError } from '../dist/integrations/extraction.js';
 
 const ashbyId = '12345678-abcd-abcd-abcd-123456789abc';
 const ashbyUrl = `https://jobs.ashbyhq.com/Example%20Board/${ashbyId}`;

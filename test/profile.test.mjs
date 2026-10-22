@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { loadProfile, validateProfile } from '../dist/profile.js';
+import { loadProfile, validateProfile } from '../dist/infra/config.js';
 import { profile } from './fixtures/workflow.mjs';
 
 test('profile requires candidate location, flat stack and explicit source enablement', () => {
@@ -201,7 +201,7 @@ test('module loading reports bad files and preserves native module caching', asy
 test('root profile loads relative to the application outside cwd', async () => {
   const actual = await loadProfile();
   assert.deepEqual(actual, (await import('../profile.ts')).default);
-  const moduleUrl = new URL('../dist/profile.js', import.meta.url).href;
+  const moduleUrl = new URL('../dist/infra/config.js', import.meta.url).href;
   const child = spawnSync(
     process.execPath,
     [

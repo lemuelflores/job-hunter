@@ -1,5 +1,5 @@
-import type { SqliteStore } from '../sqlite.js';
-import type { LocationReviewer } from './llm/types.js';
+import type { SqliteStore } from '../infra/sqlite.js';
+import type { LocationReviewer } from '../integrations/llm/types.js';
 
 export async function checkLocation(
   store: SqliteStore,

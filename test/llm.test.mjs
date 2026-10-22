@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createLlm } from '../dist/review/llm/index.js';
+import { createLlm } from '../dist/entrypoints/compose.js';
 
 test('provider selection defaults to ChatGPT and rejects unsupported providers', (t) => {
   // Arrange: isolate provider configuration from the environment.

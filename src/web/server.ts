@@ -6,11 +6,8 @@ import {
   type ServerResponse,
 } from 'node:http';
 import * as v from 'valibot';
-import {
-  REVIEW_STATUSES,
-  type ReviewStatus,
-  type SqliteStore,
-} from '../sqlite.js';
+import { REVIEW_STATUSES, type ReviewStatus } from '../core/listing.js';
+import type { SqliteStore } from '../infra/sqlite.js';
 import type { UpdateJobStatusRequest } from './types.js';
 
 export const UI_HTML = readFileSync(

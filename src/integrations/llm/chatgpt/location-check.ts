@@ -1,5 +1,6 @@
 import * as v from 'valibot';
-import type { Decision, LocationAssessmentInput } from '../types.js';
+import type { Decision } from '../../../core/listing.js';
+import type { LocationAssessmentInput } from '../types.js';
 import { type ChatgptRequest, request } from './request.js';
 
 export function locationRule(location: string): string {

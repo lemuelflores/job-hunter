@@ -1,4 +1,38 @@
 import * as v from 'valibot';
+import type {
+  NormalizeListingUrl,
+  SearchDiscovery,
+  SearchOutcome,
+} from './types.js';
+
+export async function searchFreehireListings(
+  config: FreehireConfig,
+  normalizeUrl: NormalizeListingUrl,
+  options: FreehireSearchOptions = {},
+): Promise<SearchOutcome> {
+  const query = JSON.stringify(config);
+  const searched = await searchFreehire(config, options);
+  return {
+    discoveries: searched.jobs.flatMap<SearchDiscovery>((job) => {
+      const url = normalizeUrl(job.url);
+      const { url: _originalUrl, description, ...metadata } = job;
+      return url
+        ? [
+            {
+              kind: 'full-text',
+              source: 'freehire',
+              url,
+              title: job.title,
+              query,
+              postedAt: job.posted_at,
+              listingText: `Freehire listing metadata:\n${JSON.stringify(metadata)}\n\n${description}`,
+            },
+          ]
+        : [];
+    }),
+    failures: searched.failures,
+  };
+}
 
 export interface FreehireConfig {
   [key: string]: string | string[] | number | boolean | undefined;

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   googleSearch,
   runParallelGoogleSearchesDetailed,
-} from '../dist/discovery/google.js';
+} from '../dist/integrations/search/google.js';
 
 // Shared Arrange: isolate API credentials and fetch, then restore both after each test.
 function mock(t, fetcher) {

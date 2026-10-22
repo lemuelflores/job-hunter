@@ -1,5 +1,45 @@
 import * as v from 'valibot';
-import { ATS_HOSTS, type GoogleAts } from './job-url.js';
+import type { AtsDefinition } from '../ats/types.js';
+import type { SearchDiscovery, SearchOutcome } from './types.js';
+
+export async function searchGoogleListings(
+  config: GoogleConfig,
+  ats: AtsDefinition,
+): Promise<SearchOutcome> {
+  const searched = await runParallelGoogleSearchesDetailed(
+    [scopedGoogleQuery(config.query, ats.hosts)],
+    { num: 100 },
+  );
+  return {
+    discoveries: searched.results.flatMap<SearchDiscovery>((result) => {
+      const url = ats.normalizeUrl(result.url);
+      return url ? [{ kind: 'url', source: 'google', ...result, url }] : [];
+    }),
+    failures: searched.failures.map((item) => `${item.query}: ${item.error}`),
+  };
+}
+
+export interface GoogleConfig {
+  enabled: boolean;
+  query: string;
+}
+
+export const GoogleSchema: v.GenericSchema<unknown, GoogleConfig> = v.pipe(
+  v.strictObject({
+    enabled: v.boolean(),
+    query: v.pipe(
+      v.string(),
+      v.check(isGoogleBaseQuery, 'Base query must not contain site: operators'),
+    ),
+  }),
+  v.forward(
+    v.check(
+      (value) => !value.enabled || Boolean(value.query.trim()),
+      'Query must not be blank when Google is enabled',
+    ),
+    ['query'],
+  ),
+);
 
 export interface SearchResult {
   title: string;
@@ -26,12 +66,14 @@ export function isGoogleBaseQuery(query: string): boolean {
   return !/(^|[\s(+-])site\s*:/i.test(query);
 }
 
-export function googleAtsQuery(query: string, ats: GoogleAts): string {
+export function scopedGoogleQuery(
+  query: string,
+  hosts: readonly string[],
+): string {
   const base = normalizeGoogleQuery(query);
   if (!isGoogleBaseQuery(base))
     throw new Error('Google base query must not contain site: operators');
-  if (!Object.hasOwn(ATS_HOSTS, ats)) throw new Error(`Unknown ATS: ${ats}`);
-  return `(${base}) (${ATS_HOSTS[ats].map((host) => `site:${host}`).join(' OR ')})`;
+  return `(${base}) (${hosts.map((host) => `site:${host}`).join(' OR ')})`;
 }
 
 const OrganicResult = v.object({

@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
+import { createChatgpt } from '../dist/integrations/llm/chatgpt/index.js';
 import {
   locationRule,
   parseDecision,
-} from '../dist/review/llm/chatgpt/location-check.js';
-import { createRequest } from '../dist/review/llm/chatgpt/request.js';
-import { parseStackDecision } from '../dist/review/llm/chatgpt/tech-check.js';
-import { createChatgpt } from '../dist/review/llm/index.js';
+} from '../dist/integrations/llm/chatgpt/location-check.js';
+import { createRequest } from '../dist/integrations/llm/chatgpt/request.js';
+import { parseStackDecision } from '../dist/integrations/llm/chatgpt/tech-check.js';
 import {
   AuthenticationError,
   RateLimitError,
-} from '../dist/review/llm/types.js';
+} from '../dist/integrations/llm/types.js';
 
 const getCredentials = mock.fn(async () => ({
   type: 'oauth',

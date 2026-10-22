@@ -1,7 +1,12 @@
 import { createNodeRedisClient, Queue, RedisConnection, Worker } from 'bullmq';
 import { createClient } from 'redis';
-import type { GoogleAts } from './discovery/job-url.js';
-import { STAGES, type Stage } from './review/stages.js';
+import { STAGES, type Stage } from '../core/stages.js';
+import type { GoogleAts } from '../entrypoints/compose.js';
+import {
+  type DiscoveryDeliveryResult,
+  DiscoveryPartialFailure,
+} from '../workflow/discover.js';
+import { enqueueMissingStages } from '../workflow/enqueue.js';
 import type { SqliteStore } from './sqlite.js';
 import {
   deliveryEvent,
@@ -54,22 +59,6 @@ function listingIdentity(store: SqliteStore, id: number) {
   if (!Number.isSafeInteger(id) || id < 1) return {};
   const listing = store.deliveryListing(id);
   return { listing_id: id, ...(listing ? { url: safeUrl(listing.url) } : {}) };
-}
-
-export interface DiscoveryDeliveryResult {
-  added: number;
-  pending: number;
-  failure_count: number;
-}
-
-export class DiscoveryPartialFailure extends Error {
-  constructor(
-    readonly result: DiscoveryDeliveryResult,
-    failures: string[],
-  ) {
-    super(failures.join('; '));
-    this.name = 'DiscoveryPartialFailure';
-  }
 }
 
 export class DiscoveryQueue {
@@ -294,8 +283,14 @@ export class ReviewQueues {
 
   async scheduleListing(store: SqliteStore, id: number, only?: Stage) {
     await this.syncFailures(store, id);
-    for (const stage of only ? [only] : STAGES)
-      if (store.needsStage(id, stage)) await this.enqueue(stage, id);
+    await enqueueMissingStages(
+      store,
+      id,
+      async (stage, id) => {
+        await this.enqueue(stage, id);
+      },
+      only,
+    );
   }
 
   async repair(store: SqliteStore, only?: Stage) {

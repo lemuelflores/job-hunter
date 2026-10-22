@@ -1,10 +1,27 @@
 import * as v from 'valibot';
-import { normalizeJobUrl } from '../../discovery/job-url.js';
 import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from './types.js';
+} from '../extraction.js';
+import type { AtsDefinition } from './types.js';
+import { parseListingUrl, UUID } from './url.js';
+
+const hosts = ['jobs.ashbyhq.com'] as const;
+
+export function normalizeAshbyUrl(raw: string): string | null {
+  const parsed = parseListingUrl(raw, hosts);
+  if (parsed?.parts.length !== 2 || !UUID.test(parsed.parts[1])) return null;
+  parsed.url.pathname = `/${parsed.parts[0]}/${parsed.parts[1].toLowerCase()}`;
+  return parsed.url.href;
+}
+
+export const ashby = {
+  selector: 'ashby',
+  hosts,
+  normalizeUrl: normalizeAshbyUrl,
+  extract: fetchAshbyListing,
+} as const satisfies AtsDefinition;
 
 const BoardResponse = v.object({
   jobs: v.array(
@@ -42,7 +59,7 @@ export async function fetchAshbyListing(
   url: string,
   options: ExtractionOptions = {},
 ): Promise<ExtractedListing> {
-  const validated = normalizeJobUrl(url);
+  const validated = normalizeAshbyUrl(url);
   if (!validated) throw new Error('Invalid Ashby listing URL');
   const parsed = new URL(validated);
   if (parsed.hostname !== 'jobs.ashbyhq.com')
@@ -52,7 +69,7 @@ export async function fetchAshbyListing(
   const data = await fetchBoard(decodeURIComponent(board), options);
   const requestedId = id.toLowerCase();
   const matches = data.jobs.filter((candidate, index) => {
-    const canonical = normalizeJobUrl(candidate.jobUrl);
+    const canonical = normalizeAshbyUrl(candidate.jobUrl);
     const postingUrl = canonical ? new URL(canonical) : null;
     const [postingBoard, postingId] =
       postingUrl?.pathname.slice(1).split('/') ?? [];

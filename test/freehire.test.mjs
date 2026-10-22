@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  ATS_DEFINITIONS,
+  createFreehireSearch,
+  createGoogleSearch,
+  normalizeFreehireUrl,
+} from '../dist/entrypoints/compose.js';
+import { SqliteStore } from '../dist/infra/sqlite.js';
+import { searchFreehire } from '../dist/integrations/search/freehire.js';
+import { scopedGoogleQuery } from '../dist/integrations/search/google.js';
+import {
   discoverFreehireJobs,
   discoverGoogleJobs,
-} from '../dist/discovery/discover.js';
-import { searchFreehire } from '../dist/discovery/freehire.js';
-import { googleAtsQuery } from '../dist/discovery/google.js';
-import { normalizeFreehireUrl } from '../dist/discovery/job-url.js';
-import { checkLocation } from '../dist/review/location-check.js';
-import { checkTech } from '../dist/review/tech-check.js';
-import { SqliteStore } from '../dist/sqlite.js';
+} from '../dist/workflow/discover.js';
+import { checkLocation } from '../dist/workflow/location-check.js';
+import { checkTech } from '../dist/workflow/tech-check.js';
 import {
   externalFixture,
   profile,
@@ -103,7 +108,12 @@ test('Freehire posting dates survive ingestion separately from discovery and red
     { ...job(5), posted_at: '2026-02-30T00:00:00Z' },
   ];
   const options = { fetch: async (url) => page(url, data) };
-  await discoverFreehireJobs(store, config, options);
+  await discoverFreehireJobs(
+    store,
+    createFreehireSearch(config, options),
+    async () => {},
+    async () => {},
+  );
   const first = store.listReviewJobs('active').find((row) => row.id === 1);
   assert.equal(first.posted_at, '2025-01-02T12:00:00.000Z');
   assert.ok(first.first_seen > first.posted_at);
@@ -113,7 +123,12 @@ test('Freehire posting dates survive ingestion separately from discovery and red
     { ...job(1), posted_at: '2026-10-20T00:00:00Z' },
     { ...job(2), posted_at: posted },
   ];
-  await discoverFreehireJobs(store, config, options);
+  await discoverFreehireJobs(
+    store,
+    createFreehireSearch(config, options),
+    async () => {},
+    async () => {},
+  );
   assert.equal(store.getJob(1).posted_at, first.posted_at);
   assert.equal(store.getJob(1).first_seen, first.first_seen);
   assert.equal(store.getJob(2).posted_at, first.posted_at);
@@ -438,7 +453,19 @@ test('Freehire saves descriptions/checkpoints and both real assessments without 
         ])
       : undefined,
   );
-  const outcome = await discoverFreehireJobs(store, config);
+  const enqueued = [];
+  const outcome = await discoverFreehireJobs(
+    store,
+    createFreehireSearch(config),
+    async (stage, id) => {
+      enqueued.push({ stage, id });
+    },
+    async () => {},
+  );
+  assert.deepEqual(enqueued, [
+    { stage: 'location', id: 1 },
+    { stage: 'stack', id: 1 },
+  ]);
   assert.equal(outcome.added, 1);
   assert.equal(store.getJob(1).url, original);
   assert.equal(store.getJob(1).title, 'Freehire engineer');
@@ -469,6 +496,38 @@ test('Freehire saves descriptions/checkpoints and both real assessments without 
   assert.ok(!techRequest.includes(profile.review.location));
 });
 
+test('partial Freehire discovery dispatches saved full text before surfacing failure', async (t) => {
+  const store = new SqliteStore(':memory:');
+  t.after(() => store.close());
+  externalFixture(t, ({ url }) =>
+    url.searchParams.get('offset') === '0'
+      ? page(url, [job()], 2)
+      : new Response('', { status: 503 }),
+  );
+  const enqueued = [];
+  await assert.rejects(
+    discoverFreehireJobs(
+      store,
+      createFreehireSearch({ ...config, limit: 1 }),
+      async (stage, id) => {
+        enqueued.push({ stage, id });
+      },
+      async () => {},
+    ),
+    (error) => {
+      assert.equal(error.name, 'DiscoveryPartialFailure');
+      assert.match(error.message, /503/);
+      assert.deepEqual(enqueued, [
+        { stage: 'location', id: 1 },
+        { stage: 'stack', id: 1 },
+      ]);
+      assert.equal(store.stages(1)[0].state, 'complete');
+      assert.ok(store.getJob(1).listing_text.endsWith(job().description));
+      return true;
+    },
+  );
+});
+
 test('Freehire keeps the original config snapshot when search settings change', async (t) => {
   const store = new SqliteStore(':memory:');
   t.after(() => store.close());
@@ -483,11 +542,21 @@ test('Freehire keeps the original config snapshot when search settings change', 
   externalFixture(t, ({ url }) =>
     url.hostname === 'freehire.me' ? page(url, [job(1), job(id)]) : undefined,
   );
-  await discoverFreehireJobs(store, settings);
+  await discoverFreehireJobs(
+    store,
+    createFreehireSearch(settings),
+    async () => {},
+    async () => {},
+  );
   settings.skills.push('typescript');
   settings.salary_min = 1000;
   id = 2;
-  await discoverFreehireJobs(store, settings);
+  await discoverFreehireJobs(
+    store,
+    createFreehireSearch(settings),
+    async () => {},
+    async () => {},
+  );
   const rows = store.listReviewJobs('active');
   assert.equal(rows.find((row) => row.id === 1).query, original);
   assert.equal(
@@ -514,8 +583,20 @@ test('cross-source ingestion preserves canonical identities in both arrival orde
           organic_results: [{ link: result(1).url, title: 'Google engineer' }],
         });
     });
-    const google = () => discoverGoogleJobs(store, profile, 'greenhouse');
-    const freehire = () => discoverFreehireJobs(store, config);
+    const google = () =>
+      discoverGoogleJobs(
+        store,
+        createGoogleSearch(profile.google, 'greenhouse'),
+        async () => {},
+        async () => {},
+      );
+    const freehire = () =>
+      discoverFreehireJobs(
+        store,
+        createFreehireSearch(config),
+        async () => {},
+        async () => {},
+      );
     await (first === 'google' ? google() : freehire());
     const originalQuery = store.getJob(1).query;
     await (first === 'google' ? freehire() : google());
@@ -524,7 +605,12 @@ test('cross-source ingestion preserves canonical identities in both arrival orde
     assert.equal(
       originalQuery,
       first === 'google'
-        ? googleAtsQuery(profile.google.query, 'greenhouse')
+        ? scopedGoogleQuery(
+            profile.google.query,
+            ATS_DEFINITIONS.find(
+              (definition) => definition.selector === 'greenhouse',
+            ).hosts,
+          )
         : JSON.stringify(config),
     );
     assert.equal(store.listReviewJobs('active').length, 1);

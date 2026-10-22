@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PageError } from '../dist/review/extraction/types.js';
 import {
   fetchJob,
   fetchWorkableListing,
-} from '../dist/review/extraction/workable.js';
+} from '../dist/integrations/ats/workable.js';
+import { PageError } from '../dist/integrations/extraction.js';
 
 const id = 'AB1234CDEF';
 const url = `https://apply.workable.com/example/j/${id}`;

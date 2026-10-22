@@ -1,11 +1,36 @@
 import { convert } from 'html-to-text';
 import * as v from 'valibot';
-import { normalizeJobUrl } from '../../discovery/job-url.js';
 import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from './types.js';
+} from '../extraction.js';
+import type { AtsDefinition } from './types.js';
+import { parseListingUrl } from './url.js';
+
+const hosts = ['apply.workable.com'] as const;
+
+export function normalizeWorkableUrl(raw: string): string | null {
+  const parsed = parseListingUrl(raw, hosts);
+  if (
+    !parsed ||
+    ![2, 3].includes(parsed.parts.length) ||
+    parsed.parts.at(-2) !== 'j'
+  )
+    return null;
+  const id = parsed.parts.at(-1);
+  if (!id || !/^[a-f0-9]{10}$/i.test(id)) return null;
+  // shortcut: short and account-scoped URLs deduplicate separately; unify if duplicates appear.
+  parsed.url.pathname = `${parsed.parts.length === 3 ? `/${parsed.parts[0]}` : ''}/j/${id.toUpperCase()}`;
+  return parsed.url.href;
+}
+
+export const workable = {
+  selector: 'workable',
+  hosts,
+  normalizeUrl: normalizeWorkableUrl,
+  extract: fetchWorkableListing,
+} as const satisfies AtsDefinition;
 
 const Shortcode = v.pipe(v.string(), v.regex(/^[a-f0-9]{10}$/i));
 const JobResponse = v.looseObject({
@@ -67,7 +92,7 @@ async function resolveShortLink(
     throw new WorkableApiError(response.status);
   const location = response.headers.get('location');
   const resolved = location
-    ? normalizeJobUrl(new URL(location, url).href)
+    ? normalizeWorkableUrl(new URL(location, url).href)
     : null;
   if (!resolved || new URL(resolved).hostname !== 'apply.workable.com')
     throw new Error('Invalid Workable short-link redirect');
@@ -81,7 +106,7 @@ export async function fetchWorkableListing(
   url: string,
   options: ExtractionOptions = {},
 ): Promise<ExtractedListing> {
-  const validated = normalizeJobUrl(url);
+  const validated = normalizeWorkableUrl(url);
   if (!validated || new URL(validated).hostname !== 'apply.workable.com')
     throw new Error('Invalid Workable listing URL');
   const parts = new URL(validated).pathname.slice(1).split('/');

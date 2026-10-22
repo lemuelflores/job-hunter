@@ -1,11 +1,4 @@
-export interface Decision {
-  eligibility: 'eligible' | 'ineligible' | 'unclear';
-  reason: string;
-  evidence: string;
-  company: string;
-  location: string;
-  title: string;
-}
+import type { Decision, StackDecision } from '../../core/listing.js';
 
 export interface ModelOptions {
   model?: string;
@@ -23,12 +16,6 @@ export interface LocationAssessmentInput extends SavedListingInput {
 
 export interface StackAssessmentInput extends SavedListingInput {
   stack: string[];
-}
-
-export interface StackDecision {
-  status: 'match' | 'partial_match' | 'potential_match' | 'unclear';
-  reason: string;
-  evidence: string;
 }
 
 export interface AuthOptions {

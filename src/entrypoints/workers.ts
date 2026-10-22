@@ -1,18 +1,40 @@
-import type { DiscoveryQueue, ReviewQueues } from '../bullmq.js';
-import { DiscoveryPartialFailure } from '../bullmq.js';
+import type { DiscoveryQueue, ReviewQueues } from '../infra/bullmq.js';
+import type { Profile } from '../infra/config.js';
+import type { SqliteStore } from '../infra/sqlite.js';
+import type { ListingExtractor } from '../integrations/extraction.js';
+import type {
+  LocationReviewer,
+  StackReviewer,
+} from '../integrations/llm/types.js';
+import type { FreehireConfig } from '../integrations/search/freehire.js';
+import { crawlJob } from '../workflow/crawl.js';
 import {
+  type DiscoveryResult,
   discoverFreehireJobs,
   discoverGoogleJobs,
-} from '../discovery/discover.js';
-import type { FreehireConfig } from '../discovery/freehire.js';
-import type { GoogleAts } from '../discovery/job-url.js';
-import type { Profile } from '../profile.js';
-import { crawlJob } from '../review/crawl.js';
-import type { ListingExtractor } from '../review/extraction/types.js';
-import type { LocationReviewer, StackReviewer } from '../review/llm/types.js';
-import { checkLocation } from '../review/location-check.js';
-import { checkTech } from '../review/tech-check.js';
-import type { SqliteStore } from '../sqlite.js';
+} from '../workflow/discover.js';
+import { checkLocation } from '../workflow/location-check.js';
+import { checkTech } from '../workflow/tech-check.js';
+import {
+  createCrawlExtractors,
+  createFreehireSearch,
+  createGoogleSearch,
+  type GoogleAts,
+} from './compose.js';
+
+function startDiscoveryWorker(
+  queue: DiscoveryQueue,
+  discover: () => Promise<DiscoveryResult>,
+) {
+  return queue.startWorker(async () => {
+    const outcome = await discover();
+    return {
+      added: outcome.added,
+      pending: outcome.pending,
+      failure_count: outcome.failures.length,
+    };
+  });
+}
 
 export function startGoogleWorker(
   store: SqliteStore,
@@ -21,19 +43,16 @@ export function startGoogleWorker(
   profile: Profile,
   ats: GoogleAts,
 ) {
-  return queue.startWorker(async () => {
-    const { ids, ...outcome } = await discoverGoogleJobs(store, profile, ats);
-    for (const id of ids) await queues.scheduleListing(store, id);
-    outcome.pending = store.pendingCount();
-    const result = {
-      added: outcome.added,
-      pending: outcome.pending,
-      failure_count: outcome.failures.length,
-    };
-    if (outcome.failures.length)
-      throw new DiscoveryPartialFailure(result, outcome.failures);
-    return result;
-  });
+  return startDiscoveryWorker(queue, () =>
+    discoverGoogleJobs(
+      store,
+      createGoogleSearch(profile.google, ats),
+      async (stage, id) => {
+        await queues.enqueue(stage, id);
+      },
+      (id) => queues.syncFailures(store, id),
+    ),
+  );
 }
 
 export function startFreehireWorker(
@@ -42,22 +61,16 @@ export function startFreehireWorker(
   queue: DiscoveryQueue,
   config: FreehireConfig,
 ) {
-  return queue.startWorker(async () => {
-    // Reconcile exhausted deliveries before considering an empty crawl checkpoint.
-    for (const job of store.unfinished())
-      await queues.syncFailures(store, job.id);
-    const { ids, ...outcome } = await discoverFreehireJobs(store, config);
-    for (const id of ids) await queues.scheduleListing(store, id);
-    outcome.pending = store.pendingCount();
-    const result = {
-      added: outcome.added,
-      pending: outcome.pending,
-      failure_count: outcome.failures.length,
-    };
-    if (outcome.failures.length)
-      throw new DiscoveryPartialFailure(result, outcome.failures);
-    return result;
-  });
+  return startDiscoveryWorker(queue, () =>
+    discoverFreehireJobs(
+      store,
+      createFreehireSearch(config),
+      async (stage, id) => {
+        await queues.enqueue(stage, id);
+      },
+      (id) => queues.syncFailures(store, id),
+    ),
+  );
 }
 
 export function startCrawlWorker(
@@ -66,16 +79,22 @@ export function startCrawlWorker(
   scrape?: ListingExtractor,
   signal?: AbortSignal,
 ) {
+  const extractors = scrape
+    ? { ats: [], fallback: scrape }
+    : createCrawlExtractors();
   return queues.startWorker(
     store,
     'crawl',
-    async (id) => {
-      await crawlJob(store, id, scrape, signal);
-      // Redelivery repairs a save/enqueue interruption without extracting again.
-      for (const evaluation of ['location', 'stack'] as const)
-        if (store.needsStage(id, evaluation))
-          await queues.enqueue(evaluation, id);
-    },
+    (id) =>
+      crawlJob(
+        store,
+        id,
+        extractors,
+        async (stage, id) => {
+          await queues.enqueue(stage, id);
+        },
+        signal,
+      ),
     signal,
   );
 }

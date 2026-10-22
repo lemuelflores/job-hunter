@@ -5,10 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { DiscoveryQueue, ReviewQueues } from '../dist/bullmq.js';
-import { GOOGLE_ATS } from '../dist/discovery/job-url.js';
-import { startDiscoveryScheduler } from '../dist/discovery/scheduler.js';
 import { main } from '../dist/entrypoints/cli.js';
+import { createLlm, GOOGLE_ATS } from '../dist/entrypoints/compose.js';
+import { startDiscoveryScheduler } from '../dist/entrypoints/scheduler.js';
 import {
   startCrawlWorker,
   startFreehireWorker,
@@ -16,9 +15,9 @@ import {
   startLocationWorker,
   startTechWorker,
 } from '../dist/entrypoints/workers.js';
-import { createLlm } from '../dist/review/llm/index.js';
-import { reviewJobs } from '../dist/review/review-jobs.js';
-import { SqliteStore } from '../dist/sqlite.js';
+import { DiscoveryQueue, ReviewQueues } from '../dist/infra/bullmq.js';
+import { SqliteStore } from '../dist/infra/sqlite.js';
+import { reviewJobs } from '../dist/workflow/review-jobs.js';
 import {
   externalFixture,
   profile,
@@ -515,7 +514,14 @@ test('queue dispatch, recovery and process lifecycle', {
       assert.equal(f.store.stages(1)[2].state, 'complete');
       const saved = f.store.getJob(1);
       const count = f.requests.length;
-      const outcome = await reviewJobs(f.store, f.queues, 1);
+      const outcome = await reviewJobs(
+        f.store,
+        async (stage, id) => {
+          await f.queues.enqueue(stage, id);
+        },
+        (id) => f.queues.syncFailures(f.store, id),
+        1,
+      );
       assert.equal(outcome.reviewed, 0);
       assert.match(outcome.failures[0], /Job 1 location:/);
       await f.queues.repair(f.store);
@@ -594,11 +600,21 @@ test('queue dispatch, recovery and process lifecycle', {
       f.store.setReviewStatus('1', 'hidden');
       f.store.saveListingText(2, 'Checkpoint Laravel');
       await f.start();
-      assert.deepEqual(await reviewJobs(f.store, f.queues, 1), {
-        reviewed: 1,
-        pending: 1,
-        failures: [],
-      });
+      assert.deepEqual(
+        await reviewJobs(
+          f.store,
+          async (stage, id) => {
+            await f.queues.enqueue(stage, id);
+          },
+          (id) => f.queues.syncFailures(f.store, id),
+          1,
+        ),
+        {
+          reviewed: 1,
+          pending: 1,
+          failures: [],
+        },
+      );
       await f.idle();
       assert.equal(f.store.getJob(2).listing_text, 'Checkpoint Laravel');
       assert.equal(f.store.getJob(3).listing_text, null);
@@ -607,7 +623,14 @@ test('queue dispatch, recovery and process lifecycle', {
       assert.equal(f.store.pendingCount(), 0);
       assert.equal(f.store.getJob(1).listing_text, null);
       await assert.rejects(
-        reviewJobs(f.store, f.queues, 0),
+        reviewJobs(
+          f.store,
+          async (stage, id) => {
+            await f.queues.enqueue(stage, id);
+          },
+          (id) => f.queues.syncFailures(f.store, id),
+          0,
+        ),
         /Invalid review limit/,
       );
       f.store.setReviewStatus('1', 'active');
@@ -628,11 +651,26 @@ test('queue dispatch, recovery and process lifecycle', {
       const controller = new AbortController();
       controller.abort(new Error('cancelled'));
       await assert.rejects(
-        reviewJobs(f.store, f.queues, 1, controller.signal),
+        reviewJobs(
+          f.store,
+          async (stage, id) => {
+            await f.queues.enqueue(stage, id);
+          },
+          (id) => f.queues.syncFailures(f.store, id),
+          1,
+          controller.signal,
+        ),
         /cancelled/,
       );
       assert.deepEqual(f.store.getJob(1), saved);
-      const waiting = reviewJobs(f.store, f.queues, 1);
+      const waiting = reviewJobs(
+        f.store,
+        async (stage, id) => {
+          await f.queues.enqueue(stage, id);
+        },
+        (id) => f.queues.syncFailures(f.store, id),
+        1,
+      );
       await until(async () =>
         Boolean(await f.queues.queues.stack.getJob('listing-1')),
       );

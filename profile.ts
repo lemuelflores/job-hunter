@@ -1,4 +1,4 @@
-import type { Profile } from './src/profile.ts';
+import type { Profile } from './src/infra/config.ts';
 
 export default {
   review: {

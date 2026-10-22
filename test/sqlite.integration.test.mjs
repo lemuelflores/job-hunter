@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { SqliteStore } from '../dist/sqlite.js';
+import { SqliteStore } from '../dist/infra/sqlite.js';
 
 // Arrange: share canonical listing results.
 const result = (id) => ({

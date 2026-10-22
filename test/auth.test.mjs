@@ -19,12 +19,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   authenticate,
   getCredentials,
-} from '../dist/review/llm/chatgpt/auth.js';
-import { createRequest } from '../dist/review/llm/chatgpt/request.js';
-import {
-  AuthenticationError,
-  createChatgpt,
-} from '../dist/review/llm/index.js';
+} from '../dist/integrations/llm/chatgpt/auth.js';
+import { createChatgpt } from '../dist/integrations/llm/chatgpt/index.js';
+import { createRequest } from '../dist/integrations/llm/chatgpt/request.js';
+import { AuthenticationError } from '../dist/integrations/llm/types.js';
 
 // Shared Arrange: synthetic tokens carry only the claims needed by OAuth tests.
 const jwt = (data) =>
@@ -69,7 +67,7 @@ async function startLogin(t, options, login = authenticate) {
 test('default login and reviews share app-root .auth.json', async (t) => {
   // Arrange: copy the provider into an isolated app root without an auth path override.
   const { root } = await setup(t);
-  const directory = join(root, 'dist', 'review', 'llm', 'chatgpt');
+  const directory = join(root, 'dist', 'integrations', 'llm', 'chatgpt');
   await mkdir(directory, { recursive: true });
   await writeFile(join(root, 'package.json'), '{"type":"module"}');
   await symlink(
@@ -78,11 +76,11 @@ test('default login and reviews share app-root .auth.json', async (t) => {
     'dir',
   );
   await copyFile(
-    new URL('../dist/review/llm/chatgpt/auth.js', import.meta.url),
+    new URL('../dist/integrations/llm/chatgpt/auth.js', import.meta.url),
     join(directory, 'auth.js'),
   );
   await copyFile(
-    new URL('../dist/review/llm/types.js', import.meta.url),
+    new URL('../dist/integrations/llm/types.js', import.meta.url),
     join(directory, '..', 'types.js'),
   );
   const provider = await import(pathToFileURL(join(directory, 'auth.js')).href);

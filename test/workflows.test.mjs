@@ -1,11 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { discoverGoogleJobs } from '../dist/discovery/discover.js';
-import { googleAtsQuery } from '../dist/discovery/google.js';
-import { crawlJob } from '../dist/review/crawl.js';
-import { checkLocation } from '../dist/review/location-check.js';
-import { checkTech } from '../dist/review/tech-check.js';
-import { SqliteStore } from '../dist/sqlite.js';
+import {
+  ATS_DEFINITIONS,
+  createCrawlExtractors,
+  createGoogleSearch,
+} from '../dist/entrypoints/compose.js';
+import { SqliteStore } from '../dist/infra/sqlite.js';
+import { scopedGoogleQuery } from '../dist/integrations/search/google.js';
+import { crawlJob } from '../dist/workflow/crawl.js';
+import {
+  DiscoveryPartialFailure,
+  discoverGoogleJobs,
+} from '../dist/workflow/discover.js';
+import { checkLocation } from '../dist/workflow/location-check.js';
+import { checkTech } from '../dist/workflow/tech-check.js';
 import {
   externalFixture,
   location,
@@ -19,7 +27,25 @@ import {
 function fixture(t, respond) {
   const store = new SqliteStore(':memory:');
   t.after(() => store.close());
-  return { store, ...externalFixture(t, respond) };
+  const enqueued = [];
+  const enqueue = async (stage, id) => {
+    enqueued.push({ stage, id });
+  };
+  return {
+    store,
+    enqueued,
+    enqueue,
+    crawl: (id, signal) =>
+      crawlJob(store, id, createCrawlExtractors(), enqueue, signal),
+    discover: (ats) =>
+      discoverGoogleJobs(
+        store,
+        createGoogleSearch(profile.google, ats),
+        enqueue,
+        async () => {},
+      ),
+    ...externalFixture(t, respond),
+  };
 }
 
 test('ATS searches each keep a 100-result budget, reject sibling URLs and save executed queries', async (t) => {
@@ -36,7 +62,13 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
   const f = fixture(t, ({ url }) => {
     const query = url.searchParams.get('query');
     const ats = Object.keys(urls).find(
-      (ats) => query === googleAtsQuery(profile.google.query, ats),
+      (ats) =>
+        query ===
+        scopedGoogleQuery(
+          profile.google.query,
+          ATS_DEFINITIONS.find((definition) => definition.selector === ats)
+            .hosts,
+        ),
     );
     assert.ok(ats, query);
     return Response.json({
@@ -55,8 +87,11 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
   });
   for (const ats of Object.keys(urls)) {
     // The upstream result budget includes rejected search results.
-    assert.equal((await discoverGoogleJobs(f.store, profile, ats)).added, 99);
-    const query = googleAtsQuery(profile.google.query, ats);
+    assert.equal((await f.discover(ats)).added, 99);
+    const query = scopedGoogleQuery(
+      profile.google.query,
+      ATS_DEFINITIONS.find((definition) => definition.selector === ats).hosts,
+    );
     assert.equal(
       f.store.listReviewJobs('active').filter((job) => job.query === query)
         .length,
@@ -93,7 +128,7 @@ test('discovery canonicalizes, deduplicates and returns only discovered unfinish
   f.store.review(2, 'eligible', 'Saved decision');
   f.store.reviewStack(2, stack);
   const { last_seen: _beforeSeen, ...before } = f.store.getJob(2);
-  assert.deepEqual(await discoverGoogleJobs(f.store, profile, 'greenhouse'), {
+  assert.deepEqual(await f.discover('greenhouse'), {
     ids: [1, 5],
     added: 1,
     pending: 4,
@@ -107,13 +142,17 @@ test('discovery canonicalizes, deduplicates and returns only discovered unfinish
   const search = f.requests[0];
   assert.equal(
     search.url.searchParams.get('query'),
-    googleAtsQuery(profile.google.query, 'greenhouse'),
+    scopedGoogleQuery(
+      profile.google.query,
+      ATS_DEFINITIONS.find((definition) => definition.selector === 'greenhouse')
+        .hosts,
+    ),
   );
   assert.equal(search.url.searchParams.has('gl'), false);
   assert.equal(search.init.headers['x-api-key'], 'fixture-key');
 });
 
-test('partial discovery returns completed pages and failure without repeating paid searches', async (t) => {
+test('partial discovery dispatches completed pages before failure without repeating paid searches', async (t) => {
   let unavailable = true;
   const f = fixture(t, ({ url }) => {
     assert.equal(url.hostname, 'api.autom.dev');
@@ -133,7 +172,16 @@ test('partial discovery returns completed pages and failure without repeating pa
         ? new Response('Unavailable', { status: 503 })
         : Response.json({ organic_results: [] });
   });
-  const outcome = await discoverGoogleJobs(f.store, profile, 'greenhouse');
+  let outcome;
+  await assert.rejects(f.discover('greenhouse'), (error) => {
+    assert.ok(error instanceof DiscoveryPartialFailure);
+    assert.deepEqual(f.enqueued, [
+      { stage: 'crawl', id: 1 },
+      { stage: 'crawl', id: 2 },
+    ]);
+    outcome = error.outcome;
+    return true;
+  });
   assert.deepEqual(outcome.ids, [1, 2]);
   assert.equal(outcome.added, 2);
   assert.equal(outcome.pending, 2);
@@ -143,7 +191,7 @@ test('partial discovery returns completed pages and failure without repeating pa
   assert.equal(f.store.getJob(2).snippet, '');
   assert.equal(f.requests.length, 2);
   unavailable = false;
-  assert.deepEqual(await discoverGoogleJobs(f.store, profile, 'greenhouse'), {
+  assert.deepEqual(await f.discover('greenhouse'), {
     ids: [1, 2],
     added: 0,
     pending: 2,
@@ -160,11 +208,11 @@ test('discovery normalizes UUID casing but preserves board casing and saved deci
       ),
     }),
   );
-  await discoverGoogleJobs(f.store, profile, 'ashby');
+  await f.discover('ashby');
   f.store.saveListingText(1, 'Saved listing');
   f.store.review(1, 'eligible', 'Saved decision');
   const saved = f.store.getJob(1);
-  assert.equal((await discoverGoogleJobs(f.store, profile, 'ashby')).added, 0);
+  assert.equal((await f.discover('ashby')).added, 0);
   assert.equal(f.store.listReviewJobs('active').length, 1);
   assert.equal(f.store.getJob(1).url, url);
   assert.equal(f.store.getJob(1).reason, saved.reason);
@@ -220,7 +268,11 @@ for (const [name, url, endpoint, response] of [
       url.href === endpoint ? Response.json(response) : undefined,
     );
     f.store.saveResults([{ ...result(1), url }]);
-    await crawlJob(f.store, 1);
+    await f.crawl(1);
+    assert.deepEqual(f.enqueued, [
+      { stage: 'location', id: 1 },
+      { stage: 'stack', id: 1 },
+    ]);
     const text = f.store.getJob(1).listing_text;
     assert.equal(
       f.store.listReviewJobs('active')[0].posted_at,
@@ -243,7 +295,7 @@ for (const [name, url, endpoint, response] of [
       assert.ok(body.input[0].content[0].text.includes(url));
       assert.ok(body.input[0].content[0].text.endsWith(text));
     }
-    await crawlJob(f.store, 1);
+    await f.crawl(1);
     await checkLocation(f.store, 1, f.reviewLocation);
     await checkTech(f.store, 1, f.reviewStack);
     assert.equal(f.requests.length, 3);
@@ -259,7 +311,7 @@ for (const status of [200, 404, 503]) {
     });
     const f = fixture(t, () => response);
     f.store.saveResults([result(1)]);
-    const crawling = crawlJob(f.store, 1);
+    const crawling = f.crawl(1);
     assert.equal(f.requests.length, 1);
     f.store.saveResults([
       {
@@ -277,6 +329,10 @@ for (const status of [200, 404, 503]) {
         : new Response('', { status }),
     );
     await crawling;
+    assert.deepEqual(f.enqueued, [
+      { stage: 'location', id: 1 },
+      { stage: 'stack', id: 1 },
+    ]);
     assert.deepEqual(f.store.getJob(1), saved);
     assert.deepEqual(f.store.stages(1), stages);
     assert.equal(f.store.needsStage(1, 'location'), true);
@@ -361,8 +417,9 @@ for (const [name, url, response, terminal] of [
   test(`${name} preserves terminal versus transient policy without fallback`, async (t) => {
     const f = fixture(t, () => response());
     f.store.saveResults([{ ...result(1), url }]);
-    if (terminal) await crawlJob(f.store, 1);
-    else await assert.rejects(crawlJob(f.store, 1));
+    if (terminal) await f.crawl(1);
+    else await assert.rejects(f.crawl(1));
+    assert.deepEqual(f.enqueued, []);
     assert.equal(f.store.getJob(1).listing_text, null);
     assert.deepEqual(
       f.store.stages(1).map(({ state }) => state),
@@ -386,7 +443,7 @@ for (const [name, url, response, terminal] of [
       assert.ok(f.store.stages(1)[0].error);
       assert.equal(f.store.getJob(1).eligibility, 'error');
       const saved = f.store.getJob(1);
-      await crawlJob(f.store, 1);
+      await f.crawl(1);
       assert.deepEqual(f.store.getJob(1), saved);
       assert.equal(f.requests.length, 1);
     }
@@ -406,7 +463,7 @@ test('distinct listings keep their own assessment inputs and results', async (t)
   });
   f.store.saveResults([result(1), result(2)]);
   for (const id of [1, 2]) {
-    await crawlJob(f.store, id);
+    await f.crawl(id);
     await checkLocation(f.store, id, f.reviewLocation);
     await checkTech(f.store, id, f.reviewStack);
     assert.equal(f.store.getJob(id).reason, `Location ${id}`);
@@ -423,11 +480,11 @@ test('temporary extraction errors propagate and a later call checkpoints before 
   );
   f.store.saveResults([result(1)]);
   const saved = f.store.getJob(1);
-  await assert.rejects(crawlJob(f.store, 1), /503/);
+  await assert.rejects(f.crawl(1), /503/);
   assert.deepEqual(f.store.getJob(1), saved);
   assert.ok(f.store.stages(1).every(({ state }) => state === 'pending'));
   offline = false;
-  await crawlJob(f.store, 1);
+  await f.crawl(1);
   assert.match(f.store.getJob(1).listing_text, /Listing 1/);
   assert.equal(f.requests.length, 2);
   assert.deepEqual(
@@ -446,12 +503,12 @@ test('pending location HTTP does not block stack assessment or extraction of the
     return stream(location);
   });
   f.store.saveResults([result(1), result(2)]);
-  await crawlJob(f.store, 1);
+  await f.crawl(1);
   const checking = checkLocation(f.store, 1, f.reviewLocation);
   try {
     await started.promise;
     await checkTech(f.store, 1, f.reviewStack);
-    await crawlJob(f.store, 2);
+    await f.crawl(2);
     await checkTech(f.store, 2, f.reviewStack);
     assert.equal(f.store.getJob(1).eligibility, 'pending');
     assert.equal(f.store.getJob(1).stack_status, 'match');
@@ -473,7 +530,7 @@ for (const failing of ['job_review', 'job_stack_review']) {
         : undefined,
     );
     f.store.saveResults([result(1)]);
-    await crawlJob(f.store, 1);
+    await f.crawl(1);
     const failed = failing === 'job_review' ? checkLocation : checkTech;
     const other = failing === 'job_review' ? checkTech : checkLocation;
     const failingReview =
@@ -506,12 +563,116 @@ for (const failing of ['job_review', 'job_stack_review']) {
   });
 }
 
+for (const failedStage of ['location', 'stack']) {
+  test(`crawl rerun repairs a failed ${failedStage} enqueue without extracting or changing saved dates`, async (t) => {
+    const postedAt = '2025-01-02T12:00:00Z';
+    const f = fixture(t, () =>
+      Response.json({
+        id: 1,
+        content: '<p>Saved Laravel role</p>',
+        first_published: postedAt,
+      }),
+    );
+    f.store.saveResults([result(1)]);
+    const attempted = [];
+    await assert.rejects(
+      crawlJob(f.store, 1, createCrawlExtractors(), async (stage, id) => {
+        attempted.push({ stage, id });
+        if (stage === failedStage) throw new Error('Delivery unavailable');
+      }),
+      /Delivery unavailable/,
+    );
+    assert.equal(attempted.at(-1).stage, failedStage);
+    const saved = f.store.getJob(1);
+    assert.equal(saved.posted_at, '2025-01-02T12:00:00.000Z');
+    assert.match(saved.listing_text, /Saved Laravel role/);
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.store.stages(1)[0].state, 'complete');
+    await f.crawl(1);
+    assert.deepEqual(f.enqueued, [
+      { stage: 'location', id: 1 },
+      { stage: 'stack', id: 1 },
+    ]);
+    assert.equal(f.requests.length, 1);
+    assert.deepEqual(f.store.getJob(1), saved);
+  });
+}
+
+test('discovery does not report success when downstream enqueue fails', async (t) => {
+  const f = fixture(t, () =>
+    Response.json({
+      organic_results: [{ link: result(1).url, title: 'Engineer' }],
+    }),
+  );
+  await assert.rejects(
+    discoverGoogleJobs(
+      f.store,
+      createGoogleSearch(profile.google, 'greenhouse'),
+      async () => {
+        throw new Error('Queue unavailable');
+      },
+      async () => {},
+    ),
+    /Queue unavailable/,
+  );
+  assert.equal(f.store.getJob(1).url, result(1).url);
+  assert.equal(f.store.needsStage(1, 'crawl'), true);
+  assert.equal(f.requests.length, 1);
+  await f.discover('greenhouse');
+  assert.deepEqual(f.enqueued, [{ stage: 'crawl', id: 1 }]);
+});
+
+test('known API hosts reject invalid listing paths without scraping fallback', async (t) => {
+  const f = fixture(t);
+  f.store.saveResults([
+    { ...result(1), url: 'https://jobs.ashbyhq.com/example' },
+  ]);
+  await assert.rejects(f.crawl(1), /Invalid Ashby listing URL/);
+  assert.equal(f.requests.length, 0);
+  assert.deepEqual(f.enqueued, []);
+});
+
+for (const apiMissing of [false, true]) {
+  test(`Firecrawl handles ${apiMissing ? 'an ATS identity without an API strategy' : 'an unmatched host'}`, async (t) => {
+    const f = fixture(t, () =>
+      Response.json({
+        success: true,
+        data: { markdown: 'Remote Laravel listing' },
+      }),
+    );
+    const extractors = createCrawlExtractors();
+    const { extract: _extract, ...identity } = extractors.ats[0];
+    f.store.saveResults([
+      {
+        ...result(1),
+        url: apiMissing
+          ? `https://jobs.ashbyhq.com/example/${uuid}`
+          : 'https://example.com/jobs/1',
+      },
+    ]);
+    await crawlJob(
+      f.store,
+      1,
+      { ...extractors, ats: apiMissing ? [identity] : extractors.ats },
+      f.enqueue,
+    );
+    assert.equal(f.requests.length, 1);
+    assert.ok(f.requests[0].url.pathname.endsWith('/v2/scrape'));
+    assert.equal(f.store.getJob(1).listing_text, 'Remote Laravel listing');
+    assert.deepEqual(f.enqueued, [
+      { stage: 'location', id: 1 },
+      { stage: 'stack', id: 1 },
+    ]);
+  });
+}
+
 test('saved extraction and location checkpoints leave only the missing stack assessment', async (t) => {
   const f = fixture(t);
   f.store.saveResults([result(1)]);
   f.store.saveListingText(1, 'Checkpoint Laravel');
   f.store.review(1, 'eligible', 'Saved location');
-  await crawlJob(f.store, 1);
+  await f.crawl(1);
+  assert.deepEqual(f.enqueued, [{ stage: 'stack', id: 1 }]);
   await checkLocation(f.store, 1, f.reviewLocation);
   await checkTech(f.store, 1, f.reviewStack);
   assert.equal(f.store.getJob(1).listing_text, 'Checkpoint Laravel');
@@ -532,11 +693,12 @@ test('not-ready, failed, missing and inactive work makes no external calls; rest
     stages: f.store.stages(id),
   }));
   for (const id of [1, 2, 3, 4, 999]) {
-    if (id !== 3) await crawlJob(f.store, id);
+    if (id !== 3) await f.crawl(id);
     await checkLocation(f.store, id, f.reviewLocation);
     await checkTech(f.store, id, f.reviewStack);
   }
   assert.equal(f.requests.length, 0);
+  assert.deepEqual(f.enqueued, []);
   assert.deepEqual(
     [1, 2, 3, 4].map((id) => ({
       job: f.store.getJob(id),
@@ -545,7 +707,7 @@ test('not-ready, failed, missing and inactive work makes no external calls; rest
     saved,
   );
   f.store.setReviewStatus('1', 'active');
-  await crawlJob(f.store, 1);
+  await f.crawl(1);
   await checkLocation(f.store, 1, f.reviewLocation);
   await checkTech(f.store, 1, f.reviewStack);
   assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
@@ -607,15 +769,9 @@ test('cancellation before work and after an external response never saves a resu
     return Response.json({ id: 1, content: '<p>Laravel</p>' });
   });
   f.store.saveResults([result(1)]);
-  await assert.rejects(
-    crawlJob(f.store, 1, undefined, controller.signal),
-    /cancelled/,
-  );
+  await assert.rejects(f.crawl(1, controller.signal), /cancelled/);
   assert.equal(f.store.getJob(1).listing_text, null);
-  await assert.rejects(
-    crawlJob(f.store, 1, undefined, controller.signal),
-    /cancelled/,
-  );
+  await assert.rejects(f.crawl(1, controller.signal), /cancelled/);
   await assert.rejects(
     checkLocation(f.store, 1, f.reviewLocation, controller.signal),
     /cancelled/,

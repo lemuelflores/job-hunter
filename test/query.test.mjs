@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  googleAtsQuery,
+  ATS_DEFINITIONS,
+  createGoogleSearch,
+  GOOGLE_ATS,
+} from '../dist/entrypoints/compose.js';
+import {
   normalizeGoogleQuery,
-} from '../dist/discovery/google.js';
-import { ATS_HOSTS, GOOGLE_ATS } from '../dist/discovery/job-url.js';
+  scopedGoogleQuery,
+} from '../dist/integrations/search/google.js';
 
 test('explicit query only collapses whitespace, without hidden filters or aliases', () => {
   assert.equal(
@@ -56,26 +60,34 @@ test('root base query retains the existing user search terms without ATS hosts',
 test('each ATS scopes the complete normalized base query to only its host group', () => {
   assert.ok(GOOGLE_ATS.includes('workable'));
   assert.equal(
-    googleAtsQuery('engineer', 'workable'),
+    scopedGoogleQuery(
+      'engineer',
+      ATS_DEFINITIONS.find((ats) => ats.selector === 'workable').hosts,
+    ),
     '(engineer) (site:apply.workable.com)',
   );
-  for (const ats of GOOGLE_ATS) {
+  for (const ats of ATS_DEFINITIONS) {
     assert.equal(
-      googleAtsQuery(
+      scopedGoogleQuery(
         ' engineer\n OR developer Laravel (APAC OR worldwide) ',
-        ats,
+        ats.hosts,
       ),
-      `(engineer OR developer Laravel (APAC OR worldwide)) (${ATS_HOSTS[ats].map((host) => `site:${host}`).join(' OR ')})`,
+      `(engineer OR developer Laravel (APAC OR worldwide)) (${ats.hosts
+        .map((host) => `site:${host}`)
+        .join(' OR ')})`,
     );
   }
-  assert.throws(() => googleAtsQuery('engineer', 'unknown'), /Unknown ATS/);
+  assert.throws(
+    () => createGoogleSearch({ enabled: true, query: 'engineer' }, 'unknown'),
+    /Unknown ATS/,
+  );
   for (const query of [
     'site:example.com engineer',
     '(SITE:example.com)',
     '-site:example.com',
   ])
     assert.throws(
-      () => googleAtsQuery(query, 'ashby'),
+      () => scopedGoogleQuery(query, ATS_DEFINITIONS[0].hosts),
       /must not contain site:/,
     );
 });

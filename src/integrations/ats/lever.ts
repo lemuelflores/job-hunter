@@ -1,11 +1,28 @@
 import { convert } from 'html-to-text';
 import * as v from 'valibot';
-import { normalizeJobUrl } from '../../discovery/job-url.js';
 import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from './types.js';
+} from '../extraction.js';
+import type { AtsDefinition } from './types.js';
+import { parseListingUrl, UUID } from './url.js';
+
+const hosts = ['jobs.lever.co', 'jobs.eu.lever.co'] as const;
+
+export function normalizeLeverUrl(raw: string): string | null {
+  const parsed = parseListingUrl(raw, hosts);
+  if (parsed?.parts.length !== 2 || !UUID.test(parsed.parts[1])) return null;
+  parsed.url.pathname = `/${parsed.parts[0]}/${parsed.parts[1].toLowerCase()}`;
+  return parsed.url.href;
+}
+
+export const lever = {
+  selector: 'lever',
+  hosts,
+  normalizeUrl: normalizeLeverUrl,
+  extract: fetchLeverListing,
+} as const satisfies AtsDefinition;
 
 const PostingId = v.pipe(
   v.string(),
@@ -58,7 +75,7 @@ export async function fetchLeverListing(
   url: string,
   options: ExtractionOptions = {},
 ): Promise<ExtractedListing> {
-  const validated = normalizeJobUrl(url);
+  const validated = normalizeLeverUrl(url);
   if (!validated) throw new Error('Invalid Lever listing URL');
   const parsed = new URL(validated);
   if (!['jobs.lever.co', 'jobs.eu.lever.co'].includes(parsed.hostname))

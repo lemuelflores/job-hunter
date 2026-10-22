@@ -1,4 +1,4 @@
-import type { ReviewStatus } from '../sqlite.js';
+import type { ReviewStatus } from '../core/listing.js';
 
 export interface UpdateJobStatusRequest {
   reviewKey: string;

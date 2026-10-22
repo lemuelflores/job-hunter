@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { encodeHTML } from 'entities';
-import { fetchGreenhouseListing } from '../dist/review/extraction/greenhouse.js';
-import { PageError } from '../dist/review/extraction/types.js';
+import { fetchGreenhouseListing } from '../dist/integrations/ats/greenhouse.js';
+import { PageError } from '../dist/integrations/extraction.js';
 
 const url = 'https://job-boards.greenhouse.io/Example%20Board/jobs/123';
 const metadata = {

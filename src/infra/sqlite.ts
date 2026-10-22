@@ -1,10 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
 import * as v from 'valibot';
-import type { StackDecision } from './review/llm/types.js';
-import { STAGES, type Stage } from './review/stages.js';
-
-export const REVIEW_STATUSES = ['active', 'hidden', 'rejected'] as const;
-export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
+import {
+  type DiscoveredListing,
+  type Listing,
+  REVIEW_STATUSES,
+  type ReviewStatus,
+  type StackDecision,
+} from '../core/listing.js';
+import { STAGES, type Stage, type StageState } from '../core/stages.js';
 
 const ReviewReasonSchema = v.pipe(
   v.string(),
@@ -33,59 +36,6 @@ const StackReviewSchema = v.object({
   reason: ReviewReasonSchema,
   evidence: ReviewEvidenceSchema,
 });
-
-export { STAGES, type Stage } from './review/stages.js';
-export interface StageState {
-  stage: Stage;
-  state: 'pending' | 'complete' | 'failed' | 'terminal' | 'blocked';
-  error: string;
-  generation: number;
-}
-
-export type ListingSource = 'google' | 'freehire';
-
-export interface DiscoveredListing {
-  source: ListingSource;
-  url: string;
-  title: string;
-  snippet?: string;
-  query: string;
-  listingText?: string;
-  postedAt?: string | null;
-}
-
-export interface Listing {
-  id: number;
-  source: ListingSource;
-  query: string;
-  url: string;
-  title: string;
-  snippet: string;
-  posted_at: string | null;
-  first_seen: string;
-  last_seen: string;
-  eligibility: 'pending' | 'eligible' | 'ineligible' | 'unclear' | 'error';
-  reason: string;
-  evidence: string;
-  location: string;
-  company: string;
-  status: ReviewStatus;
-  batch: string | null;
-  attempts: number;
-  next_retry_at: number;
-  last_error: string;
-  listing_text: string | null;
-  stack_status:
-    | 'not_checked'
-    | 'pending'
-    | 'match'
-    | 'partial_match'
-    | 'potential_match'
-    | 'unclear'
-    | 'error';
-  stack_reason: string;
-  stack_evidence: string;
-}
 
 function postingDate(value: unknown): string | null {
   if (
