@@ -409,8 +409,6 @@ test('queue dispatch, recovery and process lifecycle', {
     'independent schedules use source defaults and enabled queues only',
     async (t) => {
       const f = fixture(t);
-      const logs = [];
-      t.mock.method(console, 'error', (message) => logs.push(String(message)));
       const before = {
         google: process.env.GOOGLE_CRON,
         freehire: process.env.FREEHIRE_CRON,
@@ -422,15 +420,30 @@ test('queue dispatch, recovery and process lifecycle', {
           google: f.google,
           freehire: f.freehire,
         });
-        assert.ok(
-          logs.includes('[scheduler] google scheduled 0 * * * * (UTC)'),
+        assert.deepEqual(
+          f.output.filter((event) => event.event === 'scheduler_scheduled'),
+          [
+            {
+              event: 'scheduler_scheduled',
+              source: 'google',
+              cron: '0 * * * *',
+              timezone: 'UTC',
+            },
+            {
+              event: 'scheduler_scheduled',
+              source: 'freehire',
+              cron: '*/15 * * * *',
+              timezone: 'UTC',
+            },
+          ],
         );
-        assert.ok(
-          logs.includes('[scheduler] freehire scheduled */15 * * * * (UTC)'),
-        );
+        assert.deepEqual(f.output.at(-1), {
+          event: 'scheduler_ready',
+          source_count: 2,
+        });
         process.emit('SIGTERM');
         await running;
-        logs.length = 0;
+        f.output.length = 0;
         const independent = startDiscoveryScheduler({
           google: f.google,
           freehire: f.freehire,
@@ -801,6 +814,7 @@ test('queue dispatch, recovery and process lifecycle', {
         assert.equal(await running, 0);
       }
       assert.equal(f.requests.length, 0);
+      f.output.length = 0;
       await f.start(['google']);
       await f.idle();
       assert.deepEqual(
@@ -836,6 +850,27 @@ test('queue dispatch, recovery and process lifecycle', {
         process.emit('SIGTERM');
         await scheduled;
       }
+      const submissions = f.output.filter(
+        (event) => event.event === 'scheduler_enqueue_finished',
+      );
+      assert.ok(submissions.length > 0);
+      const submission = submissions[0];
+      assert.equal(submission.source, 'google');
+      assert.equal(submission.outcome, 'submitted');
+      assert.equal(typeof submission.delivery_id, 'string');
+      assert.ok(submission.elapsed_ms >= 0);
+      assert.ok(
+        f.output.some(
+          (event) =>
+            event.event === 'scheduler_enqueue_started' &&
+            event.scheduled_at === submission.scheduled_at,
+        ),
+      );
+      assert.deepEqual(f.output.slice(-2), [
+        { event: 'scheduler_draining', active_enqueues: 0 },
+        { event: 'scheduler_stopped' },
+      ]);
+      f.output.length = 0;
       await f.start(['google']);
       await f.idle();
       assert.deepEqual(
@@ -850,12 +885,18 @@ test('queue dispatch, recovery and process lifecycle', {
   );
 
   await t.test(
-    'scheduler continues after enqueue failures and stops cleanly',
+    'scheduler reports overlap and drains an in-flight submission before stopping',
     async (t) => {
       const f = fixture(t);
-      f.google.queue.jobsOpts.sizeLimit = 1;
-      const errors = [];
-      t.mock.method(console, 'error', (...args) => errors.push(args));
+      let release;
+      const held = new Promise((resolve) => {
+        release = resolve;
+      });
+      const enqueue = f.google.enqueue.bind(f.google);
+      t.mock.method(f.google, 'enqueue', async () => {
+        await held;
+        return enqueue();
+      });
       const scheduled = startDiscoveryScheduler({
         google: f.google,
         googleCron: '* * * * * *',
@@ -863,8 +904,60 @@ test('queue dispatch, recovery and process lifecycle', {
       try {
         await until(
           () =>
-            errors.filter(
-              ([message]) => message === '[scheduler] google enqueue failed:',
+            f.output.some((event) => event.event === 'scheduler_tick_skipped'),
+          'overlapping tick',
+        );
+        assert.equal(
+          f.output.filter(
+            (event) => event.event === 'scheduler_enqueue_started',
+          ).length,
+          1,
+        );
+        const skipped = f.output.find(
+          (event) => event.event === 'scheduler_tick_skipped',
+        );
+        assert.equal(skipped.source, 'google');
+        assert.equal(skipped.reason, 'enqueue_in_progress');
+        process.emit('SIGTERM');
+        await until(
+          () => f.output.some((event) => event.event === 'scheduler_draining'),
+          'scheduler draining',
+        );
+        assert.equal(
+          f.output.find((event) => event.event === 'scheduler_draining')
+            .active_enqueues,
+          1,
+        );
+        assert.ok(
+          !f.output.some((event) => event.event === 'scheduler_stopped'),
+        );
+      } finally {
+        process.emit('SIGTERM');
+        release();
+        await scheduled;
+      }
+      assert.equal(f.output.at(-2).outcome, 'submitted');
+      assert.equal(f.output.at(-1).event, 'scheduler_stopped');
+      assert.equal(await f.google.queue.getWaitingCount(), 1);
+    },
+  );
+
+  await t.test(
+    'scheduler continues after enqueue failures and stops cleanly',
+    async (t) => {
+      const f = fixture(t);
+      f.google.queue.jobsOpts.sizeLimit = 1;
+      const scheduled = startDiscoveryScheduler({
+        google: f.google,
+        googleCron: '* * * * * *',
+      });
+      try {
+        await until(
+          () =>
+            f.output.filter(
+              (event) =>
+                event.event === 'scheduler_enqueue_finished' &&
+                event.outcome === 'failed',
             ).length >= 2,
           'next tick after enqueue failure',
         );
@@ -873,6 +966,17 @@ test('queue dispatch, recovery and process lifecycle', {
         await scheduled;
       }
       assert.equal(f.requests.length, 0);
+      const failures = f.output.filter((event) => event.outcome === 'failed');
+      assert.ok(
+        failures.every(
+          (event) =>
+            event.source === 'google' &&
+            event.recovery === 'next_scheduled_tick' &&
+            event.elapsed_ms >= 0 &&
+            event.error.stack,
+        ),
+      );
+      assert.equal(f.output.at(-1).event, 'scheduler_stopped');
     },
   );
 });

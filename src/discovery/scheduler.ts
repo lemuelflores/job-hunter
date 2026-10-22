@@ -1,5 +1,6 @@
 import cron, { type ScheduledTask } from 'node-cron';
 import type { DiscoveryQueue } from '../bullmq.js';
+import { deliveryEvent, diagnosticError } from '../worker-diagnostics.js';
 
 export interface DiscoverySchedules {
   google?: DiscoveryQueue;
@@ -33,14 +34,32 @@ export async function startDiscoveryScheduler(
       if (!queue) continue;
       const task = cron.schedule(
         expression,
-        () => {
+        (context) => {
+          const identity = {
+            source: queue.source,
+            scheduled_at: context.date.toISOString(),
+          };
+          const started = performance.now();
+          deliveryEvent({ event: 'scheduler_enqueue_started', ...identity });
           const work = queue.enqueue().then(
-            () => {},
+            (task) => {
+              deliveryEvent({
+                event: 'scheduler_enqueue_finished',
+                ...identity,
+                elapsed_ms: Math.round(performance.now() - started),
+                outcome: 'submitted',
+                delivery_id: task.id,
+              });
+            },
             (error) => {
-              console.error(
-                `[scheduler] ${queue.source} enqueue failed:`,
-                error,
-              );
+              deliveryEvent({
+                event: 'scheduler_enqueue_finished',
+                ...identity,
+                elapsed_ms: Math.round(performance.now() - started),
+                outcome: 'failed',
+                recovery: 'next_scheduled_tick',
+                error: diagnosticError(error),
+              });
             },
           );
           active.add(work);
@@ -50,11 +69,23 @@ export async function startDiscoveryScheduler(
         { noOverlap: true, timezone: 'UTC' },
       );
       tasks.push(task);
-      console.error(
-        `[scheduler] ${queue.source} scheduled ${expression} (UTC)`,
-      );
+      task.on('execution:overlap', (context) => {
+        deliveryEvent({
+          event: 'scheduler_tick_skipped',
+          source: queue.source,
+          scheduled_at: context.date.toISOString(),
+          reason: 'enqueue_in_progress',
+        });
+      });
+      deliveryEvent({
+        event: 'scheduler_scheduled',
+        source: queue.source,
+        cron: expression,
+        timezone: 'UTC',
+      });
     }
     if (!tasks.length) throw new Error('No discovery sources enabled');
+    deliveryEvent({ event: 'scheduler_ready', source_count: tasks.length });
     if (!stopController.signal.aborted)
       await new Promise<void>((done) =>
         stopController.signal.addEventListener('abort', () => done(), {
@@ -64,7 +95,12 @@ export async function startDiscoveryScheduler(
   } finally {
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
+    deliveryEvent({
+      event: 'scheduler_draining',
+      active_enqueues: active.size,
+    });
     await Promise.all(tasks.map((task) => task.destroy()));
     await Promise.all(active);
+    deliveryEvent({ event: 'scheduler_stopped' });
   }
 }
