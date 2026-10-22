@@ -27,6 +27,13 @@ test('listing URLs accept supported shapes and strip tracking', () => {
       'https://job-boards.greenhouse.io/example/jobs/1',
     );
   }
+  for (const path of ['example/j', 'j'])
+    assert.equal(
+      normalizeJobUrl(
+        `https://apply.workable.com/${path}/ab1234cdef/?source=x#top`,
+      ),
+      `https://apply.workable.com/${path}/AB1234CDEF`,
+    );
 });
 
 test('listing URLs reject unsupported hosts, paths and unsafe components', () => {
@@ -34,6 +41,15 @@ test('listing URLs reject unsupported hosts, paths and unsafe components', () =>
   const uuid = '12345678-1234-1234-1234-123456789abc';
   for (const url of [
     'https://evil.test/example/jobs/1',
+    'https://apply.workable.com/example',
+    'https://apply.workable.com/example/j/AB1234CDEF/apply',
+    'https://apply.workable.com/j/AB1234CDEF/apply',
+    'https://apply.workable.com/example/jobs/AB1234CDEF',
+    'https://apply.workable.com/example/j/not-a-code',
+    'https://apply.workable.com/ex%2Fample/j/AB1234CDEF',
+    'https://apply.workable.com:8443/example/j/AB1234CDEF',
+    'http://apply.workable.com/example/j/AB1234CDEF',
+    'https://user:pass@apply.workable.com/example/j/AB1234CDEF',
     'https://jobs.lever.co/example',
     `https://jobs.lever.co/example/${uuid}/apply`,
     `http://jobs.lever.co/example/${uuid}`,

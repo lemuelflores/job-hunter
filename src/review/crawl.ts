@@ -8,6 +8,7 @@ import {
   type ListingExtractor,
   PageError,
 } from './extraction/types.js';
+import { fetchWorkableListing } from './extraction/workable.js';
 
 export async function crawlJob(
   store: SqliteStore,
@@ -23,20 +24,25 @@ export async function crawlJob(
   try {
     if (scrape) {
       listing = await scrape(job.url, { signal });
-    } else if (new URL(job.url).hostname === 'jobs.ashbyhq.com') {
-      listing = await fetchAshbyListing(job.url, { signal });
-    } else if (
-      ['job-boards.greenhouse.io', 'boards.greenhouse.io'].includes(
-        new URL(job.url).hostname,
-      )
-    ) {
-      listing = await fetchGreenhouseListing(job.url, { signal });
-    } else if (
-      ['jobs.lever.co', 'jobs.eu.lever.co'].includes(new URL(job.url).hostname)
-    ) {
-      listing = await fetchLeverListing(job.url, { signal });
     } else {
-      listing = await firecrawlListing(job.url, { signal });
+      switch (new URL(job.url).hostname) {
+        case 'jobs.ashbyhq.com':
+          listing = await fetchAshbyListing(job.url, { signal });
+          break;
+        case 'job-boards.greenhouse.io':
+        case 'boards.greenhouse.io':
+          listing = await fetchGreenhouseListing(job.url, { signal });
+          break;
+        case 'jobs.lever.co':
+        case 'jobs.eu.lever.co':
+          listing = await fetchLeverListing(job.url, { signal });
+          break;
+        case 'apply.workable.com':
+          listing = await fetchWorkableListing(job.url, { signal });
+          break;
+        default:
+          listing = await firecrawlListing(job.url, { signal });
+      }
     }
   } catch (error) {
     signal?.throwIfAborted();

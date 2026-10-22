@@ -54,6 +54,11 @@ test('root base query retains the existing user search terms without ATS hosts',
 });
 
 test('each ATS scopes the complete normalized base query to only its host group', () => {
+  assert.ok(GOOGLE_ATS.includes('workable'));
+  assert.equal(
+    googleAtsQuery('engineer', 'workable'),
+    '(engineer) (site:apply.workable.com)',
+  );
   for (const ats of GOOGLE_ATS) {
     assert.equal(
       googleAtsQuery(

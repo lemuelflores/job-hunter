@@ -30,6 +30,8 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
       `https://${id % 2 ? 'boards' : 'job-boards'}.greenhouse.io/example/jobs/${id}`,
     lever: (id) =>
       `https://jobs${id % 2 ? '.eu' : ''}.lever.co/example/${String(id).padStart(8, '0')}-abcd-abcd-abcd-123456789abc`,
+    workable: (id) =>
+      `https://apply.workable.com/example/j/${String(id).padStart(10, '0')}/`,
   };
   const f = fixture(t, ({ url }) => {
     const query = url.searchParams.get('query');
@@ -61,8 +63,8 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
       99,
     );
   }
-  assert.equal(f.requests.length, 3);
-  assert.equal(f.store.listReviewJobs('active').length, 297);
+  assert.equal(f.requests.length, 4);
+  assert.equal(f.store.listReviewJobs('active').length, 396);
   assert.ok(
     f.store.listReviewJobs('active').every((job) => job.source === 'google'),
   );
@@ -171,6 +173,18 @@ test('discovery normalizes UUID casing but preserves board casing and saved deci
 
 for (const [name, url, endpoint, response] of [
   [
+    'Workable',
+    'https://apply.workable.com/example/j/AB1234CDEF',
+    'https://apply.workable.com/api/v2/accounts/example/jobs/AB1234CDEF',
+    {
+      shortcode: 'AB1234CDEF',
+      description: '<p>US Laravel role</p>',
+      requirements: '<p>Remote from the US only</p>',
+      benefits: '<p>Health insurance</p>',
+      published: '2025-01-02T12:00:00Z',
+    },
+  ],
+  [
     'Ashby',
     `https://jobs.ashbyhq.com/example/${uuid}`,
     'https://api.ashbyhq.com/posting-api/job-board/example?includeCompensation=true',
@@ -271,6 +285,18 @@ for (const status of [200, 404, 503]) {
 }
 
 for (const [name, url, response, terminal] of [
+  ...[404, 410, 429, 503].map((status) => [
+    `Workable ${status}`,
+    'https://apply.workable.com/example/j/AB1234CDEF',
+    () => new Response('', { status }),
+    [404, 410].includes(status),
+  ]),
+  [
+    'invalid Workable response',
+    'https://apply.workable.com/example/j/AB1234CDEF',
+    () => Response.json({ shortcode: 'AB1234CDEF', description: null }),
+    false,
+  ],
   [
     'missing Ashby UUID',
     `https://jobs.ashbyhq.com/example/${uuid}`,
@@ -346,9 +372,12 @@ for (const [name, url, response, terminal] of [
     );
     assert.equal(f.requests.length, 1);
     assert.ok(
-      ['api.ashbyhq.com', 'boards-api.greenhouse.io', 'api.lever.co'].includes(
-        f.requests[0].url.hostname,
-      ),
+      [
+        'api.ashbyhq.com',
+        'boards-api.greenhouse.io',
+        'api.lever.co',
+        'apply.workable.com',
+      ].includes(f.requests[0].url.hostname),
     );
     await checkLocation(f.store, 1, f.reviewLocation);
     await checkTech(f.store, 1, f.reviewStack);

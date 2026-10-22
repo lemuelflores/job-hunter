@@ -1,11 +1,12 @@
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
-export const GOOGLE_ATS = ['ashby', 'greenhouse', 'lever'] as const;
+export const GOOGLE_ATS = ['ashby', 'greenhouse', 'lever', 'workable'] as const;
 export type GoogleAts = (typeof GOOGLE_ATS)[number];
 export const ATS_HOSTS: Record<GoogleAts, readonly string[]> = {
   ashby: ['jobs.ashbyhq.com'],
   greenhouse: ['job-boards.greenhouse.io', 'boards.greenhouse.io'],
   lever: ['jobs.lever.co', 'jobs.eu.lever.co'],
+  workable: ['apply.workable.com'],
 };
 
 export function normalizeFreehireUrl(raw: string): string | null {
@@ -57,6 +58,16 @@ function normalizeGreenhouse(url: URL, parts: string[]): string | null {
   return url.href;
 }
 
+function normalizeWorkable(url: URL, parts: string[]): string | null {
+  // Workable has company-scoped listings and accountless short links.
+  // shortcut: these forms deduplicate separately; unify identities if duplicates appear.
+  if (![2, 3].includes(parts.length) || parts.at(-2) !== 'j') return null;
+  const id = parts.at(-1);
+  if (!id || !/^[a-f0-9]{10}$/i.test(id)) return null;
+  url.pathname = `${parts.length === 3 ? `/${parts[0]}` : ''}/j/${id.toUpperCase()}`;
+  return url.href;
+}
+
 // Return a canonical supported listing URL, or null for invalid/unsupported URLs.
 export function normalizeJobUrl(raw: string): string | null {
   let url: URL;
@@ -93,6 +104,9 @@ export function normalizeJobUrl(raw: string): string | null {
   }
   if (ATS_HOSTS.greenhouse.includes(url.hostname)) {
     return normalizeGreenhouse(url, parts);
+  }
+  if (ATS_HOSTS.workable.includes(url.hostname)) {
+    return normalizeWorkable(url, parts);
   }
   return null;
 }

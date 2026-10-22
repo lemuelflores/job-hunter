@@ -76,7 +76,7 @@ freehire: {
 
 Freehire accepts its native facets, exclusions, non-geography `_mode` settings, `q`/`q_fields`, semantic search, and numeric/boolean filters. Lists can be arrays or comma-separated strings. Unknown settings and reported ignored filters cause visible errors instead of silently broadening your search.
 
-Google has a **100-result cap per ATS search**. An all-ATS trigger queues three independent searches, allowing up to 300 results and overlapping requests, with higher Autom credit and rate-limit pressure. Freehire pages through all matching results; `limit` controls page size (1–100), not the total run size. The profile uses `posted_within_days: 14` to filter source posting dates upstream and `sort: 'posted_at'` for newest-posted first. No catalogue-age filter is added automatically. Native `sort`, `order`, and `offset` remain available; omitted sorting defaults to `created_at` descending. Descriptions always use Markdown. Rate limits or Freehire's 10,000-row pagination boundary can interrupt a run; completed pages are saved and the failure is reported.
+Google has a **100-result cap per ATS search**. An all-ATS trigger queues four independent searches, allowing up to 400 results and overlapping requests, with higher Autom credit and rate-limit pressure. Freehire pages through all matching results; `limit` controls page size (1–100), not the total run size. The profile uses `posted_within_days: 14` to filter source posting dates upstream and `sort: 'posted_at'` for newest-posted first. No catalogue-age filter is added automatically. Native `sort`, `order`, and `offset` remain available; omitted sorting defaults to `created_at` descending. Descriptions always use Markdown. Rate limits or Freehire's 10,000-row pagination boundary can interrupt a run; completed pages are saved and the failure is reported.
 
 Freehire skills are OR by default; `skills_mode: 'and'` requires all. Regions and countries also combine as OR, not AND. `reality: ['fresh']` is a separate quality classification, not the posting-date filter.
 
@@ -104,8 +104,8 @@ In `.env`, `GOOGLE_CRON` and `FREEHIRE_CRON` change the independent schedules (U
 ```sh
 docker compose logs -f scheduler workers  # See what's happening
 docker compose down                       # Stop everything
-pnpm job-hunter fetch google               # Queue all three ATS searches
-pnpm job-hunter fetch google --ats ashby    # Or select ashby, greenhouse, or lever
+pnpm job-hunter fetch google               # Queue all four ATS searches
+pnpm job-hunter fetch google --ats workable # Or select ashby, greenhouse, or lever
 pnpm job-hunter fetch freehire             # Queue Freehire search now
 pnpm job-hunter jobs                       # List saved jobs in the terminal
 ```

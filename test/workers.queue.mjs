@@ -777,6 +777,57 @@ test('queue dispatch, recovery and process lifecycle', {
   }
 
   await t.test(
+    'Workable discovery dispatches public API extraction and both assessments',
+    async (t) => {
+      const url = 'https://apply.workable.com/example/j/AB1234CDEF';
+      const f = fixture(t, ({ url: endpoint }) => {
+        if (endpoint.hostname === 'api.autom.dev') {
+          assert.match(
+            endpoint.searchParams.get('query'),
+            /site:apply\.workable\.com/,
+          );
+          return Response.json({
+            organic_results: [{ link: url, title: 'Engineer' }],
+          });
+        }
+        if (endpoint.hostname === 'apply.workable.com') {
+          assert.equal(
+            endpoint.pathname,
+            '/api/v2/accounts/example/jobs/AB1234CDEF',
+          );
+          return Response.json({
+            shortcode: 'AB1234CDEF',
+            description: '<p>US Laravel role</p>',
+            published: '2026-10-20T00:00:00Z',
+          });
+        }
+      });
+      await f.start();
+      const queue = f.googles.find((queue) => queue.target === 'workable');
+      const worker = await startGoogleWorker(
+        f.store,
+        f.queues,
+        queue,
+        profile,
+        'workable',
+      );
+      try {
+        await queue.enqueue();
+        await until(() => f.store.getJob(1)?.stack_status === 'match');
+        await f.idle();
+        assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
+        assert.equal(f.store.getJob(1).url, url);
+        assert.equal(f.store.getJob(1).posted_at, '2026-10-20T00:00:00.000Z');
+        assert.match(f.store.getJob(1).listing_text, /US Laravel role/);
+        assert.equal(f.store.getJob(1).eligibility, 'ineligible');
+        assert.equal(f.requests.length, 4);
+      } finally {
+        await worker.close();
+      }
+    },
+  );
+
+  await t.test(
     'CLI fetch google only enqueues without loading store or model',
     async (t) => {
       const f = fixture(t);
@@ -846,6 +897,7 @@ test('queue dispatch, recovery and process lifecycle', {
       assert.equal(await f.googles[0].queue.getWaitingCount(), 0);
       assert.equal(await f.googles[1].queue.getWaitingCount(), 1);
       assert.equal(await f.googles[2].queue.getWaitingCount(), 1);
+      assert.equal(await f.googles[3].queue.getWaitingCount(), 1);
       assert.match(errors[0], /ashby enqueue failed.*fixture unavailable/);
     },
   );
@@ -936,6 +988,7 @@ test('queue dispatch, recovery and process lifecycle', {
           async () =>
             (await f.googles[1].queue.getWaitingCount()) === 1 &&
             (await f.googles[2].queue.getWaitingCount()) === 1 &&
+            (await f.googles[3].queue.getWaitingCount()) === 1 &&
             (await f.freehire.queue.getWaitingCount()) === 1 &&
             f.output.some(
               (event) => event.worker === 'ashby' && event.outcome === 'failed',
