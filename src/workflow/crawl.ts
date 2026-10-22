@@ -34,7 +34,7 @@ export async function crawlJob(
     listing = await extract(job.url, { signal });
   } catch (error) {
     signal?.throwIfAborted();
-    // Freehire can complete this crawl while the extraction request is in flight.
+    // Another caller can complete this crawl while the request is in flight.
     if (!store.needsStage(id, 'crawl')) {
       await enqueueMissingStages(store, id, enqueue);
       return;
@@ -44,7 +44,7 @@ export async function crawlJob(
     return;
   }
   signal?.throwIfAborted();
-  // Keep Freehire's checkpoint instead of trying to save a second extraction.
+  // Keep an existing checkpoint instead of saving a second extraction.
   if (store.needsStage(id, 'crawl'))
     store.saveListingText(id, listing.text, listing.postedAt);
   await enqueueMissingStages(store, id, enqueue);

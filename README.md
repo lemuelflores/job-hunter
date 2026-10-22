@@ -80,6 +80,8 @@ Google has a **100-result cap per ATS search**. An all-ATS trigger queues four i
 
 Freehire skills are OR by default; `skills_mode: 'and'` requires all. Regions and countries also combine as OR, not AND. `reality: ['fresh']` is a separate quality classification, not the posting-date filter.
 
+Both sources queue the original listing for extraction before location and stack checks; Freehire's potentially truncated descriptions are not used for assessments. Existing saved descriptions and assessments remain unchanged.
+
 Each job gets a stack assessment. The stack list contains alternatives, not a requirement to use every technology in one job. With Laravel, Vue, and Nuxt configured:
 
 | Assessment | Example |

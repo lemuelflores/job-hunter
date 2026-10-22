@@ -15,17 +15,15 @@ export async function searchFreehireListings(
   return {
     discoveries: searched.jobs.flatMap<SearchDiscovery>((job) => {
       const url = normalizeUrl(job.url);
-      const { url: _originalUrl, description, ...metadata } = job;
       return url
         ? [
             {
-              kind: 'full-text',
+              kind: 'url',
               source: 'freehire',
               url,
               title: job.title,
               query,
               postedAt: job.posted_at,
-              listingText: `Freehire listing metadata:\n${JSON.stringify(metadata)}\n\n${description}`,
             },
           ]
         : [];

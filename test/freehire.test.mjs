@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   ATS_DEFINITIONS,
+  createCrawlExtractors,
   createFreehireSearch,
   createGoogleSearch,
   normalizeFreehireUrl,
@@ -9,6 +10,7 @@ import {
 import { SqliteStore } from '../dist/infra/sqlite.js';
 import { searchFreehire } from '../dist/integrations/search/freehire.js';
 import { scopedGoogleQuery } from '../dist/integrations/search/google.js';
+import { crawlJob } from '../dist/workflow/crawl.js';
 import {
   discoverFreehireJobs,
   discoverGoogleJobs,
@@ -431,72 +433,96 @@ test('URL acceptance reuses ATS identity without rewriting opaque original links
     assert.equal(normalizeFreehireUrl(url), null, url);
 });
 
-test('Freehire saves descriptions/checkpoints and both real assessments without extraction', async (t) => {
-  const store = new SqliteStore(':memory:');
-  t.after(() => store.close());
-  const original =
-    'https://careers.example.com/role?id=1&utm_source=freehire.me';
-  const metadata = {
-    title: 'Freehire engineer',
-    company: 'Example',
-    location: 'United States',
-    countries: ['US'],
-    regions: ['north_america'],
-    work_mode: 'hybrid',
-  };
-  const f = externalFixture(t, ({ url }) =>
-    url.hostname === 'freehire.me'
-      ? page(url, [
-          { ...job(), ...metadata, url: original },
-          { ...job(2), description: ' ' },
-          { ...job(3), url: 'javascript:alert(1)' },
-        ])
-      : undefined,
-  );
-  const enqueued = [];
-  const outcome = await discoverFreehireJobs(
-    store,
-    createFreehireSearch(config),
-    async (stage, id) => {
+for (const viaAts of [true, false]) {
+  test(`Freehire queues crawl and assesses extracted text via ${viaAts ? 'ATS' : 'Firecrawl'}`, async (t) => {
+    const store = new SqliteStore(':memory:');
+    t.after(() => store.close());
+    const original = viaAts
+      ? result(1).url
+      : 'https://careers.example.com/role?id=1&utm_source=freehire.me';
+    const extracted =
+      'Complete source description: US residents only. Laravel role.';
+    const metadata = {
+      title: 'Freehire engineer',
+      company: 'Example',
+      location: 'United States',
+      countries: ['US'],
+      regions: ['north_america'],
+      work_mode: 'hybrid',
+    };
+    const f = externalFixture(t, ({ url }) =>
+      url.hostname === 'freehire.me'
+        ? page(url, [
+            { ...job(), ...metadata, url: original },
+            { ...job(2), description: ' ' },
+            { ...job(3), url: 'javascript:alert(1)' },
+          ])
+        : url.hostname === 'boards-api.greenhouse.io'
+          ? Response.json({ id: 1, content: `<p>${extracted}</p>` })
+          : url.pathname === '/v2/scrape'
+            ? Response.json({ success: true, data: { markdown: extracted } })
+            : undefined,
+    );
+    const enqueued = [];
+    const outcome = await discoverFreehireJobs(
+      store,
+      createFreehireSearch(config),
+      async (stage, id) => {
+        enqueued.push({ stage, id });
+      },
+      async () => {},
+    );
+    assert.deepEqual(enqueued, [{ stage: 'crawl', id: 1 }]);
+    assert.equal(outcome.added, 1);
+    assert.equal(store.getJob(1).url, original);
+    assert.equal(store.getJob(1).title, 'Freehire engineer');
+    assert.equal(store.getJob(1).source, 'freehire');
+    assert.deepEqual(JSON.parse(store.getJob(1).query), config);
+    assert.equal(store.getJob(1).listing_text, null);
+    assert.equal(store.stages(1)[0].state, 'pending');
+    await checkLocation(store, 1, f.reviewLocation);
+    await checkTech(store, 1, f.reviewStack);
+    assert.equal(f.requests.length, 1, 'assessments wait for crawling');
+    await crawlJob(store, 1, createCrawlExtractors(), async (stage, id) => {
       enqueued.push({ stage, id });
-    },
-    async () => {},
-  );
-  assert.deepEqual(enqueued, [
-    { stage: 'location', id: 1 },
-    { stage: 'stack', id: 1 },
-  ]);
-  assert.equal(outcome.added, 1);
-  assert.equal(store.getJob(1).url, original);
-  assert.equal(store.getJob(1).title, 'Freehire engineer');
-  assert.equal(store.getJob(1).source, 'freehire');
-  assert.deepEqual(JSON.parse(store.getJob(1).query), config);
-  const text = `Freehire listing metadata:\n${JSON.stringify(metadata)}\n\n${job().description}`;
-  assert.equal(store.getJob(1).listing_text, text);
-  assert.equal(store.stages(1)[0].state, 'complete');
-  await checkLocation(store, 1, f.reviewLocation);
-  await checkTech(store, 1, f.reviewStack);
-  assert.equal(store.getJob(1).eligibility, 'ineligible');
-  assert.equal(store.getJob(1).stack_status, 'match');
-  assert.deepEqual(
-    f.requests.map(({ url }) => url.hostname),
-    ['freehire.me', 'chatgpt.com', 'chatgpt.com'],
-  );
-  for (const { body } of f.requests.slice(1))
-    assert.ok(body.input[0].content[0].text.includes(text));
-  const locationRequest = JSON.stringify(f.requests[1].body);
-  const techRequest = JSON.stringify(f.requests[2].body);
-  assert.ok(locationRequest.includes(profile.review.location));
-  assert.ok(!locationRequest.includes(JSON.stringify(profile.review.stack)));
-  assert.ok(
-    f.requests[2].body.input[0].content[0].text.includes(
-      JSON.stringify(profile.review.stack),
-    ),
-  );
-  assert.ok(!techRequest.includes(profile.review.location));
-});
+    });
+    assert.deepEqual(enqueued.slice(1), [
+      { stage: 'location', id: 1 },
+      { stage: 'stack', id: 1 },
+    ]);
+    const text = store.getJob(1).listing_text;
+    assert.ok(text.includes(extracted));
+    assert.ok(!text.includes(job().description));
+    assert.ok(!text.includes('Freehire listing metadata'));
+    assert.equal(store.stages(1)[0].state, 'complete');
+    await checkLocation(store, 1, f.reviewLocation);
+    await checkTech(store, 1, f.reviewStack);
+    assert.equal(store.getJob(1).eligibility, 'ineligible');
+    assert.equal(store.getJob(1).stack_status, 'match');
+    assert.equal(
+      f.requests[1].url.pathname,
+      viaAts ? '/v1/boards/example/jobs/1' : '/v2/scrape',
+    );
+    const assessments = f.requests.filter(
+      ({ url }) => url.hostname === 'chatgpt.com',
+    );
+    assert.equal(assessments.length, 2);
+    for (const { body } of assessments)
+      assert.ok(body.input[0].content[0].text.includes(text));
+    const locationRequest = JSON.stringify(assessments[0].body);
+    const techRequest = JSON.stringify(assessments[1].body);
+    assert.ok(locationRequest.includes(profile.review.location));
+    assert.ok(!locationRequest.includes(JSON.stringify(profile.review.stack)));
+    assert.ok(
+      assessments[1].body.input[0].content[0].text.includes(
+        JSON.stringify(profile.review.stack),
+      ),
+    );
+    assert.ok(!techRequest.includes(profile.review.location));
+  });
+}
 
-test('partial Freehire discovery dispatches saved full text before surfacing failure', async (t) => {
+test('partial Freehire discovery dispatches crawls before surfacing failure', async (t) => {
   const store = new SqliteStore(':memory:');
   t.after(() => store.close());
   externalFixture(t, ({ url }) =>
@@ -517,12 +543,9 @@ test('partial Freehire discovery dispatches saved full text before surfacing fai
     (error) => {
       assert.equal(error.name, 'DiscoveryPartialFailure');
       assert.match(error.message, /503/);
-      assert.deepEqual(enqueued, [
-        { stage: 'location', id: 1 },
-        { stage: 'stack', id: 1 },
-      ]);
-      assert.equal(store.stages(1)[0].state, 'complete');
-      assert.ok(store.getJob(1).listing_text.endsWith(job().description));
+      assert.deepEqual(enqueued, [{ stage: 'crawl', id: 1 }]);
+      assert.equal(store.stages(1)[0].state, 'pending');
+      assert.equal(store.getJob(1).listing_text, null);
       return true;
     },
   );
@@ -614,7 +637,8 @@ test('cross-source ingestion preserves canonical identities in both arrival orde
         : JSON.stringify(config),
     );
     assert.equal(store.listReviewJobs('active').length, 1);
-    assert.ok(store.getJob(1).listing_text.endsWith(job().description));
+    assert.equal(store.getJob(1).listing_text, null);
+    store.saveListingText(1, 'Original source description');
     store.review(1, 'eligible', 'Keep decision');
     store.reviewStack(1, stack);
     store.setReviewStatus('1', 'hidden');

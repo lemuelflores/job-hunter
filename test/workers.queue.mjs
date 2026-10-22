@@ -266,14 +266,14 @@ test('queue dispatch, recovery and process lifecycle', {
   );
 
   await t.test(
-    'Freehire source saves and dispatches both checks without extraction',
+    'Freehire source crawls before dispatching both checks',
     async (t) => {
       const f = fixture(t, ({ url }) =>
         url.hostname === 'freehire.me'
           ? Response.json({
               data: [
                 {
-                  url: 'https://careers.example.com/1',
+                  url: result(1).url,
                   title: 'Engineer',
                   description: 'Full Freehire Laravel listing',
                 },
@@ -292,15 +292,13 @@ test('queue dispatch, recovery and process lifecycle', {
       await f.idle();
       assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
       assert.ok(
-        f.store
-          .getJob(1)
-          .listing_text.endsWith('Full Freehire Laravel listing'),
+        f.store.getJob(1).listing_text.includes('Listing 1: US Laravel role'),
       );
       assert.equal(
         f.requests.filter(
           ({ url }) => url.hostname === 'boards-api.greenhouse.io',
         ).length,
-        0,
+        1,
       );
       for (const queue of [f.google, f.freehire]) {
         assert.equal(queue.queue.jobsOpts.attempts, 1);
@@ -315,7 +313,7 @@ test('queue dispatch, recovery and process lifecycle', {
   );
 
   await t.test(
-    'Freehire dispatch gap is repairable without extraction or resetting failed crawls',
+    'Freehire crawl dispatch gap is repairable without resetting failed crawls',
     async (t) => {
       const f = fixture(t, ({ url }) =>
         url.hostname === 'freehire.me'
@@ -331,7 +329,7 @@ test('queue dispatch, recovery and process lifecycle', {
       );
       f.store.saveResults([result(2)]);
       f.store.failStage(1, 'crawl', 'Exhausted', true);
-      f.queues.queues.location.jobsOpts.sizeLimit = 1;
+      f.queues.queues.crawl.jobsOpts.sizeLimit = 1;
       await f.start(['freehire']);
       const task = await f.freehire.enqueue();
       await f.idle();
@@ -342,14 +340,10 @@ test('queue dispatch, recovery and process lifecycle', {
       const imported = f.store
         .listReviewJobs('active')
         .find((job) => job.url === result(1).url);
-      assert.ok(
-        f.store
-          .getJob(imported.id)
-          .listing_text.endsWith('Saved Freehire Laravel'),
-      );
+      assert.equal(f.store.getJob(imported.id).listing_text, null);
       assert.equal(f.store.stages(1)[0].state, 'failed');
-      delete f.queues.queues.location.jobsOpts.sizeLimit;
-      await f.start(['location', 'stack']);
+      delete f.queues.queues.crawl.jobsOpts.sizeLimit;
+      await f.start(stages);
       await f.queues.repair(f.store);
       await f.idle();
       assert.ok(
@@ -381,7 +375,7 @@ test('queue dispatch, recovery and process lifecycle', {
             : new Response('', { status: 503 })
           : undefined,
       );
-      await f.start(['freehire', 'location', 'stack']);
+      await f.start(['freehire', ...stages]);
       const task = await f.freehire.enqueue();
       await f.idle();
       assert.match(

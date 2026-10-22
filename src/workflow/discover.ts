@@ -81,7 +81,5 @@ export async function discoverFreehireJobs(
   enqueue: EnqueueStage,
   syncFailures: SyncListingFailures,
 ): Promise<DiscoveryResult> {
-  // Reconcile retained exhausted crawls before ingestion can fill an empty checkpoint.
-  for (const job of store.unfinished()) await syncFailures(job.id);
   return saveDiscoveries(store, await search(), enqueue, syncFailures);
 }
