@@ -14,10 +14,11 @@ import {
 } from 'citty';
 import type {
   DiscoveryQueue,
-  DiscoverySource,
+  DiscoveryTarget,
   ReviewQueues,
 } from '../bullmq.js';
 import type { FreehireConfig } from '../discovery/freehire.js';
+import { GOOGLE_ATS, type GoogleAts } from '../discovery/job-url.js';
 import type { DiscoverySchedules } from '../discovery/scheduler.js';
 import { loadProfile, type Profile } from '../profile.js';
 import { createLlm } from '../review/llm/index.js';
@@ -113,13 +114,14 @@ export interface CliDependencies {
   createLlm(): LlmProvider;
   createStore(): Promise<SqliteStore>;
   createReviewQueues(): Promise<ReviewQueues>;
-  createDiscoveryQueue(source: DiscoverySource): Promise<DiscoveryQueue>;
+  createDiscoveryQueue(target: DiscoveryTarget): Promise<DiscoveryQueue>;
   startDiscoveryScheduler(options: DiscoverySchedules): Promise<void>;
   startGoogleWorker(
     store: SqliteStore,
     queues: ReviewQueues,
     queue: DiscoveryQueue,
     profile: Profile,
+    ats: GoogleAts,
   ): Promise<Worker>;
   startFreehireWorker(
     store: SqliteStore,
@@ -161,9 +163,9 @@ const defaults: CliDependencies = {
     );
     return startDiscoveryScheduler(options);
   },
-  startGoogleWorker: async (store, queues, queue, profile) => {
+  startGoogleWorker: async (store, queues, queue, profile, ats) => {
     const { startGoogleWorker } = await import('./workers.js');
-    return startGoogleWorker(store, queues, queue, profile);
+    return startGoogleWorker(store, queues, queue, profile, ats);
   },
   startFreehireWorker: async (store, queues, queue, config) => {
     const { startFreehireWorker } = await import('./workers.js');
@@ -190,7 +192,7 @@ export async function main(
   const deps = { ...defaults, ...dependencies };
   let store: SqliteStore | undefined;
   let queues: ReviewQueues | undefined;
-  const discoveryQueues: Partial<Record<DiscoverySource, DiscoveryQueue>> = {};
+  const discoveryQueues: Partial<Record<DiscoveryTarget, DiscoveryQueue>> = {};
   let exitCode = 0;
   const database = async () => {
     if (!store) {
@@ -205,7 +207,7 @@ export async function main(
     return queues;
   };
   const controller = new AbortController();
-  const discoveryQueue = async (source: DiscoverySource) => {
+  const discoveryQueue = async (source: DiscoveryTarget) => {
     const existing = discoveryQueues[source];
     if (existing) return existing;
     const queue = await deps.createDiscoveryQueue(source);
@@ -222,20 +224,60 @@ export async function main(
     console.log(JSON.stringify(outcome));
     exitCode = outcome.failures.length ? 1 : 0;
   };
-  const sourceCommand = (source: DiscoverySource) =>
-    defineCommand({
-      meta: { description: `Queue ${source} discovery (requires workers)` },
+  const sourceCommands = {
+    google: defineCommand({
+      meta: {
+        description:
+          'Queue independent Google ATS searches (up to 100 results each)',
+      },
+      args: {
+        ats: {
+          type: 'enum',
+          options: [...GOOGLE_ATS],
+          description: 'ATS to search (default: all)',
+        },
+      },
+      run: async ({ args }) => {
+        const profile = await deps.loadProfile();
+        if (!profile.google.enabled)
+          throw new Error('google discovery is disabled in profile.ts');
+        const targets = args.ats ? [args.ats] : GOOGLE_ATS;
+        const results = await Promise.allSettled(
+          targets.map(async (ats) => {
+            const task = await (await discoveryQueue(ats)).enqueue();
+            console.log(
+              JSON.stringify({ source: 'google', ats, queued: task.id }),
+            );
+          }),
+        );
+        const failures = results.flatMap((result, index) =>
+          result.status === 'rejected'
+            ? [
+                new Error(`${targets[index]} enqueue failed`, {
+                  cause: result.reason,
+                }),
+              ]
+            : [],
+        );
+        if (failures.length)
+          throw new AggregateError(
+            failures,
+            failures
+              .map((error) => `${error.message}: ${String(error.cause)}`)
+              .join('; '),
+          );
+      },
+    }),
+    freehire: defineCommand({
+      meta: { description: 'Queue freehire discovery (requires workers)' },
       run: async () => {
         const profile = await deps.loadProfile();
-        if (!profile[source].enabled)
-          throw new Error(`${source} discovery is disabled in profile.ts`);
-        const task = await (await discoveryQueue(source)).enqueue();
-        console.log(JSON.stringify({ source, queued: task.id }));
+        if (!profile.freehire.enabled)
+          throw new Error('freehire discovery is disabled in profile.ts');
+        const task = await (await discoveryQueue('freehire')).enqueue();
+        console.log(JSON.stringify({ source: 'freehire', queued: task.id }));
       },
-    });
-  const sourceCommands = {
-    google: sourceCommand('google'),
-    freehire: sourceCommand('freehire'),
+    }),
   };
   const subCommands = {
     auth: defineCommand({
@@ -259,10 +301,11 @@ export async function main(
       },
       run: async () => {
         const profile = await deps.loadProfile();
+        const google: DiscoveryQueue[] = [];
+        if (profile.google.enabled)
+          for (const ats of GOOGLE_ATS) google.push(await discoveryQueue(ats));
         await deps.startDiscoveryScheduler({
-          google: profile.google.enabled
-            ? await discoveryQueue('google')
-            : undefined,
+          google: profile.google.enabled ? google : undefined,
           freehire: profile.freehire.enabled
             ? await discoveryQueue('freehire')
             : undefined,
@@ -303,14 +346,16 @@ export async function main(
         const workers: Worker[] = [];
         try {
           if (profile.google.enabled)
-            workers.push(
-              await deps.startGoogleWorker(
-                store,
-                queues,
-                await discoveryQueue('google'),
-                profile,
-              ),
-            );
+            for (const ats of GOOGLE_ATS)
+              workers.push(
+                await deps.startGoogleWorker(
+                  store,
+                  queues,
+                  await discoveryQueue(ats),
+                  profile,
+                  ats,
+                ),
+              );
           if (profile.freehire.enabled)
             workers.push(
               await deps.startFreehireWorker(

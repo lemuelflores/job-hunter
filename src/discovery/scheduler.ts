@@ -3,7 +3,7 @@ import type { DiscoveryQueue } from '../bullmq.js';
 import { deliveryEvent, diagnosticError } from '../worker-diagnostics.js';
 
 export interface DiscoverySchedules {
-  google?: DiscoveryQueue;
+  google?: DiscoveryQueue[];
   freehire?: DiscoveryQueue;
   googleCron?: string;
   freehireCron?: string;
@@ -28,7 +28,7 @@ export async function startDiscoveryScheduler(
   process.once('SIGTERM', stop);
   try {
     for (const [queue, expression] of [
-      [options.google, googleCron],
+      ...(options.google ?? []).map((queue) => [queue, googleCron] as const),
       [options.freehire, freehireCron],
     ] as const) {
       if (!queue) continue;
@@ -37,6 +37,7 @@ export async function startDiscoveryScheduler(
         (context) => {
           const identity = {
             source: queue.source,
+            worker: queue.name,
             scheduled_at: context.date.toISOString(),
           };
           const started = performance.now();
@@ -73,6 +74,7 @@ export async function startDiscoveryScheduler(
         deliveryEvent({
           event: 'scheduler_tick_skipped',
           source: queue.source,
+          worker: queue.name,
           scheduled_at: context.date.toISOString(),
           reason: 'enqueue_in_progress',
         });
@@ -80,6 +82,7 @@ export async function startDiscoveryScheduler(
       deliveryEvent({
         event: 'scheduler_scheduled',
         source: queue.source,
+        worker: queue.name,
         cron: expression,
         timezone: 'UTC',
       });

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { normalizeGoogleQuery } from '../dist/discovery/google.js';
+import {
+  googleAtsQuery,
+  normalizeGoogleQuery,
+} from '../dist/discovery/google.js';
+import { ATS_HOSTS, GOOGLE_ATS } from '../dist/discovery/job-url.js';
 
 test('explicit query only collapses whitespace, without hidden filters or aliases', () => {
   assert.equal(
@@ -11,15 +15,10 @@ test('explicit query only collapses whitespace, without hidden filters or aliase
     assert.throws(() => normalizeGoogleQuery(query), /query is required/);
 });
 
-test('root query retains the existing user search terms and all supported ATS hosts', async () => {
+test('root base query retains the existing user search terms without ATS hosts', async () => {
   const profile = (await import('../profile.ts')).default;
   const query = normalizeGoogleQuery(profile.google.query);
   for (const term of [
-    'jobs.ashbyhq.com',
-    'jobs.lever.co',
-    'jobs.eu.lever.co',
-    'boards.greenhouse.io',
-    'job-boards.greenhouse.io',
     'fullstack',
     'full stack',
     'full-stack',
@@ -51,4 +50,27 @@ test('root query retains the existing user search terms and all supported ATS ho
     'Philippines',
   ])
     assert.ok(query.includes(term), term);
+  assert.ok(!query.includes('site:'));
+});
+
+test('each ATS scopes the complete normalized base query to only its host group', () => {
+  for (const ats of GOOGLE_ATS) {
+    assert.equal(
+      googleAtsQuery(
+        ' engineer\n OR developer Laravel (APAC OR worldwide) ',
+        ats,
+      ),
+      `(engineer OR developer Laravel (APAC OR worldwide)) (${ATS_HOSTS[ats].map((host) => `site:${host}`).join(' OR ')})`,
+    );
+  }
+  assert.throws(() => googleAtsQuery('engineer', 'unknown'), /Unknown ATS/);
+  for (const query of [
+    'site:example.com engineer',
+    '(SITE:example.com)',
+    '-site:example.com',
+  ])
+    assert.throws(
+      () => googleAtsQuery(query, 'ashby'),
+      /must not contain site:/,
+    );
 });

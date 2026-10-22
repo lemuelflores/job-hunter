@@ -1,5 +1,6 @@
 import { createNodeRedisClient, Queue, RedisConnection, Worker } from 'bullmq';
 import { createClient } from 'redis';
+import type { GoogleAts } from './discovery/job-url.js';
 import { STAGES, type Stage } from './review/stages.js';
 import type { SqliteStore } from './sqlite.js';
 import {
@@ -31,6 +32,7 @@ RedisConnection.clientFactory = (options) => {
 };
 
 export type DiscoverySource = 'google' | 'freehire';
+export type DiscoveryTarget = GoogleAts | 'freehire';
 
 function stageState(store: SqliteStore, id: number, stage: Stage) {
   if (!Number.isSafeInteger(id) || id < 1) return 'missing';
@@ -72,13 +74,17 @@ export class DiscoveryPartialFailure extends Error {
 
 export class DiscoveryQueue {
   readonly queue: Queue;
+  readonly source: DiscoverySource;
+  readonly name: string;
 
   constructor(
-    readonly source: DiscoverySource,
+    readonly target: DiscoveryTarget,
     readonly url = process.env.REDIS_URL || 'redis://127.0.0.1:6379',
     readonly prefix = 'job-hunter',
   ) {
-    this.queue = new Queue(source, {
+    this.source = target === 'freehire' ? 'freehire' : 'google';
+    this.name = target;
+    this.queue = new Queue(this.name, {
       prefix,
       connection: { url, enableOfflineQueue: false },
       defaultJobOptions: {
@@ -88,16 +94,12 @@ export class DiscoveryQueue {
       },
     });
     this.queue.on('error', (error) =>
-      console.error(`[queue] ${source}: ${error.message}`),
+      console.error(`[queue] ${this.name}: ${error.message}`),
     );
   }
 
   async enqueue() {
-    return this.queue.add(
-      this.source,
-      {},
-      { deduplication: { id: this.source } },
-    );
+    return this.queue.add(this.name, {}, { deduplication: { id: this.name } });
   }
 
   async startWorker(
@@ -105,10 +107,12 @@ export class DiscoveryQueue {
   ) {
     await this.queue.setGlobalConcurrency(1);
     const worker = new Worker(
-      this.source,
+      this.name,
       async (task) => {
         const identity = {
           source: this.source,
+          worker: this.name,
+          ...(this.source === 'google' ? { ats: this.target } : {}),
           delivery_id: task.id,
           attempt: task.attemptsMade + 1,
           attempt_limit: task.opts.attempts ?? 1,
@@ -147,10 +151,11 @@ export class DiscoveryQueue {
         prefix: this.prefix,
         connection: { url: this.url },
         concurrency: 1,
+        name: this.name,
       },
     );
     worker.on('error', (error) =>
-      console.error(`[worker] ${this.source}: ${error.message}`),
+      console.error(`[worker] ${this.name}: ${error.message}`),
     );
     return worker;
   }

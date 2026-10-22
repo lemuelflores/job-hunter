@@ -41,6 +41,13 @@ test('profile requires candidate location, flat stack and explicit source enable
     [{ ...profile, google: { query: 'engineer' } }, /google.enabled/],
     [{ ...profile, google: { enabled: true, query: '\n ' } }, /google.query/],
     [
+      {
+        ...profile,
+        google: { enabled: true, query: 'site:jobs.ashbyhq.com engineer' },
+      },
+      /google.query.*site:/,
+    ],
+    [
       { ...profile, google: { ...profile.google, filters: {} } },
       /google.filters/,
     ],

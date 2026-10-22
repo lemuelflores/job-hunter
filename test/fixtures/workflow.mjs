@@ -9,8 +9,7 @@ export const profile = {
   },
   google: {
     enabled: true,
-    query:
-      'site:job-boards.greenhouse.io intitle:engineer Laravel (Europe OR worldwide)',
+    query: 'intitle:engineer Laravel (Europe OR worldwide)',
   },
   freehire: { enabled: false, work_mode: ['remote'] },
 };

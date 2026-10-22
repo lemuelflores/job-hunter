@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { discoverGoogleJobs } from '../dist/discovery/discover.js';
-import { normalizeGoogleQuery } from '../dist/discovery/google.js';
+import { googleAtsQuery } from '../dist/discovery/google.js';
 import { crawlJob } from '../dist/review/crawl.js';
 import { checkLocation } from '../dist/review/location-check.js';
 import { checkTech } from '../dist/review/tech-check.js';
@@ -21,6 +21,52 @@ function fixture(t, respond) {
   t.after(() => store.close());
   return { store, ...externalFixture(t, respond) };
 }
+
+test('ATS searches each keep a 100-result budget, reject sibling URLs and save executed queries', async (t) => {
+  const urls = {
+    ashby: (id) =>
+      `https://jobs.ashbyhq.com/example/${String(id).padStart(8, '0')}-abcd-abcd-abcd-123456789abc`,
+    greenhouse: (id) =>
+      `https://${id % 2 ? 'boards' : 'job-boards'}.greenhouse.io/example/jobs/${id}`,
+    lever: (id) =>
+      `https://jobs${id % 2 ? '.eu' : ''}.lever.co/example/${String(id).padStart(8, '0')}-abcd-abcd-abcd-123456789abc`,
+  };
+  const f = fixture(t, ({ url }) => {
+    const query = url.searchParams.get('query');
+    const ats = Object.keys(urls).find(
+      (ats) => query === googleAtsQuery(profile.google.query, ats),
+    );
+    assert.ok(ats, query);
+    return Response.json({
+      organic_results: [
+        {
+          link: urls[ats === 'ashby' ? 'lever' : 'ashby'](999),
+          title: 'Wrong ATS',
+        },
+        ...Array.from({ length: 105 }, (_, index) => ({
+          link: urls[ats](index + 1),
+          title: 'Engineer',
+        })),
+      ],
+      pagination: { has_next_page: true, next: 2 },
+    });
+  });
+  for (const ats of Object.keys(urls)) {
+    // The upstream result budget includes rejected search results.
+    assert.equal((await discoverGoogleJobs(f.store, profile, ats)).added, 99);
+    const query = googleAtsQuery(profile.google.query, ats);
+    assert.equal(
+      f.store.listReviewJobs('active').filter((job) => job.query === query)
+        .length,
+      99,
+    );
+  }
+  assert.equal(f.requests.length, 3);
+  assert.equal(f.store.listReviewJobs('active').length, 297);
+  assert.ok(
+    f.store.listReviewJobs('active').every((job) => job.source === 'google'),
+  );
+});
 
 test('discovery canonicalizes, deduplicates and returns only discovered unfinished IDs', async (t) => {
   const f = fixture(t, ({ url }) =>
@@ -45,7 +91,7 @@ test('discovery canonicalizes, deduplicates and returns only discovered unfinish
   f.store.review(2, 'eligible', 'Saved decision');
   f.store.reviewStack(2, stack);
   const { last_seen: _beforeSeen, ...before } = f.store.getJob(2);
-  assert.deepEqual(await discoverGoogleJobs(f.store, profile), {
+  assert.deepEqual(await discoverGoogleJobs(f.store, profile, 'greenhouse'), {
     ids: [1, 5],
     added: 1,
     pending: 4,
@@ -59,7 +105,7 @@ test('discovery canonicalizes, deduplicates and returns only discovered unfinish
   const search = f.requests[0];
   assert.equal(
     search.url.searchParams.get('query'),
-    normalizeGoogleQuery(profile.google.query),
+    googleAtsQuery(profile.google.query, 'greenhouse'),
   );
   assert.equal(search.url.searchParams.has('gl'), false);
   assert.equal(search.init.headers['x-api-key'], 'fixture-key');
@@ -85,7 +131,7 @@ test('partial discovery returns completed pages and failure without repeating pa
         ? new Response('Unavailable', { status: 503 })
         : Response.json({ organic_results: [] });
   });
-  const outcome = await discoverGoogleJobs(f.store, profile);
+  const outcome = await discoverGoogleJobs(f.store, profile, 'greenhouse');
   assert.deepEqual(outcome.ids, [1, 2]);
   assert.equal(outcome.added, 2);
   assert.equal(outcome.pending, 2);
@@ -95,7 +141,7 @@ test('partial discovery returns completed pages and failure without repeating pa
   assert.equal(f.store.getJob(2).snippet, '');
   assert.equal(f.requests.length, 2);
   unavailable = false;
-  assert.deepEqual(await discoverGoogleJobs(f.store, profile), {
+  assert.deepEqual(await discoverGoogleJobs(f.store, profile, 'greenhouse'), {
     ids: [1, 2],
     added: 0,
     pending: 2,
@@ -112,11 +158,11 @@ test('discovery normalizes UUID casing but preserves board casing and saved deci
       ),
     }),
   );
-  await discoverGoogleJobs(f.store, profile);
+  await discoverGoogleJobs(f.store, profile, 'ashby');
   f.store.saveListingText(1, 'Saved listing');
   f.store.review(1, 'eligible', 'Saved decision');
   const saved = f.store.getJob(1);
-  assert.equal((await discoverGoogleJobs(f.store, profile)).added, 0);
+  assert.equal((await discoverGoogleJobs(f.store, profile, 'ashby')).added, 0);
   assert.equal(f.store.listReviewJobs('active').length, 1);
   assert.equal(f.store.getJob(1).url, url);
   assert.equal(f.store.getJob(1).reason, saved.reason);

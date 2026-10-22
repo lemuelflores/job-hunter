@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import { ATS_HOSTS, type GoogleAts } from './job-url.js';
 
 export interface SearchResult {
   title: string;
@@ -19,6 +20,18 @@ export function normalizeGoogleQuery(query: string): string {
   if (typeof query !== 'string' || !query.trim())
     throw new Error('Google query is required');
   return query.replace(/\s+/g, ' ').trim();
+}
+
+export function isGoogleBaseQuery(query: string): boolean {
+  return !/(^|[\s(+-])site\s*:/i.test(query);
+}
+
+export function googleAtsQuery(query: string, ats: GoogleAts): string {
+  const base = normalizeGoogleQuery(query);
+  if (!isGoogleBaseQuery(base))
+    throw new Error('Google base query must not contain site: operators');
+  if (!Object.hasOwn(ATS_HOSTS, ats)) throw new Error(`Unknown ATS: ${ats}`);
+  return `(${base}) (${ATS_HOSTS[ats].map((host) => `site:${host}`).join(' OR ')})`;
 }
 
 const OrganicResult = v.object({
@@ -47,13 +60,13 @@ const SearchResponse = v.pipe(
 );
 
 class GoogleSearchError extends Error {
-  constructor(
-    error: unknown,
-    readonly results: SearchResult[],
-  ) {
+  readonly results: SearchResult[];
+
+  constructor(error: unknown, results: SearchResult[]) {
     super(error instanceof Error ? error.message : String(error), {
       cause: error,
     });
+    this.results = results;
   }
 }
 

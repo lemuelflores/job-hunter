@@ -5,6 +5,7 @@ import {
   discoverGoogleJobs,
 } from '../dist/discovery/discover.js';
 import { searchFreehire } from '../dist/discovery/freehire.js';
+import { googleAtsQuery } from '../dist/discovery/google.js';
 import { normalizeFreehireUrl } from '../dist/discovery/job-url.js';
 import { checkLocation } from '../dist/review/location-check.js';
 import { checkTech } from '../dist/review/tech-check.js';
@@ -513,7 +514,7 @@ test('cross-source ingestion preserves canonical identities in both arrival orde
           organic_results: [{ link: result(1).url, title: 'Google engineer' }],
         });
     });
-    const google = () => discoverGoogleJobs(store, profile);
+    const google = () => discoverGoogleJobs(store, profile, 'greenhouse');
     const freehire = () => discoverFreehireJobs(store, config);
     await (first === 'google' ? google() : freehire());
     const originalQuery = store.getJob(1).query;
@@ -522,7 +523,9 @@ test('cross-source ingestion preserves canonical identities in both arrival orde
     assert.equal(store.getJob(1).query, originalQuery);
     assert.equal(
       originalQuery,
-      first === 'google' ? profile.google.query : JSON.stringify(config),
+      first === 'google'
+        ? googleAtsQuery(profile.google.query, 'greenhouse')
+        : JSON.stringify(config),
     );
     assert.equal(store.listReviewJobs('active').length, 1);
     assert.ok(store.getJob(1).listing_text.endsWith(job().description));

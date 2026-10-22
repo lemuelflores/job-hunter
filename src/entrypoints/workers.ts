@@ -5,6 +5,7 @@ import {
   discoverGoogleJobs,
 } from '../discovery/discover.js';
 import type { FreehireConfig } from '../discovery/freehire.js';
+import type { GoogleAts } from '../discovery/job-url.js';
 import type { Profile } from '../profile.js';
 import { crawlJob } from '../review/crawl.js';
 import type { ListingExtractor } from '../review/extraction/types.js';
@@ -18,9 +19,10 @@ export function startGoogleWorker(
   queues: ReviewQueues,
   queue: DiscoveryQueue,
   profile: Profile,
+  ats: GoogleAts,
 ) {
   return queue.startWorker(async () => {
-    const { ids, ...outcome } = await discoverGoogleJobs(store, profile);
+    const { ids, ...outcome } = await discoverGoogleJobs(store, profile, ats);
     for (const id of ids) await queues.scheduleListing(store, id);
     outcome.pending = store.pendingCount();
     const result = {

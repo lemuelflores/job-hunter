@@ -51,7 +51,7 @@ Results appear as jobs are found and checked; these commands don't wait for them
 | `review.location` | Where you live, such as `Philippines` |
 | `review.stack` | A flat list of technology alternatives, such as `['Laravel', 'Vue', 'Nuxt']` |
 | `google.enabled` / `freehire.enabled` | Turn each discovery source on or off |
-| `google.query` | Your Google search expression, sent as written with whitespace collapsed |
+| `google.query` | Shared search terms, without `site:` operators; each ATS is scoped automatically |
 | `freehire` | Native [Freehire search settings](https://freehire.me/docs/api), plus `enabled` |
 
 Keep both source objects and set `enabled: false` to disable either. Search settings do not become review requirements automatically.
@@ -62,7 +62,7 @@ review: {
   location: 'Philippines',
   stack: ['Laravel', 'Vue', 'Nuxt'],
 },
-google: { enabled: true, query: 'site:jobs.lever.co intitle:engineer (Laravel OR Vue OR Nuxt) remote' },
+google: { enabled: true, query: 'intitle:engineer (Laravel OR Vue OR Nuxt) remote' },
 freehire: {
   enabled: true,
   work_mode: ['remote'],
@@ -76,7 +76,7 @@ freehire: {
 
 Freehire accepts its native facets, exclusions, non-geography `_mode` settings, `q`/`q_fields`, semantic search, and numeric/boolean filters. Lists can be arrays or comma-separated strings. Unknown settings and reported ignored filters cause visible errors instead of silently broadening your search.
 
-Only Google has a **100-result per-run cap**. Freehire pages through all matching results; `limit` controls page size (1–100), not the total run size. The profile uses `posted_within_days: 14` to filter source posting dates upstream and `sort: 'posted_at'` for newest-posted first. No catalogue-age filter is added automatically. Native `sort`, `order`, and `offset` remain available; omitted sorting defaults to `created_at` descending. Descriptions always use Markdown. Rate limits or Freehire's 10,000-row pagination boundary can interrupt a run; completed pages are saved and the failure is reported.
+Google has a **100-result cap per ATS search**. An all-ATS trigger queues three independent searches, allowing up to 300 results and overlapping requests, with higher Autom credit and rate-limit pressure. Freehire pages through all matching results; `limit` controls page size (1–100), not the total run size. The profile uses `posted_within_days: 14` to filter source posting dates upstream and `sort: 'posted_at'` for newest-posted first. No catalogue-age filter is added automatically. Native `sort`, `order`, and `offset` remain available; omitted sorting defaults to `created_at` descending. Descriptions always use Markdown. Rate limits or Freehire's 10,000-row pagination boundary can interrupt a run; completed pages are saved and the failure is reported.
 
 Freehire skills are OR by default; `skills_mode: 'and'` requires all. Regions and countries also combine as OR, not AND. `reality: ['fresh']` is a separate quality classification, not the posting-date filter.
 
@@ -104,7 +104,8 @@ In `.env`, `GOOGLE_CRON` and `FREEHIRE_CRON` change the independent schedules (U
 ```sh
 docker compose logs -f scheduler workers  # See what's happening
 docker compose down                       # Stop everything
-pnpm job-hunter fetch google               # Queue Google search now
+pnpm job-hunter fetch google               # Queue all three ATS searches
+pnpm job-hunter fetch google --ats ashby    # Or select ashby, greenhouse, or lever
 pnpm job-hunter fetch freehire             # Queue Freehire search now
 pnpm job-hunter jobs                       # List saved jobs in the terminal
 ```
@@ -121,7 +122,9 @@ docker compose up -d --remove-orphans --force-recreate web scheduler workers
 
 Google searches use Autom credits. If a search fails, check the logs and run the source-specific command again when ready; its next scheduled run will also try again. Freehire public access is rate-limited and intended for personal/non-commercial use.
 
-When upgrading from the old single-source version, stop the scheduler first and let existing discovery work finish before stopping workers. If nothing is queued, no migration is needed. Keep the queue volume; do not delete it to switch versions. See [ARCHITECTURE.md](ARCHITECTURE.md#discovery-queue-transition) for the queue check.
+When upgrading from combined Google discovery, stop the old scheduler first and let existing discovery work finish with the old workers before rebuilding. Remove the old combined `site:` clause from your Google query, preserving the other terms. Keep the queue volume and retained failures; do not delete or blindly replay paid work. See [ARCHITECTURE.md](ARCHITECTURE.md#discovery-queue-transition) for the read-only queue check.
+
+If enqueueing all ATSs partially fails, the command reports the failed ATSs after attempting every sibling. Some work may already be submitted; deliberately repeating the command deduplicates work while it remains queued or active, but can start another paid search after completion.
 
 ### Your data
 

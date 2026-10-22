@@ -71,6 +71,9 @@ test('CLI rejects unknown commands, unsupported options and invalid arguments', 
     [['fetch', 'google', '--limit', '1'], /Unknown option.*--limit/],
     [['fetch', 'freehire', '--limit', '1'], /Unknown option.*--limit/],
     [['fetch', 'other'], /Unknown discovery source/],
+    [['fetch', 'google', '--ats', 'unknown'], /Invalid.*ats/],
+    [['fetch', 'google', '--ats'], /--ats.*argument/],
+    [['fetch', 'freehire', '--ats', 'ashby'], /Unknown option.*--ats/],
     [['unknown'], /Unknown command: unknown/],
     [['worker'], /Unknown command: worker/],
     [['fetch-worker'], /Unknown command: fetch-worker/],
@@ -122,6 +125,27 @@ test('CLI prints global and command help including required retry options', asyn
   // Act / Assert: show required options with both help spellings.
   assert.match(cli('retry', '--help').stdout, /--stage/);
   assert.match(cli('retry', '-h').stdout, /--id/);
+  assert.match(cli('fetch', 'google', '--help').stdout, /--ats/);
+});
+
+test('invalid selectors and disabled Google fail before constructing a queue', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const dependencies = {
+    loadProfile: async () => ({
+      google: { enabled: false, query: 'engineer' },
+    }),
+    createDiscoveryQueue: async () => assert.fail('must not construct queue'),
+    createStore: async () => assert.fail('must not construct store'),
+    createLlm: () => assert.fail('must not construct model'),
+  };
+  for (const args of [
+    ['fetch', 'google', '--ats', 'other'],
+    ['fetch', 'google', '--ats'],
+    ['fetch', 'freehire', '--ats', 'ashby'],
+    ['fetch', 'google'],
+    ['fetch', 'google', '--ats', 'ashby'],
+  ])
+    assert.equal(await main(args, dependencies), 1, args.join(' '));
 });
 
 test('CLI loads profiles only for commands that need them', async (t) => {

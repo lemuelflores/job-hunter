@@ -5,11 +5,13 @@ import {
   type FreehireSearchOptions,
   searchFreehire,
 } from './freehire.js';
+import { googleAtsQuery, runParallelGoogleSearchesDetailed } from './google.js';
 import {
-  normalizeGoogleQuery,
-  runParallelGoogleSearchesDetailed,
-} from './google.js';
-import { normalizeFreehireUrl, normalizeJobUrl } from './job-url.js';
+  ATS_HOSTS,
+  type GoogleAts,
+  normalizeFreehireUrl,
+  normalizeJobUrl,
+} from './job-url.js';
 
 export interface DiscoveryResult {
   ids: number[];
@@ -21,14 +23,17 @@ export interface DiscoveryResult {
 export async function discoverGoogleJobs(
   store: SqliteStore,
   profile: Profile,
+  ats: GoogleAts,
 ): Promise<DiscoveryResult> {
   const searched = await runParallelGoogleSearchesDetailed(
-    [normalizeGoogleQuery(profile.google.query)],
-    { concurrency: 5, num: 100 },
+    [googleAtsQuery(profile.google.query, ats)],
+    { num: 100 },
   );
   const results = searched.results.flatMap<DiscoveredListing>((result) => {
     const url = normalizeJobUrl(result.url);
-    return url ? [{ ...result, url, source: 'google' }] : [];
+    return url && ATS_HOSTS[ats].includes(new URL(url).hostname)
+      ? [{ ...result, url, source: 'google' }]
+      : [];
   });
   const added = store.saveResults(results);
   const urls = new Set(results.map((result) => result.url));

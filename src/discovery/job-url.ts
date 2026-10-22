@@ -1,5 +1,13 @@
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
+export const GOOGLE_ATS = ['ashby', 'greenhouse', 'lever'] as const;
+export type GoogleAts = (typeof GOOGLE_ATS)[number];
+export const ATS_HOSTS: Record<GoogleAts, readonly string[]> = {
+  ashby: ['jobs.ashbyhq.com'],
+  greenhouse: ['job-boards.greenhouse.io', 'boards.greenhouse.io'],
+  lever: ['jobs.lever.co', 'jobs.eu.lever.co'],
+};
+
 export function normalizeFreehireUrl(raw: string): string | null {
   let url: URL;
   try {
@@ -77,15 +85,13 @@ export function normalizeJobUrl(raw: string): string | null {
   url.hash = '';
   url.pathname = `/${parts.join('/')}`;
 
-  if (url.hostname === 'jobs.ashbyhq.com') {
+  if (ATS_HOSTS.ashby.includes(url.hostname)) {
     return normalizeAshby(url, parts);
   }
-  if (['jobs.lever.co', 'jobs.eu.lever.co'].includes(url.hostname)) {
+  if (ATS_HOSTS.lever.includes(url.hostname)) {
     return normalizeLever(url, parts);
   }
-  if (
-    ['job-boards.greenhouse.io', 'boards.greenhouse.io'].includes(url.hostname)
-  ) {
+  if (ATS_HOSTS.greenhouse.includes(url.hostname)) {
     return normalizeGreenhouse(url, parts);
   }
   return null;

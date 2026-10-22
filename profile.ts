@@ -16,7 +16,6 @@ export default {
   google: {
     enabled: true,
     query: `
-      (site:jobs.ashbyhq.com OR site:jobs.lever.co OR site:jobs.eu.lever.co OR site:job-boards.greenhouse.io OR site:boards.greenhouse.io)
       (intitle:"fullstack" OR intitle:"full stack" OR intitle:"full-stack" OR intitle:"backend" OR intitle:"back end" OR intitle:"back-end" OR intitle:"frontend" OR intitle:"front end" OR intitle:"front-end" OR intitle:"web")
       (intitle:"developer" OR intitle:"engineer")
       ("Laravel" OR "PHP" OR "Vue" OR "Vue.js" OR "VueJS" OR "Nuxt" OR "Nuxt.js" OR "NuxtJS" OR "Node.js" OR "NodeJS" OR "Node" OR "JavaScript" OR "TypeScript")
