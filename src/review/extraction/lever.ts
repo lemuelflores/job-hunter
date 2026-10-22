@@ -1,7 +1,11 @@
 import { convert } from 'html-to-text';
 import * as v from 'valibot';
 import { normalizeJobUrl } from '../../discovery/job-url.js';
-import { type ExtractionOptions, PageError } from './types.js';
+import {
+  type ExtractedListing,
+  type ExtractionOptions,
+  PageError,
+} from './types.js';
 
 const PostingId = v.pipe(
   v.string(),
@@ -53,7 +57,7 @@ export async function fetchPosting(
 export async function fetchLeverListing(
   url: string,
   options: ExtractionOptions = {},
-): Promise<string> {
+): Promise<ExtractedListing> {
   const validated = normalizeJobUrl(url);
   if (!validated) throw new Error('Invalid Lever listing URL');
   const parsed = new URL(validated);
@@ -104,5 +108,7 @@ export async function fetchLeverListing(
     .join('\n\n')
     .trim();
   if (!description) throw new Error('Empty Lever description');
-  return `Lever listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${description}`;
+  return {
+    text: `Lever listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${description}`,
+  };
 }

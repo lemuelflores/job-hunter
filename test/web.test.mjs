@@ -71,6 +71,65 @@ function browser(fetch, href = 'http://localhost/') {
   };
 }
 
+test('card dates keep Found above Posted without an expandable control', () => {
+  const dates = UI_HTML.match(
+    /<div class="job-card__dates">([\s\S]*?)<\/div>/,
+  )[1];
+  assert.ok(dates.indexOf('Found') < dates.indexOf('Posted'));
+  assert.match(dates, /:datetime="job.first_seen"/);
+  assert.match(dates, /:datetime="job.posted_at"/);
+  assert.match(dates, /Posting date unknown/);
+  assert.doesNotMatch(dates, /<summary|<details|exact-dates/);
+  assert.match(dates, /x-if="relativeDate\(job.posted_at\)"/);
+});
+
+test('relative dates span seconds through years without disguising unknown dates', () => {
+  const { ui } = browser(() => assert.fail('No request needed'));
+  ui.now = Date.parse('2026-10-22T12:00:00Z');
+  for (const [seconds, expected] of [
+    [0, 'just now'],
+    [0.5, 'just now'],
+    [1, '1 second ago'],
+    [35, '35 seconds ago'],
+    [59, '59 seconds ago'],
+    [60, '1 minute ago'],
+    [3599, '59 minutes ago'],
+    [3600, '1 hour ago'],
+    [86399, '23 hours ago'],
+    [86400, '1 day ago'],
+    [604799, '6 days ago'],
+    [604800, '1 week ago'],
+    [1814400, '3 weeks ago'],
+    [2592000, '1 month ago'],
+    [7776000, '3 months ago'],
+    [31536000, '1 year ago'],
+    [63072000, '2 years ago'],
+    [-3600, 'in 1 hour'],
+  ]) {
+    assert.equal(
+      ui.relativeDate(new Date(ui.now - seconds * 1000).toISOString()),
+      expected,
+    );
+  }
+  for (const value of [null, undefined, '', ' ', 'invalid', 0])
+    assert.equal(ui.relativeDate(value), '');
+});
+
+test('the existing visible refresh updates relative ages even when a read fails', async () => {
+  const { ui, document } = browser(async () => {
+    throw new Error('Offline');
+  });
+  const found = new Date(Date.now() - 120000).toISOString();
+  ui.now = Date.parse(found);
+  document.hidden = true;
+  await ui.refresh();
+  assert.equal(ui.relativeDate(found), 'just now');
+  document.hidden = false;
+  await ui.refresh();
+  assert.equal(ui.relativeDate(found), '2 minutes ago');
+  assert.equal(ui.loadError, 'Offline');
+});
+
 test('successful browser saves stop overriding fresh server state in another tab', async () => {
   let status = 'active';
   const fetch = async (path, options) => {
@@ -547,6 +606,7 @@ async function fixture(t) {
       title: `Engineer ${id}`,
       query: 'remote',
       source: id === 1 ? 'google' : 'freehire',
+      postedAt: id === 1 ? '2025-01-02T12:00:00Z' : null,
     })),
   );
   t.after(async () => {
@@ -595,6 +655,12 @@ test('HTTP UI lists eligibility and persists individual listing statuses', async
   assert.equal(jobs.length, 2);
   assert.equal(jobs.find((row) => row.id === 1).source, 'google');
   assert.equal(jobs.find((row) => row.id === 2).source, 'freehire');
+  assert.equal(
+    jobs.find((row) => row.id === 1).posted_at,
+    '2025-01-02T12:00:00.000Z',
+  );
+  assert.equal(jobs.find((row) => row.id === 1).first_seen, job.first_seen);
+  assert.equal(jobs.find((row) => row.id === 2).posted_at, null);
   assert.match(
     UI_HTML,
     /:aria-label="`Source: \$\{\{ google: 'Google', freehire: 'Freehire' \}\[job.source\] \|\| 'Unknown'\}`"/,

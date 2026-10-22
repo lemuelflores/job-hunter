@@ -242,6 +242,8 @@ Responses are not cached. Request validation and persistence remain server-side;
 
 **Purpose:** Owns canonical URLs, discovery metadata, saved listing text, assessments, user review status, and stage state. `SqliteStore` creates/migrates the schema and saves each result and its stage completion in one transaction. Rediscovery updates `last_seen` without resetting saved decisions.
 
+`jobs.first_seen` records immutable first discovery. `jobs.posted_at` stores Freehire's `posted_at`, Ashby's `publishedAt`, or Greenhouse's `first_published`; update timestamps and catalogue creation dates are never substituted. Extraction returns text and optional posting date together, saved with the crawl checkpoint. Rediscovery can fill an unknown posting date but preserves an existing one and the first-seen date. The column migration recovers valid publication dates from existing provider metadata snapshots without re-fetching listings or resetting processing; absent or invalid dates remain unknown.
+
 **Key schemas:**
 
 - `jobs`: listing identity, search metadata, text, location/stack results, and user status. `source` records the first discovery provider (`google` or `freehire`); `query` retains the Google query text or a JSON snapshot of the configured Freehire settings at search start (implicit client defaults are not expanded). Rediscovery preserves both fields, including across sources. Migration labels historical `query='freehire'` rows as Freehire and other rows as Google; historical Freehire configurations cannot be recovered, so those queries retain the old marker.

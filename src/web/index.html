@@ -127,6 +127,7 @@
       justify-content: space-between;
       align-items: start;
       gap: 16px;
+      margin-bottom: 20px;
     }
     .job-card__title {
       margin: 0;
@@ -144,7 +145,7 @@
       display: flex;
       flex-wrap: wrap;
       gap: 6px 16px;
-      margin: 12px 0 20px;
+      margin: 12px 0 0;
       color: var(--muted);
       font-size: 13px;
     }
@@ -152,6 +153,20 @@
       display: inline-flex;
       align-items: center;
       gap: 5px;
+    }
+    .job-card__dates {
+      flex: 0 0 auto;
+      text-align: right;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .job-card__date {
+      display: block;
+    }
+    .job-card__date--posted {
+      color: var(--ink);
+      font-weight: 600;
     }
     .job-card__source {
       display: inline-flex;
@@ -365,6 +380,12 @@
       .job-card__title {
         font-size: 21px;
       }
+      .job-card__header {
+        flex-direction: column;
+      }
+      .job-card__dates {
+        text-align: left;
+      }
       .job-list {
         gap: 16px;
       }
@@ -497,6 +518,45 @@
                 >
                   Untitled role
                 </h2>
+                <div class="job-card__metadata">
+                  <span
+                    class="job-card__metadata-item job-card__company"
+                    x-text="displayText(job.company, 'Company not provided')"
+                  ></span>
+                  <span
+                    class="job-card__metadata-item"
+                    x-text="`Location: ${displayText(job.location, 'Not provided')}`"
+                  ></span>
+                  <span
+                    class="job-card__source"
+                    :class="{ 'job-card__source--google': job.source === 'google', 'job-card__source--freehire': job.source === 'freehire' }"
+                    :aria-label="`Source: ${{ google: 'Google', freehire: 'Freehire' }[job.source] || 'Unknown'}`"
+                    x-text="{ google: 'Google', freehire: 'Freehire' }[job.source] || 'Unknown'"
+                  ></span>
+                </div>
+              </div>
+              <div class="job-card__dates">
+                <span class="job-card__date"
+                  >Found
+                  <time
+                    :datetime="job.first_seen"
+                    x-text="relativeDate(job.first_seen) || 'date unknown'"
+                  ></time>
+                </span>
+                <span class="job-card__date job-card__date--posted">
+                  <template x-if="relativeDate(job.posted_at)">
+                    <span
+                      >Posted
+                      <time
+                        :datetime="job.posted_at"
+                        x-text="relativeDate(job.posted_at)"
+                      ></time></span
+                    >
+                  </template>
+                  <span x-show="!relativeDate(job.posted_at)"
+                    >Posting date unknown</span
+                  >
+                </span>
               </div>
             </header>
             <template
@@ -508,22 +568,6 @@
                 x-text="`${stage.stage}: ${stage.state} — ${stage.error}`"
               ></p>
             </template>
-            <div class="job-card__metadata">
-              <span
-                class="job-card__metadata-item job-card__company"
-                x-text="displayText(job.company, 'Company not provided')"
-              ></span>
-              <span
-                class="job-card__metadata-item"
-                x-text="`Location: ${displayText(job.location, 'Not provided')}`"
-              ></span>
-              <span
-                class="job-card__source"
-                :class="{ 'job-card__source--google': job.source === 'google', 'job-card__source--freehire': job.source === 'freehire' }"
-                :aria-label="`Source: ${{ google: 'Google', freehire: 'Freehire' }[job.source] || 'Unknown'}`"
-                x-text="{ google: 'Google', freehire: 'Freehire' }[job.source] || 'Unknown'"
-              ></span>
-            </div>
             <div class="job-card__assessments">
               <template x-for="panel in assessments(job)" :key="panel.title">
                 <section class="assessment">
@@ -727,8 +771,30 @@
         loadError: '',
         saveError: '',
         message: '',
+        now: Date.now(),
         safeUrl,
         displayText,
+        relativeDate(value) {
+          if (typeof value !== 'string' || !value.trim()) return '';
+          const timestamp = Date.parse(value);
+          if (Number.isNaN(timestamp)) return '';
+          const seconds = (timestamp - this.now) / 1000;
+          if (Math.abs(seconds) < 1) return 'just now';
+          for (const [unit, size] of [
+            ['year', 31536000],
+            ['month', 2592000],
+            ['week', 604800],
+            ['day', 86400],
+            ['hour', 3600],
+            ['minute', 60],
+            ['second', 1],
+          ]) {
+            if (Math.abs(seconds) < size && unit !== 'second') continue;
+            return new Intl.RelativeTimeFormat('en', {
+              numeric: 'always',
+            }).format(Math.trunc(seconds / size), unit);
+          }
+        },
         assessments,
         init() {
           this.load();
@@ -786,6 +852,7 @@
         },
         refresh() {
           if (document.hidden) return;
+          this.now = Date.now();
           return this.load();
         },
         cancelLoad() {

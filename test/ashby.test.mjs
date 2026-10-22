@@ -26,7 +26,7 @@ const posting = {
 };
 
 test('Ashby selects the exact UUID and preserves description and structured metadata', async () => {
-  const text = await fetchAshbyListing(ashbyUrl, {
+  const { text, postedAt } = await fetchAshbyListing(ashbyUrl, {
     fetch: async () => {
       return Response.json({
         jobs: [
@@ -46,6 +46,7 @@ test('Ashby selects the exact UUID and preserves description and structured meta
   const metadata = JSON.parse(
     text.split('metadata:\n')[1].split('\n\nDescription:')[0],
   );
+  assert.equal(postedAt, posting.publishedAt);
   const { descriptionHtml: _html, descriptionPlain, ...expected } = posting;
   assert.deepEqual(metadata, expected);
   assert.ok(text.endsWith(descriptionPlain));
@@ -79,7 +80,7 @@ test('a valid board without the UUID is terminal, including an empty board', asy
 });
 
 test('selection uses canonical jobUrl identity, not undocumented id', async () => {
-  const text = await fetchAshbyListing(ashbyUrl, {
+  const { text } = await fetchAshbyListing(ashbyUrl, {
     fetch: async () =>
       Response.json({
         jobs: [
@@ -152,7 +153,7 @@ test('empty and ambiguous selected listings fail retryably', async () => {
 });
 
 test('metadata passes through unchanged, including nulls and extra provider fields', async () => {
-  const text = await fetchAshbyListing(ashbyUrl, {
+  const { text } = await fetchAshbyListing(ashbyUrl, {
     fetch: async () =>
       Response.json({
         jobs: [

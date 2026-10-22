@@ -60,6 +60,7 @@ export async function discoverFreehireJobs(
             title: job.title,
             source: 'freehire',
             query,
+            postedAt: job.posted_at,
             listingText: `Freehire listing metadata:\n${JSON.stringify(metadata)}\n\n${description}`,
           },
         ]

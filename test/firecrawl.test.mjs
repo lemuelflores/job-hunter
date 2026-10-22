@@ -8,7 +8,7 @@ test('extraction returns usable Markdown unchanged', async () => {
   const url = 'https://example.test/job';
   const markdown = '# Backend developer\nWorldwide Laravel role';
   // Act: extract the listing through a successful mocked service response.
-  const text = await scrapeListing(url, {
+  const { text } = await scrapeListing(url, {
     fetch: async () => Response.json({ success: true, data: { markdown } }),
   });
   // Assert: return the extracted Markdown unchanged.

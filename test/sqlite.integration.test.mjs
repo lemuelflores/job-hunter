@@ -42,6 +42,50 @@ test('rediscovery deduplicates canonical URLs without resetting saved decisions'
   assert.ok(store.stages(1).every((stage) => stage.state === 'complete'));
 });
 
+test('posting-date migration recovers saved metadata without changing listing text or stage state', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'job-posted-date-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'jobs.sqlite');
+  let store = new SqliteStore(path);
+  const snapshots = [
+    'Ashby listing metadata:\n{\n  "publishedAt": "2025-01-02T12:00:00Z"\n}\n\nDescription:\nRole',
+    'Greenhouse listing metadata:\n{"first_published":"2025-01-03T12:00:00Z","updated_at":"2026-10-22T00:00:00Z"}\n\nDescription:\nRole',
+    'Freehire listing metadata:\n{"posted_at":"2025-01-04T12:00:00Z"}\n\nRole',
+    'Ashby listing metadata:\n{bad json}\n\nDescription:\nRole',
+    'Greenhouse listing metadata:\n{"updated_at":"2026-10-22T00:00:00Z"}\n\nDescription:\nRole',
+    'Ashby listing metadata:\n{"publishedAt":"invalid"}\n\nDescription:\nRole',
+    'Unstructured listing with publishedAt: 2025-01-02T12:00:00Z',
+  ];
+  store.saveResults(
+    snapshots.map((listingText, i) => ({ ...result(i + 1), listingText })),
+  );
+  const before = snapshots.map((_, i) => store.getJob(i + 1));
+  const stages = snapshots.map((_, i) => store.stages(i + 1));
+  store.close();
+  const db = new DatabaseSync(path);
+  db.exec('ALTER TABLE jobs DROP COLUMN posted_at');
+  db.close();
+  store = new SqliteStore(path);
+  t.after(() => store.close());
+  for (let i = 0; i < snapshots.length; i++) {
+    const expected = i < 3 ? `2025-01-0${i + 2}T12:00:00.000Z` : null;
+    assert.deepEqual(
+      { ...store.getJob(i + 1) },
+      {
+        ...before[i],
+        posted_at: expected,
+      },
+    );
+    assert.deepEqual(store.stages(i + 1), stages[i]);
+  }
+  const reopened = new SqliteStore(path);
+  try {
+    assert.deepEqual(reopened.getJob(1), store.getJob(1));
+  } finally {
+    reopened.close();
+  }
+});
+
 test('invalid results and completed-stage guards reject unsafe writes', (t) => {
   // Arrange: start with pending stages.
   const store = fixture(t);

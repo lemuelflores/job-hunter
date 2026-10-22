@@ -90,6 +90,35 @@ test('Freehire sends native filters, defaults, identification and full-descripti
   assert.deepEqual(outcome, { jobs: [job()], failures: [], total: 1 });
 });
 
+test('Freehire posting dates survive ingestion separately from discovery and rediscovery fills only unknown dates', async (t) => {
+  const store = new SqliteStore(':memory:');
+  t.after(() => store.close());
+  const posted = '2025-01-02T12:00:00Z';
+  let data = [
+    { ...job(1), posted_at: posted },
+    { ...job(2), posted_at: null },
+    { ...job(3), posted_at: 'invalid' },
+    { ...job(4), posted_at: 123 },
+    { ...job(5), posted_at: '2026-02-30T00:00:00Z' },
+  ];
+  const options = { fetch: async (url) => page(url, data) };
+  await discoverFreehireJobs(store, config, options);
+  const first = store.listReviewJobs('active').find((row) => row.id === 1);
+  assert.equal(first.posted_at, '2025-01-02T12:00:00.000Z');
+  assert.ok(first.first_seen > first.posted_at);
+  for (const id of [2, 3, 4, 5]) assert.equal(store.getJob(id).posted_at, null);
+  const before = store.getJob(2);
+  data = [
+    { ...job(1), posted_at: '2026-10-20T00:00:00Z' },
+    { ...job(2), posted_at: posted },
+  ];
+  await discoverFreehireJobs(store, config, options);
+  assert.equal(store.getJob(1).posted_at, first.posted_at);
+  assert.equal(store.getJob(1).first_seen, first.first_seen);
+  assert.equal(store.getJob(2).posted_at, first.posted_at);
+  assert.equal(store.getJob(2).listing_text, before.listing_text);
+});
+
 test('pagination scans beyond 100 raw rows to the end and retains pages on error', async () => {
   let calls = 0;
   let outcome = await searchFreehire(

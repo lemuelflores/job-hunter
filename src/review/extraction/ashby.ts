@@ -1,6 +1,10 @@
 import * as v from 'valibot';
 import { normalizeJobUrl } from '../../discovery/job-url.js';
-import { type ExtractionOptions, PageError } from './types.js';
+import {
+  type ExtractedListing,
+  type ExtractionOptions,
+  PageError,
+} from './types.js';
 
 const BoardResponse = v.object({
   jobs: v.array(
@@ -37,7 +41,7 @@ export async function fetchBoard(
 export async function fetchAshbyListing(
   url: string,
   options: ExtractionOptions = {},
-): Promise<string> {
+): Promise<ExtractedListing> {
   const validated = normalizeJobUrl(url);
   if (!validated) throw new Error('Invalid Ashby listing URL');
   const parsed = new URL(validated);
@@ -71,5 +75,9 @@ export async function fetchAshbyListing(
   } = matches[0];
   if (!descriptionPlain?.trim())
     throw new Error('Empty or invalid Ashby description');
-  return `Ashby listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${descriptionPlain}`;
+  return {
+    text: `Ashby listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${descriptionPlain}`,
+    postedAt:
+      typeof metadata.publishedAt === 'string' ? metadata.publishedAt : null,
+  };
 }

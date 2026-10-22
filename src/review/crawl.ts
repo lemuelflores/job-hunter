@@ -3,7 +3,11 @@ import { fetchAshbyListing } from './extraction/ashby.js';
 import { scrapeListing as firecrawlListing } from './extraction/firecrawl.js';
 import { fetchGreenhouseListing } from './extraction/greenhouse.js';
 import { fetchLeverListing } from './extraction/lever.js';
-import { type ListingExtractor, PageError } from './extraction/types.js';
+import {
+  type ExtractedListing,
+  type ListingExtractor,
+  PageError,
+} from './extraction/types.js';
 
 export async function crawlJob(
   store: SqliteStore,
@@ -15,24 +19,24 @@ export async function crawlJob(
   if (!store.needsStage(id, 'crawl')) return;
   const job = store.getJob(id);
   if (job?.status !== 'active' || job.listing_text !== null) return;
-  let text: string;
+  let listing: ExtractedListing;
   try {
     if (scrape) {
-      text = await scrape(job.url, { signal });
+      listing = await scrape(job.url, { signal });
     } else if (new URL(job.url).hostname === 'jobs.ashbyhq.com') {
-      text = await fetchAshbyListing(job.url, { signal });
+      listing = await fetchAshbyListing(job.url, { signal });
     } else if (
       ['job-boards.greenhouse.io', 'boards.greenhouse.io'].includes(
         new URL(job.url).hostname,
       )
     ) {
-      text = await fetchGreenhouseListing(job.url, { signal });
+      listing = await fetchGreenhouseListing(job.url, { signal });
     } else if (
       ['jobs.lever.co', 'jobs.eu.lever.co'].includes(new URL(job.url).hostname)
     ) {
-      text = await fetchLeverListing(job.url, { signal });
+      listing = await fetchLeverListing(job.url, { signal });
     } else {
-      text = await firecrawlListing(job.url, { signal });
+      listing = await firecrawlListing(job.url, { signal });
     }
   } catch (error) {
     signal?.throwIfAborted();
@@ -45,5 +49,5 @@ export async function crawlJob(
   signal?.throwIfAborted();
   // Keep Freehire's checkpoint instead of trying to save a second extraction.
   if (!store.needsStage(id, 'crawl')) return;
-  store.saveListingText(id, text);
+  store.saveListingText(id, listing.text, listing.postedAt);
 }

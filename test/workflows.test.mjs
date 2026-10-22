@@ -133,6 +133,7 @@ for (const [name, url, endpoint, response] of [
         {
           jobUrl: `https://jobs.ashbyhq.com/example/${uuid}`,
           descriptionPlain: 'US Laravel role',
+          publishedAt: '2025-01-02T12:00:00Z',
         },
       ],
     },
@@ -141,7 +142,11 @@ for (const [name, url, endpoint, response] of [
     host,
     `https://${host}/example/jobs/123`,
     'https://boards-api.greenhouse.io/v1/boards/example/jobs/123?pay_transparency=true',
-    { id: 123, content: '&lt;p&gt;US Laravel role&lt;/p&gt;' },
+    {
+      id: 123,
+      content: '&lt;p&gt;US Laravel role&lt;/p&gt;',
+      first_published: '2025-01-02T12:00:00Z',
+    },
   ]),
   ...['jobs.lever.co', 'jobs.eu.lever.co'].map((host) => [
     host,
@@ -157,6 +162,10 @@ for (const [name, url, endpoint, response] of [
     f.store.saveResults([{ ...result(1), url }]);
     await crawlJob(f.store, 1);
     const text = f.store.getJob(1).listing_text;
+    assert.equal(
+      f.store.listReviewJobs('active')[0].posted_at,
+      name.includes('lever') ? null : '2025-01-02T12:00:00.000Z',
+    );
     assert.match(text, /US Laravel role/);
     assert.equal(f.requests.length, 1, 'extraction does not run assessments');
     await checkLocation(f.store, 1, f.reviewLocation);

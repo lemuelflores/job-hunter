@@ -1,5 +1,9 @@
 import * as v from 'valibot';
-import { type ExtractionOptions, PageError } from './types.js';
+import {
+  type ExtractedListing,
+  type ExtractionOptions,
+  PageError,
+} from './types.js';
 
 const PageUrl = v.pipe(
   v.string(),
@@ -56,7 +60,7 @@ export async function scrapePage(
 export async function scrapeListing(
   url: string,
   options: ExtractionOptions = {},
-): Promise<string> {
+): Promise<ExtractedListing> {
   console.info(`[firecrawl] Scraping: ${url}`);
   const scrape = await scrapePage(url, options);
   const status = scrape.data?.metadata?.statusCode ?? 200;
@@ -72,5 +76,5 @@ export async function scrapeListing(
     );
   }
   console.info(`[firecrawl] Scraped: ${url}`);
-  return scrape.data.markdown;
+  return { text: scrape.data.markdown };
 }

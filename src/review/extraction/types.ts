@@ -3,10 +3,15 @@ export interface ExtractionOptions {
   signal?: AbortSignal;
 }
 
+export interface ExtractedListing {
+  text: string;
+  postedAt?: string | null;
+}
+
 export type ListingExtractor = (
   url: string,
   options?: ExtractionOptions,
-) => Promise<string>;
+) => Promise<ExtractedListing>;
 
 export class PageError extends Error {
   readonly retryable: boolean;

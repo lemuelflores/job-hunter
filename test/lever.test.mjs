@@ -44,7 +44,7 @@ test('Lever renders all description sections and preserves opaque metadata witho
     additional: 'duplicate HTML',
     salaryDescription: 'duplicate HTML',
   };
-  const text = await fetchLeverListing(`${url}?tracking=1#details`, {
+  const { text } = await fetchLeverListing(`${url}?tracking=1#details`, {
     fetch: async () => Response.json(posting),
   });
   const [savedMetadata, description] = text
@@ -64,7 +64,7 @@ test('Lever renders all description sections and preserves opaque metadata witho
 });
 
 test('Lever includes list-only descriptions and compares UUIDs case-insensitively', async () => {
-  const text = await fetchLeverListing(url.replace(id, id.toUpperCase()), {
+  const { text } = await fetchLeverListing(url.replace(id, id.toUpperCase()), {
     fetch: async () =>
       Response.json({
         id,

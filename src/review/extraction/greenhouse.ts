@@ -2,7 +2,11 @@ import { decodeHTML } from 'entities';
 import { convert } from 'html-to-text';
 import * as v from 'valibot';
 import { normalizeJobUrl } from '../../discovery/job-url.js';
-import { type ExtractionOptions, PageError } from './types.js';
+import {
+  type ExtractedListing,
+  type ExtractionOptions,
+  PageError,
+} from './types.js';
 
 const JobResponse = v.looseObject({
   id: v.pipe(v.number(), v.safeInteger(), v.minValue(1)),
@@ -44,7 +48,7 @@ export async function fetchJob(
 export async function fetchGreenhouseListing(
   url: string,
   options: ExtractionOptions = {},
-): Promise<string> {
+): Promise<ExtractedListing> {
   const validated = normalizeJobUrl(url);
   if (!validated) throw new Error('Invalid Greenhouse listing URL');
   const parsed = new URL(validated);
@@ -68,5 +72,11 @@ export async function fetchGreenhouseListing(
   // Greenhouse entity-encodes the HTML document as well as entities within it.
   const description = convert(decodeHTML(content), { wordwrap: false }).trim();
   if (!description) throw new Error('Empty Greenhouse description');
-  return `Greenhouse listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${description}`;
+  return {
+    text: `Greenhouse listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${description}`,
+    postedAt:
+      typeof metadata.first_published === 'string'
+        ? metadata.first_published
+        : null,
+  };
 }

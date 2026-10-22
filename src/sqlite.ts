@@ -51,6 +51,7 @@ export interface DiscoveredListing {
   snippet?: string;
   query: string;
   listingText?: string;
+  postedAt?: string | null;
 }
 
 export interface Listing {
@@ -60,6 +61,9 @@ export interface Listing {
   url: string;
   title: string;
   snippet: string;
+  posted_at: string | null;
+  first_seen: string;
+  last_seen: string;
   eligibility: 'pending' | 'eligible' | 'ineligible' | 'unclear' | 'error';
   reason: string;
   evidence: string;
@@ -81,6 +85,19 @@ export interface Listing {
     | 'error';
   stack_reason: string;
   stack_evidence: string;
+}
+
+function postingDate(value: unknown): string | null {
+  if (
+    typeof value !== 'string' ||
+    !v.safeParse(v.pipe(v.string(), v.isoTimestamp()), value).success
+  )
+    return null;
+  const day = value.slice(0, 10);
+  if (new Date(`${day}T00:00:00Z`).toISOString().slice(0, 10) !== day)
+    return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 export class SqliteStore {
@@ -128,6 +145,7 @@ export class SqliteStore {
         stack_evidence: "TEXT NOT NULL DEFAULT ''",
         source:
           "TEXT NOT NULL DEFAULT 'google' CHECK (source IN ('google','freehire'))",
+        posted_at: 'TEXT',
       })) {
         if (!columns.includes(name))
           this.db.exec(`ALTER TABLE jobs ADD COLUMN ${name} ${definition}`);
@@ -136,6 +154,7 @@ export class SqliteStore {
         this.db.exec(
           "UPDATE jobs SET source='freehire' WHERE query='freehire'",
         );
+      if (!columns.includes('posted_at')) this.backfillPostingDates();
       const table = this.db
         .prepare(
           "SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'",
@@ -196,10 +215,41 @@ export class SqliteStore {
     }
   }
 
+  private backfillPostingDates(): void {
+    const rows = this.db
+      .prepare(
+        'SELECT id,listing_text FROM jobs WHERE listing_text IS NOT NULL',
+      )
+      .iterate();
+    const update = this.db.prepare('UPDATE jobs SET posted_at=? WHERE id=?');
+    for (const row of rows) {
+      const metadata = String(row.listing_text).match(
+        /^(Ashby|Greenhouse|Freehire) listing metadata:\n([\s\S]*?)\n\n/,
+      );
+      if (!metadata) continue;
+      let saved: unknown;
+      try {
+        saved = JSON.parse(metadata[2]);
+      } catch {
+        continue;
+      }
+      if (!saved || typeof saved !== 'object') continue;
+      const field =
+        metadata[1] === 'Ashby'
+          ? 'publishedAt'
+          : metadata[1] === 'Greenhouse'
+            ? 'first_published'
+            : 'posted_at';
+      const date = postingDate(Reflect.get(saved, field));
+      if (date) update.run(date, row.id);
+    }
+  }
+
   saveResults(results: DiscoveredListing[]): number {
     const insert =
-      this.db.prepare(`INSERT INTO jobs(url,title,snippet,query,source,first_seen,last_seen,stack_status)
-      VALUES (?,?,?,?,?,?,?,'pending') ON CONFLICT(url) DO UPDATE SET last_seen=excluded.last_seen`);
+      this.db.prepare(`INSERT INTO jobs(url,title,snippet,query,source,first_seen,last_seen,posted_at,stack_status)
+      VALUES (?,?,?,?,?,?,?,?,'pending') ON CONFLICT(url) DO UPDATE SET last_seen=excluded.last_seen,
+      posted_at=COALESCE(jobs.posted_at,excluded.posted_at)`);
     let added = 0;
     const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');
@@ -217,6 +267,7 @@ export class SqliteStore {
           result.source,
           now,
           now,
+          postingDate(result.postedAt),
         );
         if (!exists) {
           const row = this.db
@@ -399,13 +450,13 @@ export class SqliteStore {
     });
   }
 
-  saveListingText(id: number, text: string): void {
+  saveListingText(id: number, text: string, postedAt?: string | null): void {
     this.validateListingText(text);
     this.completeStage(id, 'crawl', () => {
       const result = this.db
-        .prepare(`UPDATE jobs SET listing_text=?
+        .prepare(`UPDATE jobs SET listing_text=?,posted_at=COALESCE(posted_at,?)
       WHERE id=? AND listing_text IS NULL`)
-        .run(text, id);
+        .run(text, postingDate(postedAt), id);
       if (!result.changes) throw new Error('Listing already has text');
     });
   }
@@ -479,7 +530,7 @@ export class SqliteStore {
   listReviewJobs(status: ReviewStatus) {
     return (
       this.db
-        .prepare(`SELECT id,url,title,snippet,query,source,first_seen,last_seen,
+        .prepare(`SELECT id,url,title,snippet,query,source,first_seen,last_seen,posted_at,
           eligibility,reason,evidence,company,location,status,reviewed_at,last_attempt,
           attempts,next_retry_at,last_error,stack_status,stack_reason,stack_evidence
           FROM jobs WHERE status=? ORDER BY id DESC`)

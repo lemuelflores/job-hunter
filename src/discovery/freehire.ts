@@ -49,6 +49,7 @@ export interface FreehireJob {
   countries?: string[] | null;
   regions?: string[] | null;
   work_mode?: string | null;
+  posted_at?: string | null;
 }
 export interface FreehireSearchOptions {
   fetch?: typeof globalThis.fetch;
@@ -80,6 +81,7 @@ const JobSchema = v.object({
   countries: v.nullish(v.array(v.string())),
   regions: v.nullish(v.array(v.string())),
   work_mode: v.nullish(v.string()),
+  posted_at: v.optional(v.fallback(v.nullable(v.string()), null)),
 });
 
 function searchUrl(config: FreehireConfig): URL {

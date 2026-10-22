@@ -7,6 +7,7 @@ import { PageError } from '../dist/review/extraction/types.js';
 const url = 'https://job-boards.greenhouse.io/Example%20Board/jobs/123';
 const metadata = {
   id: 123,
+  first_published: '2026-01-01T10:00:00Z',
   title: 'Backend engineer',
   company_name: 'Example',
   location: { name: 'Remote — Philippines' },
@@ -25,10 +26,11 @@ test('Greenhouse converts encoded HTML and preserves all other metadata', async 
       '<script>unwanted script</script><style>unwanted style</style>',
   );
   for (const host of ['job-boards.greenhouse.io', 'boards.greenhouse.io']) {
-    const text = await fetchGreenhouseListing(
+    const { text, postedAt } = await fetchGreenhouseListing(
       `${url.replace('job-boards.greenhouse.io', host)}?tracking=1#details`,
       { fetch: async () => Response.json({ ...metadata, content }) },
     );
+    assert.equal(postedAt, metadata.first_published);
     const [savedMetadata, description] = text
       .split('metadata:\n')[1]
       .split('\n\nDescription:\n');
