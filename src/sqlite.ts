@@ -310,6 +310,12 @@ export class SqliteStore {
       .get(id) as unknown as Listing | undefined;
   }
 
+  deliveryListing(id: number): Pick<Listing, 'url' | 'status'> | undefined {
+    return this.db.prepare('SELECT url,status FROM jobs WHERE id=?').get(id) as
+      | Pick<Listing, 'url' | 'status'>
+      | undefined;
+  }
+
   stages(id: number): StageState[] {
     return this.db
       .prepare(

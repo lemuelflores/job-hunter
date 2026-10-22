@@ -2,6 +2,11 @@ import { createNodeRedisClient, Queue, RedisConnection, Worker } from 'bullmq';
 import { createClient } from 'redis';
 import { STAGES, type Stage } from './review/stages.js';
 import type { SqliteStore } from './sqlite.js';
+import {
+  deliveryEvent,
+  diagnosticError,
+  safeUrl,
+} from './worker-diagnostics.js';
 
 RedisConnection.clientFactory = (options) => {
   const producer = options.enableOfflineQueue === false;
@@ -26,6 +31,44 @@ RedisConnection.clientFactory = (options) => {
 };
 
 export type DiscoverySource = 'google' | 'freehire';
+
+function stageState(store: SqliteStore, id: number, stage: Stage) {
+  if (!Number.isSafeInteger(id) || id < 1) return 'missing';
+  return store.stages(id).find((s) => s.stage === stage)?.state ?? 'missing';
+}
+
+function reviewOutcome(before: string, after: string) {
+  if (after === before) return 'skipped';
+  if (after === 'terminal') return 'terminal_crawl';
+  if (after === 'complete') return 'checkpoint_saved';
+  return 'skipped';
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function listingIdentity(store: SqliteStore, id: number) {
+  if (!Number.isSafeInteger(id) || id < 1) return {};
+  const listing = store.deliveryListing(id);
+  return { listing_id: id, ...(listing ? { url: safeUrl(listing.url) } : {}) };
+}
+
+export interface DiscoveryDeliveryResult {
+  added: number;
+  pending: number;
+  failure_count: number;
+}
+
+export class DiscoveryPartialFailure extends Error {
+  constructor(
+    readonly result: DiscoveryDeliveryResult,
+    failures: string[],
+  ) {
+    super(failures.join('; '));
+    this.name = 'DiscoveryPartialFailure';
+  }
+}
 
 export class DiscoveryQueue {
   readonly queue: Queue;
@@ -57,20 +100,57 @@ export class DiscoveryQueue {
     );
   }
 
-  async startWorker(discover: () => Promise<void>) {
+  async startWorker(
+    discover: (() => Promise<void>) | (() => Promise<DiscoveryDeliveryResult>),
+  ) {
     await this.queue.setGlobalConcurrency(1);
-    const worker = new Worker(this.source, discover, {
-      prefix: this.prefix,
-      connection: { url: this.url },
-      concurrency: 1,
-    });
+    const worker = new Worker(
+      this.source,
+      async (task) => {
+        const identity = {
+          source: this.source,
+          delivery_id: task.id,
+          attempt: task.attemptsMade + 1,
+          attempt_limit: task.opts.attempts ?? 1,
+        };
+        const started = performance.now();
+        deliveryEvent({ event: 'delivery_started', ...identity });
+        try {
+          const result = await discover();
+          deliveryEvent({
+            event: 'delivery_finished',
+            ...identity,
+            elapsed_ms: Math.round(performance.now() - started),
+            outcome: 'discovery_complete',
+            ...result,
+          });
+        } catch (error) {
+          deliveryEvent({
+            event: 'delivery_finished',
+            ...identity,
+            elapsed_ms: Math.round(performance.now() - started),
+            outcome:
+              error instanceof DiscoveryPartialFailure
+                ? 'discovery_partial_failure'
+                : 'discovery_failed',
+            delivery_outcome:
+              identity.attempt < identity.attempt_limit
+                ? 'retrying'
+                : 'exhausted',
+            ...(error instanceof DiscoveryPartialFailure ? error.result : {}),
+            error: diagnosticError(error),
+          });
+          throw error;
+        }
+      },
+      {
+        prefix: this.prefix,
+        connection: { url: this.url },
+        concurrency: 1,
+      },
+    );
     worker.on('error', (error) =>
       console.error(`[worker] ${this.source}: ${error.message}`),
-    );
-    worker.on('failed', (_task, error) =>
-      console.error(
-        `[worker] ${this.source} discovery failed: ${error.message}`,
-      ),
     );
     return worker;
   }
@@ -122,18 +202,48 @@ export class ReviewQueues {
       stage,
       async (task) => {
         const id = task.data.id;
-        if (!Number.isSafeInteger(id) || id < 1)
-          throw new Error('Invalid listing ID');
+        const valid = Number.isSafeInteger(id) && id > 0;
+        const before = stageState(store, id, stage);
+        const identity = {
+          stage,
+          delivery_id: task.id,
+          attempt: task.attemptsMade + 1,
+          attempt_limit: task.opts.attempts ?? 3,
+          ...listingIdentity(store, id),
+        };
+        const started = performance.now();
+        deliveryEvent({ event: 'delivery_started', ...identity });
         try {
+          if (!valid) throw new Error('Invalid listing ID');
           signal?.throwIfAborted();
           await process(id);
+          const after = stageState(store, id, stage);
+          deliveryEvent({
+            event: 'delivery_finished',
+            ...identity,
+            elapsed_ms: Math.round(performance.now() - started),
+            outcome: reviewOutcome(before, after),
+            stage_state: after,
+          });
         } catch (error) {
-          store.failStage(
-            id,
-            stage,
-            error instanceof Error ? error.message : String(error),
-            task.attemptsMade + 1 >= (task.opts.attempts ?? 3),
-          );
+          if (valid)
+            store.failStage(
+              id,
+              stage,
+              errorMessage(error),
+              task.attemptsMade + 1 >= (task.opts.attempts ?? 3),
+            );
+          deliveryEvent({
+            event: 'delivery_finished',
+            ...identity,
+            elapsed_ms: Math.round(performance.now() - started),
+            outcome:
+              identity.attempt < identity.attempt_limit
+                ? 'retrying'
+                : 'exhausted',
+            stage_state: stageState(store, id, stage),
+            error: diagnosticError(error),
+          });
           throw error;
         }
       },
@@ -146,10 +256,7 @@ export class ReviewQueues {
     worker.on('error', (error) =>
       console.error(`[worker] ${stage}: ${error.message}`),
     );
-    worker.on('failed', (task, error) => {
-      console.error(
-        `[worker] ${stage} listing ${task?.data.id}: ${error.message}`,
-      );
+    worker.on('failed', (task) => {
       if (task)
         void this.syncFailures(store, task.data.id).catch((failure) =>
           console.error(

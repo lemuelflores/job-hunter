@@ -140,6 +140,72 @@ test('queue dispatch, recovery and process lifecycle', {
   }
 
   await t.test(
+    'delivery events distinguish terminal, skipped, retrying and exhausted work',
+    async (t) => {
+      const f = fixture(t, ({ url }) =>
+        url.hostname === 'boards-api.greenhouse.io'
+          ? new Response('', { status: 404 })
+          : undefined,
+      );
+      f.store.saveResults([result(1), result(2)]);
+      await f.start(['crawl']);
+      await f.queues.enqueue('crawl', 1);
+      await f.idle();
+      assert.ok(f.output.some((event) => event.outcome === 'terminal_crawl'));
+      await f.queues.enqueue('crawl', 1);
+      await f.idle();
+      assert.ok(
+        f.output.some(
+          (event) =>
+            event.outcome === 'skipped' && event.stage_state === 'terminal',
+        ),
+      );
+      await f.stop();
+      const worker = await f.queues.startWorker(f.store, 'crawl', async () => {
+        throw new Error('fixture delivery failure', {
+          cause: new Error('fixture cause'),
+        });
+      });
+      try {
+        await f.queues.queues.crawl.add(
+          'crawl',
+          { id: 2 },
+          {
+            jobId: 'listing-2',
+            attempts: 2,
+            backoff: { type: 'fixed', delay: 10 },
+          },
+        );
+        await until(async () =>
+          (await f.queues.queues.crawl.getJob('listing-2'))
+            ?.getState()
+            .then((state) => state === 'failed'),
+        );
+        const ends = f.output.filter(
+          (event) =>
+            event.listing_id === 2 && event.event === 'delivery_finished',
+        );
+        assert.deepEqual(
+          ends.map((event) => [
+            event.outcome,
+            event.attempt,
+            event.attempt_limit,
+          ]),
+          [
+            ['retrying', 1, 2],
+            ['exhausted', 2, 2],
+          ],
+        );
+        assert.equal(ends[0].stage_state, 'pending');
+        assert.equal(ends[1].stage_state, 'failed');
+        assert.equal(ends[1].error.cause.message, 'fixture cause');
+      } finally {
+        await worker.close();
+      }
+    },
+  );
+
+  await t.test(
     'partial discovery dispatches saved results before recording a failed run',
     async (t) => {
       const f = fixture(t, ({ url }) =>
@@ -161,8 +227,25 @@ test('queue dispatch, recovery and process lifecycle', {
         f.requests.filter(({ url }) => url.hostname === 'api.autom.dev').length,
         2,
       );
-      assert.equal(f.output[0].added, 1);
-      assert.match(f.output[0].failures[0], /503/);
+      const end = f.output.find(
+        (event) => event.outcome === 'discovery_partial_failure',
+      );
+      assert.equal(end.added, 1);
+      assert.match(end.error.message, /503/);
+      assert.equal(end.delivery_outcome, 'exhausted');
+      assert.equal(end.delivery_id, task.id);
+      assert.equal(end.attempt, 1);
+      assert.equal(end.attempt_limit, 1);
+      assert.ok(end.elapsed_ms >= 0);
+      assert.ok(end.error.stack);
+      for (const stage of stages) {
+        const events = f.output.filter((event) => event.stage === stage);
+        assert.equal(events.length, 2);
+        assert.equal(events[0].event, 'delivery_started');
+        assert.equal(events[1].outcome, 'checkpoint_saved');
+        assert.equal(events[1].listing_id, 1);
+        assert.equal(events[0].delivery_id, events[1].delivery_id);
+      }
     },
   );
 
@@ -681,12 +764,12 @@ test('queue dispatch, recovery and process lifecycle', {
       assert.ok(f.output[0].queued);
       await f.start(['google']);
       await f.idle();
-      assert.deepEqual(f.output[1], {
-        source: 'google',
-        added: 0,
-        pending: 0,
-        failures: [],
-      });
+      const end = f.output.find((event) => event.event === 'delivery_finished');
+      assert.equal(end.source, 'google');
+      assert.equal(end.outcome, 'discovery_complete');
+      assert.equal(end.added, 0);
+      assert.equal(end.pending, 0);
+      assert.equal(end.failure_count, 0);
     },
   );
 
@@ -720,9 +803,14 @@ test('queue dispatch, recovery and process lifecycle', {
       assert.equal(f.requests.length, 0);
       await f.start(['google']);
       await f.idle();
-      assert.deepEqual(f.output, [
-        { source: 'google', added: 0, pending: 0, failures: [] },
-      ]);
+      assert.deepEqual(
+        f.output.map((event) => event.event),
+        ['delivery_started', 'delivery_finished'],
+      );
+      assert.equal(f.output[1].outcome, 'discovery_complete');
+      assert.equal(f.output[1].added, 0);
+      assert.equal(f.output[1].pending, 0);
+      assert.equal(f.output[1].failure_count, 0);
     },
   );
 
@@ -750,9 +838,14 @@ test('queue dispatch, recovery and process lifecycle', {
       }
       await f.start(['google']);
       await f.idle();
-      assert.deepEqual(f.output, [
-        { source: 'google', added: 0, pending: 0, failures: [] },
-      ]);
+      assert.deepEqual(
+        f.output.map((event) => event.event),
+        ['delivery_started', 'delivery_finished'],
+      );
+      assert.equal(f.output[1].outcome, 'discovery_complete');
+      assert.equal(f.output[1].added, 0);
+      assert.equal(f.output[1].pending, 0);
+      assert.equal(f.output[1].failure_count, 0);
     },
   );
 

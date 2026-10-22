@@ -1,4 +1,5 @@
 import type { DiscoveryQueue, ReviewQueues } from '../bullmq.js';
+import { DiscoveryPartialFailure } from '../bullmq.js';
 import {
   discoverFreehireJobs,
   discoverGoogleJobs,
@@ -22,8 +23,14 @@ export function startGoogleWorker(
     const { ids, ...outcome } = await discoverGoogleJobs(store, profile);
     for (const id of ids) await queues.scheduleListing(store, id);
     outcome.pending = store.pendingCount();
-    console.log(JSON.stringify({ source: 'google', ...outcome }));
-    if (outcome.failures.length) throw new Error(outcome.failures.join('; '));
+    const result = {
+      added: outcome.added,
+      pending: outcome.pending,
+      failure_count: outcome.failures.length,
+    };
+    if (outcome.failures.length)
+      throw new DiscoveryPartialFailure(result, outcome.failures);
+    return result;
   });
 }
 
@@ -40,8 +47,14 @@ export function startFreehireWorker(
     const { ids, ...outcome } = await discoverFreehireJobs(store, config);
     for (const id of ids) await queues.scheduleListing(store, id);
     outcome.pending = store.pendingCount();
-    console.log(JSON.stringify({ source: 'freehire', ...outcome }));
-    if (outcome.failures.length) throw new Error(outcome.failures.join('; '));
+    const result = {
+      added: outcome.added,
+      pending: outcome.pending,
+      failure_count: outcome.failures.length,
+    };
+    if (outcome.failures.length)
+      throw new DiscoveryPartialFailure(result, outcome.failures);
+    return result;
   });
 }
 
