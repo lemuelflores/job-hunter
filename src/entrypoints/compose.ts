@@ -5,6 +5,7 @@ import { bamboohr } from '../integrations/ats/bamboohr.js';
 import { breezyhr } from '../integrations/ats/breezyhr.js';
 import { greenhouse } from '../integrations/ats/greenhouse.js';
 import { lever } from '../integrations/ats/lever.js';
+import { pinpointhq } from '../integrations/ats/pinpointhq.js';
 import { polymer } from '../integrations/ats/polymer.js';
 import { rippling } from '../integrations/ats/rippling.js';
 import { smartrecruiters } from '../integrations/ats/smartrecruiters.js';
@@ -96,6 +97,7 @@ export const ATS_DEFINITIONS = [
   polymer,
   breezyhr,
   bamboohr,
+  pinpointhq,
 ] as const;
 export type GoogleAts = (typeof ATS_DEFINITIONS)[number]['selector'];
 export const GOOGLE_ATS: readonly GoogleAts[] = ATS_DEFINITIONS.map(

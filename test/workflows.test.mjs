@@ -61,6 +61,8 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
     breezyhr: (id) =>
       `https://example.breezy.hr/p/${String(id).padStart(12, '0')}-engineer`,
     bamboohr: (id) => `https://example.bamboohr.com/careers/${id}`,
+    pinpointhq: (id) =>
+      `https://example.pinpointhq.com/en/postings/${String(id).padStart(8, '0')}-abcd-abcd-abcd-123456789abc`,
   };
   const f = fixture(t, ({ url }) => {
     const query = url.searchParams.get('query');
@@ -227,6 +229,23 @@ test('discovery normalizes UUID casing but preserves board casing and saved deci
 
 for (const [name, url, endpoint, response] of [
   [
+    'PinpointHQ',
+    `https://example.pinpointhq.com/en/postings/${uuid}`,
+    'https://example.pinpointhq.com/en/postings.json',
+    {
+      data: [
+        {
+          url: `https://example.pinpointhq.com/en/postings/${uuid}`,
+          job: { id: '123' },
+          description: '<p>US Laravel role</p>',
+          key_responsibilities: '<p>Maintain PHP services</p>',
+          skills_knowledge_expertise: '<p>Vue</p>',
+          benefits: '<p>Paid leave</p>',
+        },
+      ],
+    },
+  ],
+  [
     'BambooHR',
     'https://example.bamboohr.com/careers/123',
     'https://example.bamboohr.com/careers/123/detail',
@@ -308,7 +327,9 @@ for (const [name, url, endpoint, response] of [
     const text = f.store.getJob(1).listing_text;
     assert.equal(
       f.store.listReviewJobs('active')[0].posted_at,
-      name.includes('lever') ? null : '2025-01-02T12:00:00.000Z',
+      name.includes('lever') || name === 'PinpointHQ'
+        ? null
+        : '2025-01-02T12:00:00.000Z',
     );
     assert.match(text, /US Laravel role/);
     assert.equal(f.requests.length, 1, 'extraction does not run assessments');

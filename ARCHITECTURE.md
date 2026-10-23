@@ -177,6 +177,16 @@ the full description and `datePosted`; the returned share URL must match the
 requested identity. Missing/gone responses are terminal; 403 and service errors
 remain retryable rather than triggering scraping.
 
+PinpointHQ uses selector/queue/worker `pinpointhq` on single-tenant
+`*.pinpointhq.com`. Optional-locale `/postings/{uuid}` and legacy `/jobs/{id}`
+URLs use the public, locale-aware `/postings.json` feed. Current identities match
+the feed URL UUID; legacy identities match `job.id`, not the posting's numeric
+`id`. Extraction includes description, responsibilities, skills and benefits
+with their supplied headings. Feed deadlines are never used as posting dates.
+Absent identities in valid feeds terminate crawling; ambiguous legacy matches
+and malformed feeds remain retryable. Locale and legacy URLs remain distinct
+database identities, avoiding a network request during URL normalization.
+
 ### 3.1. Frontend
 
 **Name:** Local job-review UI.
