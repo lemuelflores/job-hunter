@@ -38,7 +38,7 @@
     main {
       width: min(100% - 40px, 1040px);
       margin: 0 auto;
-      padding: 56px 0 80px;
+      padding: 24px 0 80px;
     }
     h1 {
       margin: 0 0 20px;
@@ -111,125 +111,122 @@
     }
     .job-list {
       display: grid;
-      gap: 24px;
+      gap: 16px;
     }
-    .job-card {
+    .job-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 240px;
+      content-visibility: auto;
+      contain-intrinsic-size: auto 110px;
       min-width: 0;
+      overflow: hidden;
       overflow-wrap: anywhere;
       border: 1px solid var(--line);
       border-radius: 16px;
-      padding: 28px 30px 20px;
       background: var(--card);
-      box-shadow: 0 4px 18px #27352c04;
     }
-    .job-card__header {
-      display: flex;
-      justify-content: space-between;
+    .job-row__summary {
+      grid-column: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
       align-items: start;
-      gap: 16px;
-      margin-bottom: 20px;
+      gap: 18px;
+      padding: 16px 20px;
     }
-    .job-card__title {
+    .job-row__title {
       margin: 0;
-      text-wrap: pretty;
-      font-size: 23px;
-      font-weight: 650;
-      line-height: 1.3;
-      letter-spacing: -0.025em;
-    }
-    .job-card__company {
-      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.6;
       font-weight: 600;
     }
-    .job-card__metadata {
+    .job-row__title-link {
+      color: inherit;
+      text-decoration: none;
+    }
+    .job-row__metadata {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px 16px;
-      margin: 12px 0 0;
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .job-card__metadata-item {
-      display: inline-flex;
       align-items: center;
-      gap: 5px;
-    }
-    .job-card__dates {
-      flex: 0 0 auto;
-      text-align: right;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.6;
-    }
-    .job-card__date {
-      display: block;
-    }
-    .job-card__date--posted {
-      color: var(--ink);
-      font-weight: 600;
-    }
-    .job-card__source {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      align-self: center;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 3px 10px;
-      background: #edf0ed;
-      color: var(--muted);
-      box-shadow: inset 0 1px 0 #ffffffb3;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.025em;
-      white-space: nowrap;
-    }
-    .job-card__source--google {
-      border-color: #c6d9fb;
-      background: linear-gradient(135deg, #f4f8ff, #e5eeff);
-      color: #2456a6;
-    }
-    .job-card__source--freehire {
-      border-color: #ddcef5;
-      background: linear-gradient(135deg, #faf5ff, #eee5fc);
-      color: #7140a0;
-    }
-    .assessment__status {
-      flex: none;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 4px 10px;
-      background: #edf0ed;
+      gap: 0 10px;
       color: var(--muted);
       font-size: 12px;
-      font-weight: 700;
-      text-transform: capitalize;
+      line-height: 1.6;
     }
-    .job-card__assessments {
+    .job-row__metadata > span:first-child {
+      font-weight: 500;
+    }
+    .job-row__location::before {
+      content: "·";
+      margin-right: 10px;
+    }
+    .job-row__admin {
+      grid-column: 2;
+      grid-row: 1 / span 2;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      padding: 16px;
+      text-align: right;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .job-row__dates {
+      display: flex;
+      flex-direction: column;
+    }
+    .job-row__date {
+      display: block;
+    }
+    .job-row__date--posted {
+      font-weight: inherit;
+    }
+    .job-row__source {
+      margin-top: 4px;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      overflow: hidden;
+      border-radius: 999px;
+      padding: 0 5px;
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .job-row__source--google {
+      border-color: #c6d9fb;
+      background: #e5eeff;
+      color: #2456a6;
+    }
+    .job-row__source--freehire {
+      border-color: #ddcef5;
+      background: #eee5fc;
+      color: #7140a0;
     }
     .assessment {
       display: grid;
-      grid-template-columns: 180px minmax(0, 1fr);
-      min-width: 0;
-    }
-    .assessment + .assessment {
-      border-top: 1px solid var(--line);
-    }
-    .assessment__header {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
+      grid-template-columns: minmax(0, 1fr);
+      align-items: baseline;
       gap: 8px;
-      padding: 18px;
-      border-right: 1px solid var(--line);
-      background: #f8faf6;
-    }
-    .assessment__content {
       min-width: 0;
-      padding: 18px;
+    }
+    .assessment ~ .assessment {
+      border-top: 1px solid var(--line);
+      padding-top: 18px;
+    }
+    .assessment__heading {
+      display: flex;
+      align-items: baseline;
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .assessment__status {
+      display: inline-block;
+      flex: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 1px 7px;
+      background: #edf0ed;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
     }
     .assessment__status--eligible,
     .assessment__status--match {
@@ -252,75 +249,72 @@
       background: #fce8e8;
       color: var(--danger);
     }
-    .assessment__title {
-      margin: 0;
-      font-size: 14px;
-      font-weight: 650;
-    }
-    .assessment__reason {
-      margin: 0;
-      max-width: 68ch;
-    }
-    .assessment__reason--empty {
+    .assessment__explanation {
+      display: block;
+      width: 100%;
+      max-width: 90ch;
+      border: 0;
+      padding: 0;
+      background: transparent;
       color: var(--muted);
-    }
-    .assessment__evidence {
-      margin-top: 14px;
-    }
-    .assessment__toggle {
-      width: fit-content;
-      color: var(--accent);
+      font: inherit;
       font-size: 13px;
-      font-weight: 600;
+      line-height: 1.55;
+      text-align: left;
       cursor: pointer;
     }
-    .assessment__quote {
-      margin: 12px 0 0;
-      padding: 10px 14px;
-      border-left: 2px solid #b5cfc0;
-      border-radius: 0 8px 8px 0;
-      background: #f3f6f0;
-      color: #43594f;
-      font-size: 14px;
+    .assessment__text {
       white-space: pre-line;
     }
-    .job-card__error {
+    .assessment__hint {
+      margin-left: 5px;
+      font-size: 12px;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .job-row__errors {
+      grid-column: 1;
+      padding: 0 20px;
+    }
+    .job-row__error {
       padding: 10px 14px;
       border-left: 3px solid var(--danger);
       background: #fce8e8;
       color: var(--danger);
       font-size: 13px;
     }
-    .job-card__actions {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-top: 24px;
-      padding-top: 16px;
-      border-top: 1px solid var(--line);
-    }
-    .job-card__review-actions {
+    .job-row__actions {
+      align-self: stretch;
       display: flex;
       flex-wrap: wrap;
+      justify-content: flex-end;
+      align-items: center;
       gap: 8px;
-      margin-left: auto;
+      margin-top: auto;
+      padding-top: 12px;
     }
-    .job-card__link {
+    .button.job-row__link {
+      display: inline-flex;
+      align-items: center;
+      border-color: #c4dfd0;
+      background: var(--accent-soft);
       color: var(--accent);
-      font-size: 14px;
-      font-weight: 650;
-      text-underline-offset: 4px;
+      text-decoration: none;
+    }
+    .button.job-row__link:hover {
+      border-color: #91bda5;
+      background: #d9eade;
     }
     .button {
       min-height: 40px;
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 7px 13px;
-      background: transparent;
+      background: var(--card);
       color: var(--muted);
       font: inherit;
       font-size: 13px;
+      font-weight: 500;
       cursor: pointer;
     }
     .button:hover {
@@ -328,13 +322,20 @@
       background: #f7faf7;
     }
     .button--danger {
+      border-color: #e8cccc;
+      background: #fff5f3;
       color: var(--danger);
     }
+    .button--danger:hover {
+      border-color: #ce9999;
+      background: #fce8e8;
+    }
     .button:focus-visible,
+    .assessment__explanation:focus-visible,
+    .job-row__title:focus-visible,
     .toolbar__tab:focus-visible,
     .filter__select:focus-visible,
-    a:focus-visible,
-    .assessment__toggle:focus-visible {
+    a:focus-visible {
       outline: 3px solid #8fc6ae;
       outline-offset: 3px;
     }
@@ -344,8 +345,6 @@
     }
     .empty {
       padding: 45px 20px;
-      border: 1px dashed #cbd4cc;
-      border-radius: 12px;
       text-align: center;
       color: var(--muted);
     }
@@ -356,10 +355,9 @@
       font-family: Georgia, serif;
       font-size: 19px;
     }
-    @media (max-width: 600px) {
+    @media (max-width: 760px) {
       main {
         width: calc(100% - 24px);
-        padding-top: 28px;
       }
       .toolbar {
         align-items: stretch;
@@ -374,34 +372,11 @@
       .filter {
         justify-content: space-between;
       }
-      .job-card {
-        padding: 20px 18px 16px;
+      .job-row {
+        grid-template-columns: minmax(0, 1fr) 132px;
       }
-      .job-card__title {
-        font-size: 21px;
-      }
-      .job-card__header {
-        flex-direction: column;
-      }
-      .job-card__dates {
-        text-align: left;
-      }
-      .job-list {
-        gap: 16px;
-      }
-      .assessment {
-        grid-template-columns: 1fr;
-      }
-      .assessment__header {
-        flex-direction: row;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        border-right: 0;
-        border-bottom: 1px solid var(--line);
-      }
-      .job-card__actions {
-        flex-wrap: wrap;
+      .job-row__admin {
+        padding: 16px 10px;
       }
     }
     </style>
@@ -498,122 +473,115 @@
       <section
         id="jobs"
         class="job-list"
+        aria-label="Job listings"
         aria-live="polite"
         :aria-busy="loading"
         x-cloak
       >
         <template x-for="job in visibleJobs" :key="job.reviewKey">
-          <article
-            class="job-card"
-            :data-review-key="job.reviewKey"
-            :aria-labelledby="`job-title-${job.reviewKey}`"
-          >
-            <header class="job-card__header">
-              <div>
+          <div class="job-row" :data-review-key="job.reviewKey">
+            <div class="job-row__summary">
+              <div class="job-row__identity">
                 <h2
-                  class="job-card__title"
+                  class="job-row__title"
                   :id="`job-title-${job.reviewKey}`"
                   tabindex="-1"
-                  x-text="job.title || 'Untitled role'"
                 >
-                  Untitled role
-                </h2>
-                <div class="job-card__metadata">
+                  <!-- biome-ignore lint/a11y/useValidAnchor: Alpine binds the validated listing URL. -->
+                  <a
+                    class="job-row__title-link"
+                    x-show="safeUrl(job.url)"
+                    :href="safeUrl(job.url)"
+                    :aria-label="`View job: ${job.title || 'Untitled role'} (opens in new tab)`"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    x-text="job.title || 'Untitled role'"
+                    >Untitled role</a
+                  >
                   <span
-                    class="job-card__metadata-item job-card__company"
+                    x-show="!safeUrl(job.url)"
+                    x-text="job.title || 'Untitled role'"
+                  ></span>
+                </h2>
+                <div class="job-row__metadata">
+                  <span
                     x-text="displayText(job.company, 'Company not provided')"
                   ></span>
                   <span
-                    class="job-card__metadata-item"
-                    x-text="`Location: ${displayText(job.location, 'Not provided')}`"
-                  ></span>
-                  <span
-                    class="job-card__source"
-                    :class="{ 'job-card__source--google': job.source === 'google', 'job-card__source--freehire': job.source === 'freehire' }"
-                    :aria-label="`Source: ${{ google: 'Google', freehire: 'Freehire' }[job.source] || 'Unknown'}`"
-                    x-text="{ google: 'Google', freehire: 'Freehire' }[job.source] || 'Unknown'"
+                    class="job-row__location"
+                    x-text="displayText(job.location, 'Location not provided')"
                   ></span>
                 </div>
               </div>
-              <div class="job-card__dates">
-                <span class="job-card__date"
-                  >Found
+              <template x-for="panel in assessments(job)" :key="panel.title">
+                <section
+                  class="assessment"
+                  x-data="{ showEvidence: false }"
+                  :aria-labelledby="`assessment-${job.reviewKey}-${panel.title.split(' ')[0]}`"
+                >
+                  <h3
+                    class="assessment__heading"
+                    :id="`assessment-${job.reviewKey}-${panel.title.split(' ')[0]}`"
+                  >
+                    <span
+                      class="assessment__status"
+                      :class="`assessment__status--${panel.status.replaceAll('_', '-')}`"
+                      x-text="panel.title.split(' ')[0] + ' ' + panel.label"
+                      >Assessment</span
+                    >
+                  </h3>
+                  <button
+                    class="assessment__explanation"
+                    type="button"
+                    :aria-pressed="showEvidence"
+                    @click="showEvidence = !showEvidence"
+                  >
+                    <span
+                      class="assessment__text"
+                      x-text="showEvidence ? (panel.evidence || 'No evidence available yet.') : (panel.reason || 'No assessment available yet.')"
+                    ></span>
+                    <span
+                      class="assessment__hint"
+                      x-text="showEvidence ? 'See reason' : 'See evidence'"
+                    ></span>
+                  </button>
+                </section>
+              </template>
+            </div>
+            <div class="job-row__admin">
+              <div class="job-row__dates">
+                <span class="job-row__date job-row__date--posted">
+                  <span>Posted</span>
+                  <time
+                    :datetime="job.posted_at || null"
+                    x-text="relativeDate(job.posted_at) || 'date unknown'"
+                  ></time>
+                </span>
+                <span class="job-row__date">
+                  <span>Found</span>
                   <time
                     :datetime="job.first_seen"
                     x-text="relativeDate(job.first_seen) || 'date unknown'"
                   ></time>
                 </span>
-                <span class="job-card__date job-card__date--posted">
-                  <template x-if="relativeDate(job.posted_at)">
-                    <span
-                      >Posted
-                      <time
-                        :datetime="job.posted_at"
-                        x-text="relativeDate(job.posted_at)"
-                      ></time></span
-                    >
-                  </template>
-                  <span x-show="!relativeDate(job.posted_at)"
-                    >Posting date unknown</span
-                  >
-                </span>
               </div>
-            </header>
-            <template
-              x-for="stage in (job.stages || []).filter(item => item.error)"
-              :key="stage.stage"
-            >
-              <p
-                class="job-card__error"
-                x-text="`${stage.stage}: ${stage.state} — ${stage.error}`"
-              ></p>
-            </template>
-            <div class="job-card__assessments">
-              <template x-for="panel in assessments(job)" :key="panel.title">
-                <section class="assessment">
-                  <div class="assessment__header">
-                    <h3 class="assessment__title" x-text="panel.title">
-                      Assessment
-                    </h3>
-                    <span
-                      class="assessment__status"
-                      :class="`assessment__status--${panel.status.replaceAll('_', '-')}`"
-                      x-text="panel.label"
-                    ></span>
-                  </div>
-                  <div class="assessment__content">
-                    <p
-                      class="assessment__reason"
-                      :class="{ 'assessment__reason--empty': !panel.reason }"
-                      x-text="panel.reason || 'No assessment available yet.'"
-                    ></p>
-                    <details
-                      class="assessment__evidence"
-                      x-show="panel.evidence"
-                    >
-                      <summary class="assessment__toggle">
-                        Listing evidence
-                      </summary>
-                      <blockquote
-                        class="assessment__quote"
-                        x-text="panel.evidence"
-                      ></blockquote>
-                    </details>
-                  </div>
-                </section>
-              </template>
-            </div>
-            <footer class="job-card__actions">
-              <!-- biome-ignore lint/a11y/useValidAnchor: Alpine binds the validated listing URL. -->
-              <a
-                class="job-card__link"
-                x-show="safeUrl(job.url)"
-                :href="safeUrl(job.url)"
-                target="_blank"
-                rel="noopener noreferrer"
-                >View job ↗</a
-              >
-              <div class="job-card__review-actions">
+              <span
+                class="job-row__source"
+                :class="{ 'job-row__source--google': job.source === 'google', 'job-row__source--freehire': job.source === 'freehire' }"
+                :aria-label="`Source: ${{ google: 'Google', freehire: 'Freehire' }[job.source] || 'Unknown'}`"
+                x-text="{ google: 'Google', freehire: 'Freehire' }[job.source] || 'Unknown'"
+              ></span>
+              <div class="job-row__actions">
+                <!-- biome-ignore lint/a11y/useValidAnchor: Alpine binds the validated listing URL. -->
+                <a
+                  class="button job-row__link"
+                  x-show="safeUrl(job.url)"
+                  :href="safeUrl(job.url)"
+                  :aria-label="`View job: ${job.title || 'Untitled role'} (opens in new tab)`"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >View</a
+                >
                 <button
                   class="button"
                   type="button"
@@ -642,8 +610,19 @@
                   Restore
                 </button>
               </div>
-            </footer>
-          </article>
+            </div>
+            <div class="job-row__errors">
+              <template
+                x-for="stage in (job.stages || []).filter(item => item.error)"
+                :key="stage.stage"
+              >
+                <p
+                  class="job-row__error"
+                  x-text="`${stage.stage}: ${stage.state} — ${stage.error}`"
+                ></p>
+              </template>
+            </div>
+          </div>
         </template>
         <div
           class="empty"
@@ -941,7 +920,7 @@
               'Restored with unfinished checks. Run pnpm job-hunter repair to restore missing queue work.';
         },
         async preservePosition(change) {
-          const cards = [...document.querySelectorAll('.job-card')];
+          const cards = [...document.querySelectorAll('.job-row')];
           const positions = cards.map((card) => ({
             key: card.dataset.reviewKey,
             top: card.getBoundingClientRect().top,
@@ -971,7 +950,7 @@
           change();
           await this.$nextTick();
           const remaining = new Map(
-            [...document.querySelectorAll('.job-card')].map((card) => [
+            [...document.querySelectorAll('.job-row')].map((card) => [
               card.dataset.reviewKey,
               card,
             ]),
@@ -988,7 +967,7 @@
           if (focused < 0 || activeElement.isConnected) return;
           const nextKey = focusOrder.find((key) => remaining.has(key));
           const target = nextKey
-            ? remaining.get(nextKey).querySelector('h2')
+            ? remaining.get(nextKey).querySelector('.job-row__title')
             : document.querySelector(`[data-status="${this.status}"]`);
           target?.focus({ preventScroll: true });
         },

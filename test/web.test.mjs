@@ -71,16 +71,130 @@ function browser(fetch, href = 'http://localhost/') {
   };
 }
 
-test('card dates keep Found above Posted without an expandable control', () => {
+test('listing dates prioritize Posted over Found without hiding unknown dates', () => {
   const dates = UI_HTML.match(
-    /<div class="job-card__dates">([\s\S]*?)<\/div>/,
+    /<div class="job-row__dates">([\s\S]*?)<\/div>/,
   )[1];
-  assert.ok(dates.indexOf('Found') < dates.indexOf('Posted'));
+  assert.ok(dates.indexOf('Posted') < dates.indexOf('Found'));
   assert.match(dates, /:datetime="job.first_seen"/);
-  assert.match(dates, /:datetime="job.posted_at"/);
-  assert.match(dates, /Posting date unknown/);
+  assert.match(dates, /:datetime="job.posted_at \|\| null"/);
+  assert.match(dates, /relativeDate\(job.posted_at\) \|\| 'date unknown'/);
   assert.doesNotMatch(dates, /<summary|<details|exact-dates/);
-  assert.match(dates, /x-if="relativeDate\(job.posted_at\)"/);
+});
+
+test('each assessment switches its full explanation independently from reason to evidence', () => {
+  const markup = UI_HTML.match(
+    /<section\s+class="assessment"[\s\S]*?<\/section>/,
+  )[0];
+  const initial = markup.match(/x-data="([^"]+)"/)[1];
+  const click = markup.match(/@click="([^"]+)"/)[1];
+  const text = markup.match(/class="assessment__text"\s+x-text="([^"]+)"/)[1];
+  const location = runInNewContext(`(${initial})`);
+  const stack = runInNewContext(`(${initial})`);
+  location.panel = { reason: 'Residence accepted', evidence: 'Worldwide' };
+  stack.panel = { reason: 'Uses TypeScript', evidence: 'TypeScript required' };
+  assert.equal(runInNewContext(text, location), 'Residence accepted');
+  assert.equal(runInNewContext(text, stack), 'Uses TypeScript');
+  runInNewContext(click, location);
+  assert.equal(runInNewContext(text, location), 'Worldwide');
+  assert.equal(runInNewContext(text, stack), 'Uses TypeScript');
+  runInNewContext(click, stack);
+  assert.equal(runInNewContext(text, stack), 'TypeScript required');
+  runInNewContext(click, location);
+  assert.equal(runInNewContext(text, location), 'Residence accepted');
+  assert.equal(runInNewContext(text, stack), 'TypeScript required');
+});
+
+test('missing assessment text has distinct reason and evidence fallbacks', () => {
+  const markup = UI_HTML.match(
+    /<section\s+class="assessment"[\s\S]*?<\/section>/,
+  )[0];
+  const text = markup.match(/class="assessment__text"\s+x-text="([^"]+)"/)[1];
+  assert.equal(
+    runInNewContext(text, { panel: {}, showEvidence: false }),
+    'No assessment available yet.',
+  );
+  assert.equal(
+    runInNewContext(text, { panel: {}, showEvidence: true }),
+    'No evidence available yet.',
+  );
+});
+
+test('assessment text is a native toggle while the card background stays inert', () => {
+  assert.match(
+    UI_HTML,
+    /<button\s+class="assessment__explanation"\s+type="button"\s+:aria-pressed="showEvidence"\s+@click="showEvidence = !showEvidence"/,
+  );
+  assert.match(
+    UI_HTML,
+    /x-text="showEvidence \? 'See reason' : 'See evidence'"/,
+  );
+  assert.doesNotMatch(
+    UI_HTML,
+    /toggleSummary|toggleDetails|aria-expanded|job-row--expanded/,
+  );
+  assert.doesNotMatch(UI_HTML, /job-row__summary:hover/);
+});
+
+test('compact cards group outcomes with their explanation and dates with review actions', () => {
+  const summary = UI_HTML.split('class="job-row__summary"')[1].split(
+    'class="job-row__admin"',
+  )[0];
+  const admin = UI_HTML.split('class="job-row__admin"')[1].split(
+    'class="job-row__errors"',
+  )[0];
+  assert.match(summary, /displayText\(job.company/);
+  assert.match(summary, /displayText\(job.location/);
+  assert.match(summary, /x-for="panel in assessments\(job\)"/);
+  assert.match(
+    summary,
+    /x-text="panel.title.split\(' '\)\[0\] \+ ' ' \+ panel.label"/,
+  );
+  assert.doesNotMatch(summary, /job-row__dates|job-row__source|updateStatus/);
+  assert.match(admin, /class="job-row__dates"/);
+  assert.match(admin, /class="job-row__source"/);
+  assert.match(admin, /@click="updateStatus\(job, 'hidden'\)"/);
+  assert.match(admin, /@click="updateStatus\(job, 'rejected'\)"/);
+  assert.match(admin, /@click="updateStatus\(job, 'active'\)"/);
+  assert.match(admin, /:disabled="!!pending\[job.reviewKey\]"/);
+});
+
+test('title and bordered View action are safe external links without making the card a link', () => {
+  const title = UI_HTML.match(
+    /<a\s+class="job-row__title-link"[\s\S]*?<\/a\s*>/,
+  )[0];
+  const view = UI_HTML.match(
+    /<a\s+class="button job-row__link"[\s\S]*?<\/a\s*>/,
+  )[0];
+  for (const link of [title, view]) {
+    assert.match(link, /:href="safeUrl\(job.url\)"/);
+    assert.match(link, /target="_blank"/);
+    assert.match(link, /rel="noopener noreferrer"/);
+  }
+  assert.match(view, />View<\/a/);
+  assert.doesNotMatch(view, /↗/);
+  assert.match(UI_HTML, /x-show="!safeUrl\(job.url\)"/);
+});
+
+test('processing errors remain visible without opening evidence', () => {
+  const errors = UI_HTML.split('class="job-row__errors"')[1].split(
+    '</main>',
+  )[0];
+  assert.match(
+    errors,
+    /x-for="stage in \(job.stages \|\| \[\]\).filter\(item => item.error\)"/,
+  );
+  assert.match(errors, /stage.stage.*stage.state.*stage.error/);
+  assert.doesNotMatch(errors, /showEvidence|expanded/);
+});
+
+test('listing cards retain their spacing and rounded edges', () => {
+  const list = UI_HTML.match(/\.job-list\s*\{([^}]+)\}/)[1];
+  const row = UI_HTML.match(/\.job-row\s*\{([^}]+)\}/)[1];
+  assert.match(list, /display: grid/);
+  assert.match(list, /gap: 16px/);
+  assert.match(row, /border: 1px solid var\(--line\)/);
+  assert.match(row, /border-radius: 16px/);
 });
 
 test('relative dates span seconds through years without disguising unknown dates', () => {
@@ -409,16 +523,22 @@ test('continuity anchors a surviving neighbor and transfers focus without scroll
       return { top: this.top, bottom: this.top + 300 };
     },
     contains: (element) => element === focused && key === '2',
-    querySelector: () => ({
-      focus: (options) => focusCalls.push([key, options.preventScroll]),
-    }),
+    querySelector: (selector) => {
+      assert.equal(selector, '.job-row__title');
+      return {
+        focus: (options) => focusCalls.push([key, options.preventScroll]),
+      };
+    },
   });
   const first = card('1', -400);
   const second = card('2', -50);
   const third = card('3', 274);
   let cards = [first, second, third];
   page.document.activeElement = focused;
-  page.document.querySelectorAll = () => cards;
+  page.document.querySelectorAll = (selector) => {
+    assert.equal(selector, '.job-row');
+    return cards;
+  };
   page.window.scrollBy = (x, y) => scrollCalls.push([x, y]);
   await page.ui.preservePosition(() => {
     cards = [first, third];
@@ -665,9 +785,14 @@ test('HTTP UI lists eligibility and persists individual listing statuses', async
     UI_HTML,
     /:aria-label="`Source: \$\{\{ google: 'Google', freehire: 'Freehire' \}\[job.source\] \|\| 'Unknown'\}`"/,
   );
-  assert.match(UI_HTML, /class="job-card__source"/);
-  assert.match(UI_HTML, /\.job-card__source--google\s*\{/);
-  assert.match(UI_HTML, /\.job-card__source--freehire\s*\{/);
+  assert.match(UI_HTML, /class="job-row__source"/);
+  // Keep the small source badge below the dates, separate from their text.
+  assert.match(
+    UI_HTML,
+    /x-text="relativeDate\(job.first_seen\) \|\| 'date unknown'"\s*><\/time>\s*<\/span>\s*<\/div>\s*<span\s+class="job-row__source"/,
+  );
+  assert.match(UI_HTML, /\.job-row__source--google\s*\{/);
+  assert.match(UI_HTML, /\.job-row__source--freehire\s*\{/);
   assert.ok(
     jobs
       .find((row) => row.id === 2)
