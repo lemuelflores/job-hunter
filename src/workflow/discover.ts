@@ -1,14 +1,14 @@
-import type { DiscoveredListing } from '../core/listing.js';
-import type { SqliteStore } from '../infra/sqlite.js';
+import type { DiscoveredListing } from '../core/listing.ts';
+import type { SqliteStore } from '../infra/sqlite.ts';
 import type {
   SearchListings,
   SearchOutcome,
-} from '../integrations/search/types.js';
+} from '../integrations/search/types.ts';
 import {
   type EnqueueStage,
   enqueueMissingStages,
   type SyncListingFailures,
-} from './enqueue.js';
+} from './enqueue.ts';
 
 export interface DiscoveryResult {
   ids: number[];
@@ -26,8 +26,11 @@ export interface DiscoveryDeliveryResult {
 export class DiscoveryPartialFailure extends Error {
   readonly result: DiscoveryDeliveryResult;
 
-  constructor(readonly outcome: DiscoveryResult) {
+  readonly outcome: DiscoveryResult;
+
+  constructor(outcome: DiscoveryResult) {
     super(outcome.failures.join('; '));
+    this.outcome = outcome;
     this.name = 'DiscoveryPartialFailure';
     this.result = {
       added: outcome.added,

@@ -1,8 +1,8 @@
-import type { LlmProvider } from '../types.js';
-import { authenticate } from './auth.js';
-import { reviewJob } from './location-check.js';
-import { createRequest, type RequestDependencies } from './request.js';
-import { reviewStack } from './tech-check.js';
+import type { LlmProvider } from '../types.ts';
+import { authenticate } from './auth.ts';
+import { reviewJob } from './location-check.ts';
+import { createRequest, type RequestDependencies } from './request.ts';
+import { reviewStack } from './tech-check.ts';
 
 export function createChatgpt(dependencies?: RequestDependencies): LlmProvider {
   const request = createRequest(dependencies);

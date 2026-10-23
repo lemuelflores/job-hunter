@@ -1,4 +1,4 @@
-import type { ListingExtractor } from '../extraction.js';
+import type { ListingExtractor } from '../extraction.ts';
 
 export interface AtsDefinition {
   selector: string;

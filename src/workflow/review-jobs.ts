@@ -1,10 +1,10 @@
 import timers from 'node:timers/promises';
-import type { SqliteStore } from '../infra/sqlite.js';
+import type { SqliteStore } from '../infra/sqlite.ts';
 import {
   type EnqueueStage,
   enqueueMissingStages,
   type SyncListingFailures,
-} from './enqueue.js';
+} from './enqueue.ts';
 
 async function reviewOutcome(
   store: SqliteStore,

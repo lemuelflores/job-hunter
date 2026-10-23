@@ -4,16 +4,16 @@ import {
   ATS_DEFINITIONS,
   createCrawlExtractors,
   createGoogleSearch,
-} from '../dist/entrypoints/compose.js';
-import { SqliteStore } from '../dist/infra/sqlite.js';
-import { scopedGoogleQuery } from '../dist/integrations/search/google.js';
-import { crawlJob } from '../dist/workflow/crawl.js';
+} from '../src/entrypoints/compose.ts';
+import { SqliteStore } from '../src/infra/sqlite.ts';
+import { scopedGoogleQuery } from '../src/integrations/search/google.ts';
+import { crawlJob } from '../src/workflow/crawl.ts';
 import {
   DiscoveryPartialFailure,
   discoverGoogleJobs,
-} from '../dist/workflow/discover.js';
-import { checkLocation } from '../dist/workflow/location-check.js';
-import { checkTech } from '../dist/workflow/tech-check.js';
+} from '../src/workflow/discover.ts';
+import { checkLocation } from '../src/workflow/location-check.ts';
+import { checkTech } from '../src/workflow/tech-check.ts';
 import {
   externalFixture,
   location,

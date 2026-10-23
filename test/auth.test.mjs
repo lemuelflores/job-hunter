@@ -19,10 +19,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   authenticate,
   getCredentials,
-} from '../dist/integrations/llm/chatgpt/auth.js';
-import { createChatgpt } from '../dist/integrations/llm/chatgpt/index.js';
-import { createRequest } from '../dist/integrations/llm/chatgpt/request.js';
-import { AuthenticationError } from '../dist/integrations/llm/types.js';
+} from '../src/integrations/llm/chatgpt/auth.ts';
+import { createChatgpt } from '../src/integrations/llm/chatgpt/index.ts';
+import { createRequest } from '../src/integrations/llm/chatgpt/request.ts';
+import { AuthenticationError } from '../src/integrations/llm/types.ts';
 
 // Shared Arrange: synthetic tokens carry only the claims needed by OAuth tests.
 const jwt = (data) =>
@@ -67,7 +67,7 @@ async function startLogin(t, options, login = authenticate) {
 test('default login and reviews share app-root .auth.json', async (t) => {
   // Arrange: copy the provider into an isolated app root without an auth path override.
   const { root } = await setup(t);
-  const directory = join(root, 'dist', 'integrations', 'llm', 'chatgpt');
+  const directory = join(root, 'src', 'integrations', 'llm', 'chatgpt');
   await mkdir(directory, { recursive: true });
   await writeFile(join(root, 'package.json'), '{"type":"module"}');
   await symlink(
@@ -76,14 +76,14 @@ test('default login and reviews share app-root .auth.json', async (t) => {
     'dir',
   );
   await copyFile(
-    new URL('../dist/integrations/llm/chatgpt/auth.js', import.meta.url),
-    join(directory, 'auth.js'),
+    new URL('../src/integrations/llm/chatgpt/auth.ts', import.meta.url),
+    join(directory, 'auth.ts'),
   );
   await copyFile(
-    new URL('../dist/integrations/llm/types.js', import.meta.url),
-    join(directory, '..', 'types.js'),
+    new URL('../src/integrations/llm/types.ts', import.meta.url),
+    join(directory, '..', 'types.ts'),
   );
-  const provider = await import(pathToFileURL(join(directory, 'auth.js')).href);
+  const provider = await import(pathToFileURL(join(directory, 'auth.ts')).href);
   // Act: sign in through the copied provider's default credential location.
   const login = await startLogin(
     t,

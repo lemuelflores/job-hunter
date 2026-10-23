@@ -1,4 +1,4 @@
-import type { Decision, StackDecision } from '../../core/listing.js';
+import type { Decision, StackDecision } from '../../core/listing.ts';
 
 export interface ModelOptions {
   model?: string;

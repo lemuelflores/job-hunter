@@ -6,17 +6,17 @@ import {
   createFreehireSearch,
   createGoogleSearch,
   normalizeFreehireUrl,
-} from '../dist/entrypoints/compose.js';
-import { SqliteStore } from '../dist/infra/sqlite.js';
-import { searchFreehire } from '../dist/integrations/search/freehire.js';
-import { scopedGoogleQuery } from '../dist/integrations/search/google.js';
-import { crawlJob } from '../dist/workflow/crawl.js';
+} from '../src/entrypoints/compose.ts';
+import { SqliteStore } from '../src/infra/sqlite.ts';
+import { searchFreehire } from '../src/integrations/search/freehire.ts';
+import { scopedGoogleQuery } from '../src/integrations/search/google.ts';
+import { crawlJob } from '../src/workflow/crawl.ts';
 import {
   discoverFreehireJobs,
   discoverGoogleJobs,
-} from '../dist/workflow/discover.js';
-import { checkLocation } from '../dist/workflow/location-check.js';
-import { checkTech } from '../dist/workflow/tech-check.js';
+} from '../src/workflow/discover.ts';
+import { checkLocation } from '../src/workflow/location-check.ts';
+import { checkTech } from '../src/workflow/tech-check.ts';
 import {
   externalFixture,
   profile,

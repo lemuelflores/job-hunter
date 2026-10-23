@@ -1,26 +1,26 @@
-import type { DiscoveryQueue, ReviewQueues } from '../infra/bullmq.js';
-import type { Profile } from '../infra/config.js';
-import type { SqliteStore } from '../infra/sqlite.js';
-import type { ListingExtractor } from '../integrations/extraction.js';
+import type { DiscoveryQueue, ReviewQueues } from '../infra/bullmq.ts';
+import type { Profile } from '../infra/config.ts';
+import type { SqliteStore } from '../infra/sqlite.ts';
+import type { ListingExtractor } from '../integrations/extraction.ts';
 import type {
   LocationReviewer,
   StackReviewer,
-} from '../integrations/llm/types.js';
-import type { FreehireConfig } from '../integrations/search/freehire.js';
-import { crawlJob } from '../workflow/crawl.js';
+} from '../integrations/llm/types.ts';
+import type { FreehireConfig } from '../integrations/search/freehire.ts';
+import { crawlJob } from '../workflow/crawl.ts';
 import {
   type DiscoveryResult,
   discoverFreehireJobs,
   discoverGoogleJobs,
-} from '../workflow/discover.js';
-import { checkLocation } from '../workflow/location-check.js';
-import { checkTech } from '../workflow/tech-check.js';
+} from '../workflow/discover.ts';
+import { checkLocation } from '../workflow/location-check.ts';
+import { checkTech } from '../workflow/tech-check.ts';
 import {
   createCrawlExtractors,
   createFreehireSearch,
   createGoogleSearch,
   type GoogleAts,
-} from './compose.js';
+} from './compose.ts';
 
 function startDiscoveryWorker(
   queue: DiscoveryQueue,

@@ -4,9 +4,9 @@ import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from '../extraction.js';
-import type { AtsDefinition } from './types.js';
-import { parseListingUrl, UUID } from './url.js';
+} from '../extraction.ts';
+import type { AtsDefinition } from './types.ts';
+import { parseListingUrl, UUID } from './url.ts';
 
 const hosts = ['*.pinpointhq.com'] as const;
 
@@ -55,8 +55,11 @@ const BoardResponse = v.looseObject({
 export type PinpointhqBoard = v.InferOutput<typeof BoardResponse>;
 
 class PinpointhqApiError extends Error {
-  constructor(readonly status: number) {
+  readonly status: number;
+
+  constructor(status: number) {
     super(`PinpointHQ API HTTP ${status}`);
+    this.status = status;
   }
 }
 

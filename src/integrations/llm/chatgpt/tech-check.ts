@@ -1,7 +1,7 @@
 import * as v from 'valibot';
-import type { StackDecision } from '../../../core/listing.js';
-import type { StackAssessmentInput } from '../types.js';
-import { type ChatgptRequest, request } from './request.js';
+import type { StackDecision } from '../../../core/listing.ts';
+import type { StackAssessmentInput } from '../types.ts';
+import { type ChatgptRequest, request } from './request.ts';
 
 const stackSchema = {
   type: 'object',

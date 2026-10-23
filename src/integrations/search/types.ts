@@ -1,4 +1,4 @@
-import type { ListingSource } from '../../core/listing.js';
+import type { ListingSource } from '../../core/listing.ts';
 
 interface DiscoveryFields {
   source: ListingSource;

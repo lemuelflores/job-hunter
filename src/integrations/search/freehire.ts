@@ -3,7 +3,7 @@ import type {
   NormalizeListingUrl,
   SearchDiscovery,
   SearchOutcome,
-} from './types.js';
+} from './types.ts';
 
 export async function searchFreehireListings(
   config: FreehireConfig,

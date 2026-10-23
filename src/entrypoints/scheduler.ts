@@ -1,6 +1,6 @@
 import cron, { type ScheduledTask } from 'node-cron';
-import type { DiscoveryQueue } from '../infra/bullmq.js';
-import { deliveryEvent, diagnosticError } from '../infra/worker-diagnostics.js';
+import type { DiscoveryQueue } from '../infra/bullmq.ts';
+import { deliveryEvent, diagnosticError } from '../infra/worker-diagnostics.ts';
 
 export interface DiscoverySchedules {
   google?: DiscoveryQueue[];

@@ -1,12 +1,12 @@
-import type { SqliteStore } from '../infra/sqlite.js';
-import type { AtsDefinition } from '../integrations/ats/types.js';
-import { matchesAtsHost } from '../integrations/ats/url.js';
+import type { SqliteStore } from '../infra/sqlite.ts';
+import type { AtsDefinition } from '../integrations/ats/types.ts';
+import { matchesAtsHost } from '../integrations/ats/url.ts';
 import {
   type ExtractedListing,
   type ListingExtractor,
   PageError,
-} from '../integrations/extraction.js';
-import { type EnqueueStage, enqueueMissingStages } from './enqueue.js';
+} from '../integrations/extraction.ts';
+import { type EnqueueStage, enqueueMissingStages } from './enqueue.ts';
 
 export interface CrawlExtractors {
   ats: readonly AtsDefinition[];

@@ -4,9 +4,9 @@ import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from '../extraction.js';
-import type { AtsDefinition } from './types.js';
-import { parseListingUrl } from './url.js';
+} from '../extraction.ts';
+import type { AtsDefinition } from './types.ts';
+import { parseListingUrl } from './url.ts';
 
 const hosts = ['*.bamboohr.com'] as const;
 const JobId = v.pipe(v.string(), v.regex(/^\d+$/));
@@ -45,8 +45,11 @@ const JobResponse = v.looseObject({
 export type BamboohrJob = v.InferOutput<typeof JobResponse>;
 
 class BamboohrApiError extends Error {
-  constructor(readonly status: number) {
+  readonly status: number;
+
+  constructor(status: number) {
     super(`BambooHR API HTTP ${status}`);
+    this.status = status;
   }
 }
 

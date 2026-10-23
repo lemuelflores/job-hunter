@@ -4,21 +4,22 @@ import { cp, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { main } from '../dist/entrypoints/cli.js';
-import { SqliteStore } from '../dist/infra/sqlite.js';
+import { main } from '../src/entrypoints/cli.ts';
+import { SqliteStore } from '../src/infra/sqlite.ts';
 
 // Shared Arrange: copy the application so path and broken-installation checks stay isolated.
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'job-hunter-cli-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await cp(resolve('dist'), join(root, 'dist'), { recursive: true });
+  await cp(resolve('src'), join(root, 'src'), { recursive: true });
   await cp(resolve('package.json'), join(root, 'package.json'));
   await symlink(resolve('node_modules'), join(root, 'node_modules'), 'dir');
   await cp(resolve('profile.ts'), join(root, 'profile.ts'));
   const cli = (...args) =>
     spawnSync(
       process.execPath,
-      [join(root, 'dist/entrypoints/cli.js'), ...args],
+      [join(root, 'src/entrypoints/cli.ts'), ...args],
       {
         cwd: tmpdir(),
         encoding: 'utf8',
@@ -49,7 +50,7 @@ test('jobs reads the app-local database from another cwd without initializing a 
   // Act: list jobs with an unsupported provider configured.
   const withoutModel = spawnSync(
     process.execPath,
-    [join(root, 'dist/entrypoints/cli.js'), 'jobs'],
+    [join(root, 'src/entrypoints/cli.ts'), 'jobs'],
     {
       cwd: tmpdir(),
       encoding: 'utf8',
@@ -172,7 +173,7 @@ test('CLI loads profiles only for commands that need them', async (t) => {
 test('CLI help works without the database implementation installed', async (t) => {
   // Arrange: remove the copied database module.
   const { root, cli } = await fixture(t);
-  await rm(join(root, 'dist/infra/sqlite.js'));
+  await rm(join(root, 'src/infra/sqlite.ts'));
   for (const args of [[], ['--help'], ['review', '--help'], ['retry', '-h']]) {
     // Act: request global or command-specific usage.
     const help = cli(...args);
@@ -204,11 +205,11 @@ test('queue module imports without loading SQLite or connecting to Redis', () =>
       `
     import { registerHooks } from 'node:module';
     registerHooks({ resolve(specifier, context, nextResolve) {
-      if (specifier === 'node:sqlite' || specifier.endsWith('/sqlite.js'))
+      if (specifier === 'node:sqlite' || specifier.endsWith('/sqlite.ts'))
         throw new Error('SQLite loading denied');
       return nextResolve(specifier, context);
     }});
-    await import(${JSON.stringify(new URL('../dist/infra/bullmq.js', import.meta.url).href)});
+    await import(${JSON.stringify(new URL('../src/infra/bullmq.ts', import.meta.url).href)});
   `,
     ],
     { encoding: 'utf8', timeout: 10000 },

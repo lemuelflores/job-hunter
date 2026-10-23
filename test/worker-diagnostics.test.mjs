@@ -4,7 +4,7 @@ import {
   deliveryEvent,
   diagnosticError,
   safeUrl,
-} from '../dist/infra/worker-diagnostics.js';
+} from '../src/infra/worker-diagnostics.ts';
 
 test('diagnostics bound causes and strip URL secrets and common credentials', () => {
   const cause = new Error('Bearer secret access_token=hidden');

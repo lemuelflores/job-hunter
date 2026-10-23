@@ -5,8 +5,8 @@ import {
   fetchPolymerListing,
   normalizePolymerUrl,
   polymer,
-} from '../dist/integrations/ats/polymer.js';
-import { PageError } from '../dist/integrations/extraction.js';
+} from '../src/integrations/ats/polymer.ts';
+import { PageError } from '../src/integrations/extraction.ts';
 
 const id = '41538';
 const url = `https://jobs.polymer.co/example/${id}`;

@@ -5,8 +5,8 @@ import {
   fetchRipplingListing,
   normalizeRipplingUrl,
   rippling,
-} from '../dist/integrations/ats/rippling.js';
-import { PageError } from '../dist/integrations/extraction.js';
+} from '../src/integrations/ats/rippling.ts';
+import { PageError } from '../src/integrations/extraction.ts';
 
 const id = 'ef0b7266-678c-4a23-a439-1a5e7362b604';
 const url = `https://ats.rippling.com/example/jobs/${id}`;

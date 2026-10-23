@@ -14,7 +14,7 @@ x-app: &app
   image: node:22-bookworm-slim
   user: "${UID:-1000}:${GID:-1000}"
   working_dir: /app
-  entrypoint: [node, dist/entrypoints/cli.js]
+  entrypoint: [node, src/entrypoints/cli.ts]
   init: true
   env_file: .env
   environment:

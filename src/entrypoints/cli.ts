@@ -11,23 +11,23 @@ import {
   renderUsage,
   runCommand,
 } from 'citty';
-import { STAGES } from '../core/stages.js';
+import { STAGES } from '../core/stages.ts';
 import type {
   DiscoveryQueue,
   DiscoveryTarget,
   ReviewQueues,
-} from '../infra/bullmq.js';
-import { loadEnvironment, type Profile } from '../infra/config.js';
-import type { SqliteStore } from '../infra/sqlite.js';
+} from '../infra/bullmq.ts';
+import { loadEnvironment, type Profile } from '../infra/config.ts';
+import type { SqliteStore } from '../infra/sqlite.ts';
 import type {
   LlmProvider,
   LocationReviewer,
   StackReviewer,
-} from '../integrations/llm/types.js';
-import type { FreehireConfig } from '../integrations/search/freehire.js';
-import { reviewJobs } from '../workflow/review-jobs.js';
-import { cliDependencies, GOOGLE_ATS, type GoogleAts } from './compose.js';
-import type { DiscoverySchedules } from './scheduler.js';
+} from '../integrations/llm/types.ts';
+import type { FreehireConfig } from '../integrations/search/freehire.ts';
+import { reviewJobs } from '../workflow/review-jobs.ts';
+import { cliDependencies, GOOGLE_ATS, type GoogleAts } from './compose.ts';
+import type { DiscoverySchedules } from './scheduler.ts';
 
 const stageArg = {
   type: 'enum',
@@ -391,7 +391,7 @@ export async function main(
       },
       run: async ({ args }) => {
         const port = integer(args.port, 65535);
-        const { serveReviewServer } = await import('../web/server.js');
+        const { serveReviewServer } = await import('../web/server.ts');
         return serveReviewServer(await database(), port);
       },
     }),

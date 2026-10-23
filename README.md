@@ -146,9 +146,15 @@ ChatGPT access uses an unofficial subscription endpoint, so upstream changes may
 Working on the code? Start with:
 
 ```sh
+pnpm typecheck
 pnpm check
 pnpm test
 ```
+
+Backend commands run directly from source; `pnpm build` builds the web UI.
+For browser development, run `pnpm job-hunter serve` and `pnpm dev` in separate
+terminals, then open <http://127.0.0.1:5173>. The development UI uses the local
+server on port 3000 for its API.
 
 Tests make no live API calls and need no Redis or Docker. For how the app works, implementation details, and optional queue integration tests, see [ARCHITECTURE.md](ARCHITECTURE.md).
 

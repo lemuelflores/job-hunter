@@ -1,5 +1,5 @@
-import type { AtsDefinition } from './types.js';
-import { parseListingUrl } from './url.js';
+import type { AtsDefinition } from './types.ts';
+import { parseListingUrl } from './url.ts';
 
 const hosts = ['*.freshteam.com'] as const;
 

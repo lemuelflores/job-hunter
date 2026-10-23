@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import {
   createServer,
   type IncomingMessage,
@@ -6,15 +6,23 @@ import {
   type ServerResponse,
 } from 'node:http';
 import * as v from 'valibot';
-import { REVIEW_STATUSES, type ReviewStatus } from '../core/listing.js';
-import type { SqliteStore } from '../infra/sqlite.js';
-import type { UpdateJobStatusRequest } from './types.js';
+import { REVIEW_STATUSES, type ReviewStatus } from '../core/listing.ts';
+import type { SqliteStore } from '../infra/sqlite.ts';
+import type { UpdateJobStatusRequest } from './types.ts';
 
 export const UI_HTML = readFileSync(
-  new URL('./index.html', import.meta.url),
+  new URL('../../dist/web/index.html', import.meta.url),
   'utf8',
 );
-const ALPINE_JS = readFileSync(new URL('./alpine.js', import.meta.url));
+const assetsRoot = new URL('../../dist/web/assets/', import.meta.url);
+const assets = new Map(
+  readdirSync(assetsRoot)
+    .filter((path) => /\.(js|css)$/.test(path))
+    .map((path) => [
+      `/assets/${path}`,
+      readFileSync(new URL(path, assetsRoot)),
+    ]),
+);
 
 const MAX_BODY_BYTES = 16 * 1024;
 const UpdateJobStatusSchema = v.object({
@@ -108,12 +116,15 @@ async function routeRequest(
     response.end(UI_HTML);
     return;
   }
-  if (request.method === 'GET' && url.pathname === '/alpine.js') {
+  const asset = assets.get(url.pathname);
+  if (request.method === 'GET' && asset) {
     response.writeHead(200, {
-      'content-type': 'text/javascript; charset=utf-8',
+      'content-type': url.pathname.endsWith('.css')
+        ? 'text/css; charset=utf-8'
+        : 'text/javascript; charset=utf-8',
       'cache-control': 'no-store',
     });
-    response.end(ALPINE_JS);
+    response.end(asset);
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/jobs') {

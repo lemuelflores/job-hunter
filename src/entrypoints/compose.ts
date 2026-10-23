@@ -1,69 +1,69 @@
 import { resolve } from 'node:path';
-import { loadProfile, ROOT } from '../infra/config.js';
-import { ashby } from '../integrations/ats/ashby.js';
-import { bamboohr } from '../integrations/ats/bamboohr.js';
-import { breezyhr } from '../integrations/ats/breezyhr.js';
-import { freshteam } from '../integrations/ats/freshteam.js';
-import { greenhouse } from '../integrations/ats/greenhouse.js';
-import { lever } from '../integrations/ats/lever.js';
-import { pinpointhq } from '../integrations/ats/pinpointhq.js';
-import { polymer } from '../integrations/ats/polymer.js';
-import { rippling } from '../integrations/ats/rippling.js';
-import { smartrecruiters } from '../integrations/ats/smartrecruiters.js';
-import { workable } from '../integrations/ats/workable.js';
-import { scrapeListing } from '../integrations/firecrawl.js';
-import { createChatgpt } from '../integrations/llm/chatgpt/index.js';
-import type { LlmProvider } from '../integrations/llm/types.js';
+import { loadProfile, ROOT } from '../infra/config.ts';
+import { ashby } from '../integrations/ats/ashby.ts';
+import { bamboohr } from '../integrations/ats/bamboohr.ts';
+import { breezyhr } from '../integrations/ats/breezyhr.ts';
+import { freshteam } from '../integrations/ats/freshteam.ts';
+import { greenhouse } from '../integrations/ats/greenhouse.ts';
+import { lever } from '../integrations/ats/lever.ts';
+import { pinpointhq } from '../integrations/ats/pinpointhq.ts';
+import { polymer } from '../integrations/ats/polymer.ts';
+import { rippling } from '../integrations/ats/rippling.ts';
+import { smartrecruiters } from '../integrations/ats/smartrecruiters.ts';
+import { workable } from '../integrations/ats/workable.ts';
+import { scrapeListing } from '../integrations/firecrawl.ts';
+import { createChatgpt } from '../integrations/llm/chatgpt/index.ts';
+import type { LlmProvider } from '../integrations/llm/types.ts';
 import {
   type FreehireConfig,
   type FreehireSearchOptions,
   searchFreehireListings,
-} from '../integrations/search/freehire.js';
+} from '../integrations/search/freehire.ts';
 import {
   type GoogleConfig,
   searchGoogleListings,
-} from '../integrations/search/google.js';
-import type { SearchListings } from '../integrations/search/types.js';
-import type { CrawlExtractors } from '../workflow/crawl.js';
-import type { CliDependencies } from './cli.js';
+} from '../integrations/search/google.ts';
+import type { SearchListings } from '../integrations/search/types.ts';
+import type { CrawlExtractors } from '../workflow/crawl.ts';
+import type { CliDependencies } from './cli.ts';
 
 export const cliDependencies: CliDependencies = {
   loadProfile,
   createLlm,
   createStore: async () => {
-    const { SqliteStore } = await import('../infra/sqlite.js');
+    const { SqliteStore } = await import('../infra/sqlite.ts');
     return new SqliteStore(resolve(ROOT, 'jobs.sqlite'));
   },
   createReviewQueues: async () => {
-    const { ReviewQueues } = await import('../infra/bullmq.js');
+    const { ReviewQueues } = await import('../infra/bullmq.ts');
     return new ReviewQueues();
   },
   createDiscoveryQueue: async (target) => {
-    const { DiscoveryQueue } = await import('../infra/bullmq.js');
+    const { DiscoveryQueue } = await import('../infra/bullmq.ts');
     return new DiscoveryQueue(target);
   },
   startDiscoveryScheduler: async (options) => {
-    const { startDiscoveryScheduler } = await import('./scheduler.js');
+    const { startDiscoveryScheduler } = await import('./scheduler.ts');
     return startDiscoveryScheduler(options);
   },
   startGoogleWorker: async (store, queues, queue, profile, ats) => {
-    const { startGoogleWorker } = await import('./workers.js');
+    const { startGoogleWorker } = await import('./workers.ts');
     return startGoogleWorker(store, queues, queue, profile, ats);
   },
   startFreehireWorker: async (store, queues, queue, config) => {
-    const { startFreehireWorker } = await import('./workers.js');
+    const { startFreehireWorker } = await import('./workers.ts');
     return startFreehireWorker(store, queues, queue, config);
   },
   startCrawlWorker: async (store, queues) => {
-    const { startCrawlWorker } = await import('./workers.js');
+    const { startCrawlWorker } = await import('./workers.ts');
     return startCrawlWorker(store, queues);
   },
   startLocationWorker: async (store, queues, reviewLocation) => {
-    const { startLocationWorker } = await import('./workers.js');
+    const { startLocationWorker } = await import('./workers.ts');
     return startLocationWorker(store, queues, reviewLocation);
   },
   startTechWorker: async (store, queues, reviewStack) => {
-    const { startTechWorker } = await import('./workers.js');
+    const { startTechWorker } = await import('./workers.ts');
     return startTechWorker(store, queues, reviewStack);
   },
 };

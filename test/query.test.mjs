@@ -4,11 +4,11 @@ import {
   ATS_DEFINITIONS,
   createGoogleSearch,
   GOOGLE_ATS,
-} from '../dist/entrypoints/compose.js';
+} from '../src/entrypoints/compose.ts';
 import {
   normalizeGoogleQuery,
   scopedGoogleQuery,
-} from '../dist/integrations/search/google.js';
+} from '../src/integrations/search/google.ts';
 
 test('explicit query only collapses whitespace, without hidden filters or aliases', () => {
   assert.equal(

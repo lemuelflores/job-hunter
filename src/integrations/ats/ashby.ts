@@ -3,9 +3,9 @@ import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from '../extraction.js';
-import type { AtsDefinition } from './types.js';
-import { parseListingUrl, UUID } from './url.js';
+} from '../extraction.ts';
+import type { AtsDefinition } from './types.ts';
+import { parseListingUrl, UUID } from './url.ts';
 
 const hosts = ['jobs.ashbyhq.com'] as const;
 

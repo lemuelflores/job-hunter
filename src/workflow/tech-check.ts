@@ -1,5 +1,5 @@
-import type { SqliteStore } from '../infra/sqlite.js';
-import type { StackReviewer } from '../integrations/llm/types.js';
+import type { SqliteStore } from '../infra/sqlite.ts';
+import type { StackReviewer } from '../integrations/llm/types.ts';
 
 export async function checkTech(
   store: SqliteStore,

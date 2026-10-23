@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Jobs to review</title>
-    <script defer src="/alpine.js"></script>
+    <script type="module" src="./main.js"></script>
     <style>
     [x-cloak] {
       /* biome-ignore lint/complexity/noImportantStyles: Hide Alpine templates before initialization regardless of component display styles. */
@@ -110,14 +110,18 @@
       color: var(--danger);
     }
     .job-list {
-      display: grid;
-      gap: 16px;
+      position: relative;
+      overflow-anchor: none;
+      margin: 0;
+      padding: 0;
     }
     .job-row {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
       display: grid;
       grid-template-columns: minmax(0, 1fr) 240px;
-      content-visibility: auto;
-      contain-intrinsic-size: auto 110px;
       min-width: 0;
       overflow: hidden;
       overflow-wrap: anywhere;
@@ -386,6 +390,7 @@
       x-data="jobReview()"
       @popstate.window="restoreView()"
       @visibilitychange.document="refresh()"
+      @resize.window="resizeVirtual()"
     >
       <h1>Job listings</h1>
       <div class="toolbar">
@@ -470,16 +475,27 @@
       >
         Retry
       </button>
-      <section
+      <ul
         id="jobs"
         class="job-list"
+        x-ref="virtualList"
+        :style="{ height: `${totalSize}px` }"
         aria-label="Job listings"
-        aria-live="polite"
         :aria-busy="loading"
+        @focusin="syncVirtual()"
+        @focusout="$nextTick(() => syncVirtual())"
         x-cloak
       >
-        <template x-for="job in visibleJobs" :key="job.reviewKey">
-          <div class="job-row" :data-review-key="job.reviewKey">
+        <template x-for="job in renderedJobs" :key="job.reviewKey">
+          <li
+            class="job-row"
+            :aria-posinset="job.virtualIndex + 1"
+            :aria-setsize="visibleJobs.length"
+            :data-review-key="job.reviewKey"
+            :data-index="job.virtualIndex"
+            :style="{ transform: `translateY(${job.virtualStart}px)` }"
+            x-effect="job.virtualIndex; $nextTick(() => measureRow($el))"
+          >
             <div class="job-row__summary">
               <div class="job-row__identity">
                 <h2
@@ -516,7 +532,7 @@
               <template x-for="panel in assessments(job)" :key="panel.title">
                 <section
                   class="assessment"
-                  x-data="{ showEvidence: false }"
+                  x-data="assessmentState(job.reviewKey, panel.title)"
                   :aria-labelledby="`assessment-${job.reviewKey}-${panel.title.split(' ')[0]}`"
                 >
                   <h3
@@ -622,357 +638,22 @@
                 ></p>
               </template>
             </div>
-          </div>
+          </li>
         </template>
-        <div
-          class="empty"
-          x-show="!visibleJobs.length && !loadError && (!loading || cache[status])"
-        >
-          <strong
-            class="empty__title"
-            x-text="status === 'active' ? 'Nothing here yet' : `No ${status} jobs`"
-          ></strong>
-          <span
-            x-text="status === 'active' ? 'Jobs will appear after your next run.' : 'Jobs you move here will stay available for review.'"
-          ></span>
-        </div>
-      </section>
+      </ul>
+      <div
+        class="empty"
+        x-cloak
+        x-show="!visibleJobs.length && !loadError && (!loading || cache[status])"
+      >
+        <strong
+          class="empty__title"
+          x-text="status === 'active' ? 'Nothing here yet' : `No ${status} jobs`"
+        ></strong>
+        <span
+          x-text="status === 'active' ? 'Jobs will appear after your next run.' : 'Jobs you move here will stay available for review.'"
+        ></span>
+      </div>
     </main>
-    <script id="assessment-logic">
-    const stackLabel = (job) => {
-      const status = job.stack_status || 'not_checked';
-      if (status !== 'not_checked') return status.replaceAll('_', ' ');
-      if (['ineligible', 'error'].includes(job.eligibility)) return 'Skipped';
-      return 'Not checked';
-    };
-    const matchesLocation = (job, eligibility) => {
-      if (eligibility === 'all') return true;
-      if (job.eligibility === eligibility) return true;
-      if (eligibility !== 'error') return false;
-      return (job.stages || []).some(
-        (stage) =>
-          ['crawl', 'location'].includes(stage.stage) &&
-          ['failed', 'terminal'].includes(stage.state),
-      );
-    };
-    const matchesStack = (job, stack) => {
-      if (stack === 'all') return true;
-      if ((job.stack_status || 'not_checked') === stack) return true;
-      if (stack !== 'error') return false;
-      return (job.stages || []).some(
-        (stage) => stage.stage === 'stack' && stage.state === 'failed',
-      );
-    };
-    const matchesAssessments = (job, eligibility, stack) =>
-      matchesLocation(job, eligibility) && matchesStack(job, stack);
-    </script>
-    <script id="review-component">
-    const viewOptions = {
-      status: ['active', 'hidden', 'rejected'],
-      eligibility: [
-        'all',
-        'eligible',
-        'pending',
-        'unclear',
-        'ineligible',
-        'error',
-      ],
-      stack: [
-        'all',
-        'not_checked',
-        'pending',
-        'match',
-        'partial_match',
-        'potential_match',
-        'unclear',
-        'error',
-      ],
-    };
-    const readView = (url) =>
-      Object.fromEntries(
-        Object.entries(viewOptions).map(([key, values]) => {
-          const value = url.searchParams.get(key);
-          return [key, values.includes(value) ? value : values[0]];
-        }),
-      );
-    const safeUrl = (value) => {
-      try {
-        const url = new URL(value);
-        return ['http:', 'https:'].includes(url.protocol) ? url.href : null;
-      } catch {
-        return null;
-      }
-    };
-    const displayText = (value, fallback) =>
-      (typeof value === 'string' && value.trim()) || fallback;
-    const assessments = (job) => [
-      {
-        title: 'Location eligibility',
-        status: job.eligibility || 'pending',
-        label: job.eligibility || 'pending',
-        reason: job.reason,
-        evidence: job.evidence,
-      },
-      {
-        title: 'Stack match',
-        status: job.stack_status || 'not_checked',
-        label: stackLabel(job),
-        reason: job.stack_reason,
-        evidence: job.stack_evidence,
-      },
-    ];
-    const fetchJobs = async (status, signal) => {
-      const response = await fetch(`/api/jobs?status=${status}`, { signal });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body?.error || 'Could not load jobs.');
-      if (
-        !Array.isArray(body?.jobs) ||
-        body.jobs.some(
-          (job) => !job || typeof job.reviewKey !== 'string' || !job.reviewKey,
-        )
-      )
-        throw new Error('Invalid jobs response.');
-      if (
-        new Set(body.jobs.map((job) => job.reviewKey)).size !== body.jobs.length
-      )
-        throw new Error('Invalid jobs response: duplicate listing keys.');
-      return body.jobs;
-    };
-    window.jobReview = () => {
-      // Keep transport handles outside Alpine's reactive proxies.
-      let request = null;
-      let timer = null;
-      return {
-        ...readView(new URL(location.href)),
-        cache: {},
-        pending: {},
-        loading: false,
-        loadError: '',
-        saveError: '',
-        message: '',
-        now: Date.now(),
-        safeUrl,
-        displayText,
-        relativeDate(value) {
-          if (typeof value !== 'string' || !value.trim()) return '';
-          const timestamp = Date.parse(value);
-          if (Number.isNaN(timestamp)) return '';
-          const seconds = (timestamp - this.now) / 1000;
-          if (Math.abs(seconds) < 1) return 'just now';
-          for (const [unit, size] of [
-            ['year', 31536000],
-            ['month', 2592000],
-            ['week', 604800],
-            ['day', 86400],
-            ['hour', 3600],
-            ['minute', 60],
-            ['second', 1],
-          ]) {
-            if (Math.abs(seconds) < size && unit !== 'second') continue;
-            return new Intl.RelativeTimeFormat('en', {
-              numeric: 'always',
-            }).format(Math.trunc(seconds / size), unit);
-          }
-        },
-        assessments,
-        init() {
-          this.load();
-          timer = setInterval(() => this.refresh(), 5000);
-        },
-        destroy() {
-          clearInterval(timer);
-          this.cancelLoad();
-        },
-        get visibleJobs() {
-          const jobs = new Map(
-            (this.cache[this.status] || []).map((job) => [job.reviewKey, job]),
-          );
-          for (const [key, change] of Object.entries(this.pending)) {
-            if (change.to === this.status) jobs.set(key, change.job);
-            else jobs.delete(key);
-          }
-          return [...jobs.values()].filter((job) =>
-            matchesAssessments(job, this.eligibility, this.stack),
-          );
-        },
-        get notice() {
-          if (this.saveError || this.loadError)
-            return this.saveError || this.loadError;
-          if (this.message) return this.message;
-          if (this.loading && !this.cache[this.status]) return 'Loading…';
-          const count = this.visibleJobs.length;
-          return count ? `${count} ${count === 1 ? 'job' : 'jobs'}` : '';
-        },
-        async selectView(values, writeHistory = true) {
-          if (
-            Object.entries(values).every(([key, value]) => this[key] === value)
-          )
-            return;
-          const previousStatus = this.status;
-          await this.preservePosition(() => {
-            Object.assign(this, values);
-            this.saveError = '';
-            this.loadError = '';
-            this.message = '';
-          });
-          if (writeHistory) {
-            const url = new URL(location.href);
-            for (const key of Object.keys(viewOptions)) {
-              if (this[key] === viewOptions[key][0])
-                url.searchParams.delete(key);
-              else url.searchParams.set(key, this[key]);
-            }
-            history.pushState(null, '', url);
-          }
-          if (previousStatus !== this.status) return this.load(true);
-        },
-        restoreView() {
-          return this.selectView(readView(new URL(location.href)), false);
-        },
-        refresh() {
-          if (document.hidden) return;
-          this.now = Date.now();
-          return this.load();
-        },
-        cancelLoad() {
-          request?.abort();
-          request = null;
-          this.loading = false;
-        },
-        async load(force = false) {
-          if (request && !force) return;
-          this.cancelLoad();
-          const controller = new AbortController();
-          request = controller;
-          const status = this.status;
-          this.loading = true;
-          try {
-            const jobs = await fetchJobs(status, controller.signal);
-            if (request !== controller || this.status !== status) return;
-            await this.preservePosition(() => {
-              this.cache[status] = jobs;
-              this.loadError = '';
-            });
-          } catch (error) {
-            if (request !== controller) return;
-            await this.preservePosition(() => {
-              this.loadError = error.message || 'Could not load jobs.';
-            });
-          } finally {
-            if (request === controller) {
-              request = null;
-              this.loading = false;
-            }
-          }
-        },
-        async updateStatus(job, to) {
-          const key = job.reviewKey;
-          if (this.pending[key]) return;
-          const from = this.status;
-          const index = (this.cache[from] || []).findIndex(
-            (item) => item.reviewKey === key,
-          );
-          this.cancelLoad();
-          await this.preservePosition(() => {
-            this.pending[key] = { from, to, job };
-            this.saveError = '';
-            this.message = '';
-          });
-          try {
-            const response = await fetch('/api/jobs/status', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ reviewKey: key, status: to }),
-            });
-            const body = await response.json();
-            if (!response.ok || body?.ok !== true)
-              throw new Error(body?.error || 'Could not save that change.');
-          } catch (error) {
-            await this.preservePosition(() => {
-              const jobs = this.cache[from] || [];
-              if (!jobs.some((item) => item.reviewKey === key)) {
-                const restored = [...jobs];
-                restored.splice(Math.max(index, 0), 0, job);
-                this.cache[from] = restored;
-              }
-              delete this.pending[key];
-              this.saveError = `${error.message || 'Could not save that change.'} Try again.`;
-            });
-            return;
-          }
-          // A read started before the save completed cannot establish current membership.
-          this.cancelLoad();
-          await this.preservePosition(() => {
-            for (const status of Object.keys(this.cache)) {
-              this.cache[status] = this.cache[status].filter(
-                (item) => item.reviewKey !== key,
-              );
-            }
-            if (this.cache[to]) this.cache[to].push(job);
-            delete this.pending[key];
-          });
-          await this.load(true);
-          if (
-            to === 'active' &&
-            job.stages?.some((stage) => stage.state === 'pending')
-          )
-            this.message =
-              'Restored with unfinished checks. Run pnpm job-hunter repair to restore missing queue work.';
-        },
-        async preservePosition(change) {
-          const cards = [...document.querySelectorAll('.job-row')];
-          const positions = cards.map((card) => ({
-            key: card.dataset.reviewKey,
-            top: card.getBoundingClientRect().top,
-            bottom: card.getBoundingClientRect().bottom,
-          }));
-          const firstVisible = positions.findIndex(
-            (position) => position.bottom > 0,
-          );
-          const anchors =
-            firstVisible < 0
-              ? []
-              : [
-                  ...positions.slice(firstVisible),
-                  ...positions.slice(0, firstVisible).reverse(),
-                ];
-          const focused = cards.findIndex((card) =>
-            card.contains(document.activeElement),
-          );
-          const focusOrder =
-            focused < 0
-              ? []
-              : [
-                  ...cards.slice(focused + 1),
-                  ...cards.slice(0, focused).reverse(),
-                ].map((card) => card.dataset.reviewKey);
-          const activeElement = document.activeElement;
-          change();
-          await this.$nextTick();
-          const remaining = new Map(
-            [...document.querySelectorAll('.job-row')].map((card) => [
-              card.dataset.reviewKey,
-              card,
-            ]),
-          );
-          const anchor = anchors.find((position) =>
-            remaining.has(position.key),
-          );
-          if (anchor)
-            window.scrollBy(
-              0,
-              remaining.get(anchor.key).getBoundingClientRect().top -
-                anchor.top,
-            );
-          if (focused < 0 || activeElement.isConnected) return;
-          const nextKey = focusOrder.find((key) => remaining.has(key));
-          const target = nextKey
-            ? remaining.get(nextKey).querySelector('.job-row__title')
-            : document.querySelector(`[data-status="${this.status}"]`);
-          target?.focus({ preventScroll: true });
-        },
-      };
-    };
-    </script>
   </body>
 </html>

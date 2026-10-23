@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { normalizeJobUrl } from '../dist/entrypoints/compose.js';
+import { normalizeJobUrl } from '../src/entrypoints/compose.ts';
 import {
   matchesAtsHost,
   parseListingUrl,
-} from '../dist/integrations/ats/url.js';
+} from '../src/integrations/ats/url.ts';
 
 test('listing URLs accept supported shapes and strip tracking', () => {
   // Arrange: use a valid UUID listing identifier across supported hosts.

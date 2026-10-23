@@ -4,9 +4,9 @@ import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from '../extraction.js';
-import type { AtsDefinition } from './types.js';
-import { parseListingUrl, UUID } from './url.js';
+} from '../extraction.ts';
+import type { AtsDefinition } from './types.ts';
+import { parseListingUrl, UUID } from './url.ts';
 
 const hosts = ['ats.rippling.com'] as const;
 
@@ -41,8 +41,11 @@ const JobResponse = v.looseObject({
 export type RipplingJob = v.InferOutput<typeof JobResponse>;
 
 class RipplingApiError extends Error {
-  constructor(readonly status: number) {
+  readonly status: number;
+
+  constructor(status: number) {
     super(`Rippling API HTTP ${status}`);
+    this.status = status;
   }
 }
 

@@ -5,8 +5,8 @@ import {
   fetchPinpointhqListing,
   normalizePinpointhqUrl,
   pinpointhq,
-} from '../dist/integrations/ats/pinpointhq.js';
-import { PageError } from '../dist/integrations/extraction.js';
+} from '../src/integrations/ats/pinpointhq.ts';
+import { PageError } from '../src/integrations/extraction.ts';
 
 const id = 'ce6c9e5c-a2d3-42b0-a01e-9edeae315b04';
 const url = `https://example.pinpointhq.com/postings/${id}`;

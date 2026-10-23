@@ -3,12 +3,12 @@ import { test } from 'node:test';
 import {
   ATS_DEFINITIONS,
   normalizeJobUrl,
-} from '../dist/entrypoints/compose.js';
+} from '../src/entrypoints/compose.ts';
 import {
   fetchJob,
   fetchSmartrecruitersListing,
-} from '../dist/integrations/ats/smartrecruiters.js';
-import { PageError } from '../dist/integrations/extraction.js';
+} from '../src/integrations/ats/smartrecruiters.ts';
+import { PageError } from '../src/integrations/extraction.ts';
 
 const url = 'https://jobs.smartrecruiters.com/Example/123';
 const job = {

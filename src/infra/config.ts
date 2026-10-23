@@ -2,15 +2,15 @@ import { resolve } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as v from 'valibot';
-import { type CandidatePreferences, CandidateSchema } from '../core/profile.js';
+import { type CandidatePreferences, CandidateSchema } from '../core/profile.ts';
 import {
   type FreehireConfig,
   FreehireSchema,
-} from '../integrations/search/freehire.js';
+} from '../integrations/search/freehire.ts';
 import {
   type GoogleConfig,
   GoogleSchema,
-} from '../integrations/search/google.js';
+} from '../integrations/search/google.ts';
 
 export const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 

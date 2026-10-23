@@ -1,4 +1,4 @@
-import type { ReviewStatus } from '../core/listing.js';
+import type { ReviewStatus } from '../core/listing.ts';
 
 export interface UpdateJobStatusRequest {
   reviewKey: string;

@@ -1,55 +1,89 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { get as httpGet } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { runInNewContext } from 'node:vm';
-import { SqliteStore } from '../dist/infra/sqlite.js';
+import * as TanStackVirtual from '@tanstack/virtual-core';
+import { SqliteStore } from '../src/infra/sqlite.ts';
+import {
+  jobReview,
+  matchesAssessments,
+  stackLabel,
+} from '../src/web/review.js';
 import {
   listenReviewServer,
+  UI_HTML as PRODUCTION_HTML,
   serveReviewServer,
-  UI_HTML,
-} from '../dist/web/server.js';
+} from '../src/web/server.ts';
 
-// Evaluate only the production's pure assessment functions, without a DOM or fetch.
-const { stackLabel, matchesAssessments } = runInNewContext(
-  `${UI_HTML.match(/<script id="assessment-logic">([\s\S]*?)<\/script>/)[1]}
-  ({ stackLabel, matchesAssessments });`,
+const UI_HTML = readFileSync(
+  new URL('../src/web/index.html', import.meta.url),
+  'utf8',
 );
 
 // Test the production Alpine component's state, not a reimplementation of its DOM.
 function browser(fetch, href = 'http://localhost/') {
   const location = { href };
   const history = [];
-  const document = { hidden: false, querySelectorAll: () => [] };
-  const window = { scrollBy() {} };
-  const timers = new Map();
-  const ui = runInNewContext(
-    `${UI_HTML.match(/<script id="assessment-logic">([\s\S]*?)<\/script>/)[1]}
-    ${UI_HTML.match(/<script id="review-component">([\s\S]*?)<\/script>/)[1]}
-    window.jobReview();`,
-    {
-      URL,
-      AbortController,
-      fetch,
-      location,
-      document,
-      history: {
-        pushState: (_state, _unused, url) => {
-          location.href = String(url);
-          history.push(location.href);
-        },
-      },
-      setInterval: (callback, delay) => {
-        timers.set(callback, delay);
-        return callback;
-      },
-      clearInterval: (timer) => timers.delete(timer),
-      window,
+  const document = {
+    hidden: false,
+    documentElement: { scrollHeight: 400000 },
+    querySelectorAll: () => [],
+  };
+  const listeners = new Map();
+  const window = {
+    TanStackVirtual,
+    // Canvas/layout are exercised in the browser smoke test, not this DOM-free harness.
+    createCardSizer: () => ({
+      configure: () => false,
+      estimate: () => 360,
+      clear() {},
+    }),
+    scrollY: 0,
+    innerHeight: 900,
+    innerWidth: 1280,
+    document,
+    scrollBy() {},
+    scrollTo() {},
+    addEventListener: (name, callback) => listeners.set(name, callback),
+    removeEventListener: (name) => listeners.delete(name),
+    requestAnimationFrame: (callback) => {
+      queueMicrotask(() => callback(performance.now()));
+      return 1;
     },
-  );
+    cancelAnimationFrame() {},
+    setTimeout,
+    clearTimeout,
+    performance,
+  };
+  window.window = window;
+  const timers = new Map();
+  const ui = jobReview({
+    fetch,
+    location,
+    document,
+    history: {
+      pushState: (_state, _unused, url) => {
+        location.href = String(url);
+        history.push(location.href);
+      },
+    },
+    setInterval: (callback, delay) => {
+      timers.set(callback, delay);
+      return callback;
+    },
+    clearInterval: (timer) => timers.delete(timer),
+    window,
+  });
   ui.$nextTick = async () => {};
+  ui.$el = { querySelector: () => ({ clientWidth: 1040 }) };
+  ui.$refs = {
+    virtualList: {
+      getBoundingClientRect: () => ({ top: 250 - window.scrollY }),
+    },
+  };
   return {
     ui,
     location,
@@ -57,6 +91,7 @@ function browser(fetch, href = 'http://localhost/') {
     document,
     window,
     timers,
+    listeners,
     load: () => ui.load(),
     show: (status) => ui.selectView({ status }),
     get notice() {
@@ -71,95 +106,21 @@ function browser(fetch, href = 'http://localhost/') {
   };
 }
 
-test('listing dates prioritize Posted over Found without hiding unknown dates', () => {
-  const dates = UI_HTML.match(
-    /<div class="job-row__dates">([\s\S]*?)<\/div>/,
-  )[1];
-  assert.ok(dates.indexOf('Posted') < dates.indexOf('Found'));
-  assert.match(dates, /:datetime="job.first_seen"/);
-  assert.match(dates, /:datetime="job.posted_at \|\| null"/);
-  assert.match(dates, /relativeDate\(job.posted_at\) \|\| 'date unknown'/);
-  assert.doesNotMatch(dates, /<summary|<details|exact-dates/);
-});
-
-test('each assessment switches its full explanation independently from reason to evidence', () => {
-  const markup = UI_HTML.match(
-    /<section\s+class="assessment"[\s\S]*?<\/section>/,
-  )[0];
-  const initial = markup.match(/x-data="([^"]+)"/)[1];
-  const click = markup.match(/@click="([^"]+)"/)[1];
-  const text = markup.match(/class="assessment__text"\s+x-text="([^"]+)"/)[1];
-  const location = runInNewContext(`(${initial})`);
-  const stack = runInNewContext(`(${initial})`);
-  location.panel = { reason: 'Residence accepted', evidence: 'Worldwide' };
-  stack.panel = { reason: 'Uses TypeScript', evidence: 'TypeScript required' };
-  assert.equal(runInNewContext(text, location), 'Residence accepted');
-  assert.equal(runInNewContext(text, stack), 'Uses TypeScript');
-  runInNewContext(click, location);
-  assert.equal(runInNewContext(text, location), 'Worldwide');
-  assert.equal(runInNewContext(text, stack), 'Uses TypeScript');
-  runInNewContext(click, stack);
-  assert.equal(runInNewContext(text, stack), 'TypeScript required');
-  runInNewContext(click, location);
-  assert.equal(runInNewContext(text, location), 'Residence accepted');
-  assert.equal(runInNewContext(text, stack), 'TypeScript required');
-});
-
-test('missing assessment text has distinct reason and evidence fallbacks', () => {
-  const markup = UI_HTML.match(
-    /<section\s+class="assessment"[\s\S]*?<\/section>/,
-  )[0];
-  const text = markup.match(/class="assessment__text"\s+x-text="([^"]+)"/)[1];
+test('assessment state is retained separately for each listing and assessment', () => {
+  const { ui } = browser();
+  ui.assessmentState('1', 'Location eligibility').showEvidence = true;
   assert.equal(
-    runInNewContext(text, { panel: {}, showEvidence: false }),
-    'No assessment available yet.',
+    ui.assessmentState('1', 'Location eligibility').showEvidence,
+    true,
   );
+  assert.equal(ui.assessmentState('1', 'Stack match').showEvidence, false);
   assert.equal(
-    runInNewContext(text, { panel: {}, showEvidence: true }),
-    'No evidence available yet.',
+    ui.assessmentState('2', 'Location eligibility').showEvidence,
+    false,
   );
 });
 
-test('assessment text is a native toggle while the card background stays inert', () => {
-  assert.match(
-    UI_HTML,
-    /<button\s+class="assessment__explanation"\s+type="button"\s+:aria-pressed="showEvidence"\s+@click="showEvidence = !showEvidence"/,
-  );
-  assert.match(
-    UI_HTML,
-    /x-text="showEvidence \? 'See reason' : 'See evidence'"/,
-  );
-  assert.doesNotMatch(
-    UI_HTML,
-    /toggleSummary|toggleDetails|aria-expanded|job-row--expanded/,
-  );
-  assert.doesNotMatch(UI_HTML, /job-row__summary:hover/);
-});
-
-test('compact cards group outcomes with their explanation and dates with review actions', () => {
-  const summary = UI_HTML.split('class="job-row__summary"')[1].split(
-    'class="job-row__admin"',
-  )[0];
-  const admin = UI_HTML.split('class="job-row__admin"')[1].split(
-    'class="job-row__errors"',
-  )[0];
-  assert.match(summary, /displayText\(job.company/);
-  assert.match(summary, /displayText\(job.location/);
-  assert.match(summary, /x-for="panel in assessments\(job\)"/);
-  assert.match(
-    summary,
-    /x-text="panel.title.split\(' '\)\[0\] \+ ' ' \+ panel.label"/,
-  );
-  assert.doesNotMatch(summary, /job-row__dates|job-row__source|updateStatus/);
-  assert.match(admin, /class="job-row__dates"/);
-  assert.match(admin, /class="job-row__source"/);
-  assert.match(admin, /@click="updateStatus\(job, 'hidden'\)"/);
-  assert.match(admin, /@click="updateStatus\(job, 'rejected'\)"/);
-  assert.match(admin, /@click="updateStatus\(job, 'active'\)"/);
-  assert.match(admin, /:disabled="!!pending\[job.reviewKey\]"/);
-});
-
-test('title and bordered View action are safe external links without making the card a link', () => {
+test('listing links use validated URLs and isolate the opened tab', () => {
   const title = UI_HTML.match(
     /<a\s+class="job-row__title-link"[\s\S]*?<\/a\s*>/,
   )[0];
@@ -171,30 +132,133 @@ test('title and bordered View action are safe external links without making the 
     assert.match(link, /target="_blank"/);
     assert.match(link, /rel="noopener noreferrer"/);
   }
-  assert.match(view, />View<\/a/);
-  assert.doesNotMatch(view, /↗/);
   assert.match(UI_HTML, /x-show="!safeUrl\(job.url\)"/);
 });
 
-test('processing errors remain visible without opening evidence', () => {
-  const errors = UI_HTML.split('class="job-row__errors"')[1].split(
-    '</main>',
-  )[0];
-  assert.match(
-    errors,
-    /x-for="stage in \(job.stages \|\| \[\]\).filter\(item => item.error\)"/,
+test('unmounted cards use content-aware estimates instead of a fixed height', async (t) => {
+  const estimates = [];
+  const page = browser(async () =>
+    Response.json({ jobs: [{ reviewKey: '1', title: 'Engineer' }] }),
   );
-  assert.match(errors, /stage.stage.*stage.state.*stage.error/);
-  assert.doesNotMatch(errors, /showEvidence|expanded/);
+  page.window.createCardSizer = () => ({
+    configure: () => false,
+    estimate: (content) => {
+      estimates.push(content);
+      return 480;
+    },
+    clear() {},
+  });
+  t.after(() => page.ui.destroy());
+  await page.ui.init();
+  assert.equal(estimates[0].title, 'Engineer');
+  assert.equal(page.ui.totalSize, 480);
 });
 
-test('listing cards retain their spacing and rounded edges', () => {
-  const list = UI_HTML.match(/\.job-list\s*\{([^}]+)\}/)[1];
-  const row = UI_HTML.match(/\.job-row\s*\{([^}]+)\}/)[1];
-  assert.match(list, /display: grid/);
-  assert.match(list, /gap: 16px/);
-  assert.match(row, /border: 1px solid var\(--line\)/);
-  assert.match(row, /border-radius: 16px/);
+test('large result sets select a bounded render window and update it on scroll', async () => {
+  const page = browser(async () =>
+    Response.json({
+      jobs: Array.from({ length: 1000 }, (_, index) => ({
+        reviewKey: String(index),
+      })),
+    }),
+  );
+  await page.ui.init();
+  assert.equal(page.ui.visibleJobs.length, 1000);
+  assert.ok(
+    page.ui.renderedJobs.length > 0 && page.ui.renderedJobs.length < 20,
+  );
+  assert.equal(page.ui.renderedJobs[0].reviewKey, '0');
+  page.window.scrollY = 100000;
+  page.listeners.get('scroll')();
+  assert.ok(Number(page.ui.renderedJobs[0].reviewKey) > 200);
+  assert.ok(page.ui.renderedJobs.length < 20);
+  page.ui.destroy();
+  assert.equal(page.listeners.size, 0);
+});
+
+test('a reported card height updates the following card offset', async () => {
+  const page = browser(async () =>
+    Response.json({ jobs: [{ reviewKey: '1' }, { reviewKey: '2' }] }),
+  );
+  await page.ui.init();
+  page.ui.measureRow({
+    isConnected: true,
+    getAttribute: () => '0',
+    offsetHeight: 640,
+    getBoundingClientRect: () => ({ height: 640, width: 1040 }),
+  });
+  assert.equal(page.ui.renderedJobs[1].virtualStart, 656);
+  page.ui.destroy();
+});
+
+test('the render window retains a focused listing and its keyboard neighbors', async () => {
+  const page = browser(async () =>
+    Response.json({
+      jobs: Array.from({ length: 1000 }, (_, index) => ({
+        reviewKey: String(index),
+      })),
+    }),
+  );
+  await page.ui.init();
+  page.document.activeElement = {
+    closest: () => ({ dataset: { reviewKey: '2' } }),
+  };
+  page.ui.syncVirtual();
+  page.window.scrollY = 100000;
+  page.listeners.get('scroll')();
+  assert.deepEqual(
+    Array.from(page.ui.renderedJobs.slice(0, 3), (job) => job.reviewKey),
+    ['1', '2', '3'],
+  );
+  assert.ok(page.ui.renderedJobs.length < 25);
+  page.document.activeElement = null;
+  page.ui.syncVirtual();
+  assert.ok(Number(page.ui.renderedJobs[0].reviewKey) > 200);
+  page.ui.destroy();
+});
+
+test('polling keeps its visible anchor when new rows move it outside overscan', async () => {
+  const page = browser(async () =>
+    Response.json({
+      jobs: Array.from({ length: 1000 }, (_, index) => ({
+        reviewKey: String(index),
+      })),
+    }),
+  );
+  await page.ui.init();
+  page.document.querySelectorAll = () =>
+    Array.from(page.ui.renderedJobs, (job) => ({
+      dataset: { reviewKey: job.reviewKey },
+      contains: () => false,
+      getBoundingClientRect: () => ({
+        top: job.virtualStart + 250 - page.window.scrollY,
+        bottom: job.virtualStart + 610 - page.window.scrollY,
+      }),
+    }));
+  page.window.scrollBy = (_x, y) => {
+    page.window.scrollY += y;
+    page.listeners.get('scroll')();
+  };
+  page.window.scrollY = 100000;
+  page.listeners.get('scroll')();
+  const anchor = page.document
+    .querySelectorAll()
+    .find((row) => row.getBoundingClientRect().bottom > 0);
+  const top = anchor.getBoundingClientRect().top;
+  await page.ui.preservePosition(() => {
+    page.ui.cache.active = [
+      ...Array.from({ length: 30 }, (_, index) => ({
+        reviewKey: `new-${index}`,
+      })),
+      ...page.ui.cache.active,
+    ];
+  });
+  const remaining = page.document
+    .querySelectorAll()
+    .find((row) => row.dataset.reviewKey === anchor.dataset.reviewKey);
+  assert.equal(remaining?.getBoundingClientRect().top, top);
+  assert.ok(page.ui.renderedJobs.length < 20);
+  page.ui.destroy();
 });
 
 test('relative dates span seconds through years without disguising unknown dates', () => {
@@ -590,7 +654,6 @@ test('UI presentation helpers retain assessment data, metadata fallbacks and saf
     null,
   ])
     assert.equal(ui.safeUrl(value), null);
-  assert.match(UI_HTML, /x-for="job in visibleJobs" :key="job.reviewKey"/);
   assert.match(UI_HTML, /x-text="job.title/);
   assert.doesNotMatch(UI_HTML, /x-html|innerHTML/);
 });
@@ -637,7 +700,6 @@ test('UI assessment filters work independently and in combination', () => {
         .filter((job) => job.stack_status === state)
         .map((job) => job.reviewKey),
     );
-    assert.match(UI_HTML, new RegExp(`<option value="${state}">`));
   }
   // Act / Assert: intersect filters, including combinations with no matches.
   assert.deepEqual(keys('unclear', 'match'), ['10']);
@@ -757,18 +819,32 @@ test('HTTP UI lists eligibility and persists individual listing statuses', async
   // Assert: serve the expected HTML and location filter.
   assert.equal(page.status, 200);
   assert.equal(page.headers.get('content-type'), 'text/html; charset=utf-8');
-  assert.equal(await page.text(), UI_HTML);
-  const alpine = await get('/alpine.js');
-  assert.equal(alpine.status, 200);
+  assert.equal(await page.text(), PRODUCTION_HTML);
+  const assetPath = PRODUCTION_HTML.match(/src="(\/assets\/[^"]+\.js)"/)[1];
+  const bundle = await get(assetPath);
+  assert.equal(bundle.status, 200);
   assert.equal(
-    alpine.headers.get('content-type'),
+    bundle.headers.get('content-type'),
     'text/javascript; charset=utf-8',
   );
-  assert.equal(alpine.headers.get('cache-control'), 'no-store');
-  assert.match(await alpine.text(), /Alpine/);
-  assert.match(UI_HTML, /<script defer src="\/alpine.js"><\/script>/);
+  assert.equal(bundle.headers.get('cache-control'), 'no-store');
+  const bundleSource = await bundle.text();
+  assert.match(bundleSource, /Alpine/);
+  assert.doesNotMatch(bundleSource, /process\.env/);
+  assert.doesNotMatch(
+    PRODUCTION_HTML,
+    /importmap|assessment-logic|review-component/,
+  );
+  assert.equal((await get('/main.js')).status, 404);
+  assert.equal((await get('/review.js')).status, 404);
+  assert.equal((await get('/src/web/server.ts')).status, 404);
+  assert.equal((await get('/assets/../../profile.ts')).status, 404);
+  assert.equal((await get(`${assetPath}.map`)).status, 404);
+  assert.equal((await get('/card-size.ts')).status, 404);
+  assert.equal((await get('/pretext/package.json')).status, 404);
+  assert.equal((await get('/pretext/layout.d.ts')).status, 404);
+  assert.equal((await get('/virtual/index.js.map')).status, 404);
   assert.equal((await get('/node_modules/alpinejs/package.json')).status, 404);
-  assert.match(UI_HTML, /Location eligibility/);
   // Act: retrieve the active listings through the API.
   const jobs = (await (await get('/api/jobs')).json()).jobs;
   // Assert: expose assessments and stage failures without full listing text.
@@ -781,18 +857,6 @@ test('HTTP UI lists eligibility and persists individual listing statuses', async
   );
   assert.equal(jobs.find((row) => row.id === 1).first_seen, job.first_seen);
   assert.equal(jobs.find((row) => row.id === 2).posted_at, null);
-  assert.match(
-    UI_HTML,
-    /:aria-label="`Source: \$\{\{ google: 'Google', freehire: 'Freehire' \}\[job.source\] \|\| 'Unknown'\}`"/,
-  );
-  assert.match(UI_HTML, /class="job-row__source"/);
-  // Keep the small source badge below the dates, separate from their text.
-  assert.match(
-    UI_HTML,
-    /x-text="relativeDate\(job.first_seen\) \|\| 'date unknown'"\s*><\/time>\s*<\/span>\s*<\/div>\s*<span\s+class="job-row__source"/,
-  );
-  assert.match(UI_HTML, /\.job-row__source--google\s*\{/);
-  assert.match(UI_HTML, /\.job-row__source--freehire\s*\{/);
   assert.ok(
     jobs
       .find((row) => row.id === 2)

@@ -58,7 +58,7 @@ does not suppress the technology check.
 | `src/workflow/` | Application operations: discovery, crawl, location/technology checks, and review orchestration. Owns readiness checks, checkpoint reuse, persistence, and downstream handoff. |
 | `src/infra/` | `sqlite.ts` owns schema, migrations, transactions, and stage transitions. `bullmq.ts` owns delivery, retries, failure reconciliation, and recovery. `config.ts` assembles executable configuration. |
 | `src/entrypoints/` | `compose.ts` assembles the ATS registry and lazy concrete dependencies. CLI, scheduler, and worker adapters own process wiring and lifecycle, not business logic. |
-| `src/web/` | `server.ts` owns the local HTTP boundary; `index.html` contains the browser UI in one Alpine component, without a frontend bundler. |
+| `src/web/` | `server.ts` owns the local HTTP boundary; `index.html` contains the UI template and styles, `review.js` owns its single Alpine component, and `card-size.ts` estimates virtualized card heights. `main.js` wires browser dependencies through Vite. |
 
 Workflows receive integration capabilities and the concrete `SqliteStore`; there
 is deliberately no generic repository layer. They do not import concrete
@@ -90,8 +90,16 @@ opaque rather than becoming a model of the provider's entire schema.
   queue stage name for technology checks is `stack`.
 - **Change storage or recovery:** start in `src/infra/sqlite.ts` or `bullmq.ts`,
   respectively. Keep domain checkpoints separate from delivery state.
-- **Change review UI/API:** start in `src/web/`. Browser state and rendering stay
-  in `index.html`; request validation and persistence stay in `server.ts`.
+- **Change review UI/API:** start in `src/web/`. Browser state stays in
+  `review.js`, rendering in `index.html`, and request validation and persistence
+  in `server.ts`. The variable-height list mounts a measured window of cards;
+  evidence selections and focus/scroll continuity survive virtual unmounts.
+
+Node executes backend TypeScript directly; TypeScript only checks types. Vite
+builds browser assets into `dist/web/`. The production HTTP server serves only
+that built page and its JavaScript/CSS assets, never source files. Vite's
+loopback development server proxies API requests to the local backend while
+retaining same-origin mutation checks.
 
 ## State, failure, and concurrency invariants
 
@@ -150,8 +158,13 @@ loading. It needs neither Redis nor paid calls. Start with
 contracts, `test/sqlite.integration.test.mjs` for storage, and `test/web.test.mjs`
 for HTTP and browser-state logic.
 
+`test/web.browser.mjs` provides opt-in real-browser checks using local fixtures
+for rendering and measurement behavior that browser-state tests cannot establish.
+Run it with `CHROMIUM_PATH=/path/to/chromium pnpm test:web:browser`.
+
 `test/workers.queue.mjs` separately exercises application-owned delivery,
 recovery, and lifecycle behavior against isolated Redis namespaces. It does not
 retest BullMQ's retry engine. Browser-state tests do not establish real-browser
-rendering, scroll, or focus behavior. Use `pnpm build`, `pnpm check`, and the
-relevant test suites for code changes; queue checks are explicitly opt-in.
+rendering, scroll, or focus behavior. Use `pnpm build`, `pnpm typecheck`,
+`pnpm check`, and the relevant test suites for code changes; queue checks are
+explicitly opt-in.

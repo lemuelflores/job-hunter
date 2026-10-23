@@ -5,8 +5,8 @@ import {
   fetchBamboohrListing,
   fetchJob,
   normalizeBamboohrUrl,
-} from '../dist/integrations/ats/bamboohr.js';
-import { PageError } from '../dist/integrations/extraction.js';
+} from '../src/integrations/ats/bamboohr.ts';
+import { PageError } from '../src/integrations/extraction.ts';
 
 const id = '1178';
 const url = `https://example.bamboohr.com/careers/${id}`;

@@ -5,9 +5,9 @@ import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from '../extraction.js';
-import type { AtsDefinition } from './types.js';
-import { parseListingUrl } from './url.js';
+} from '../extraction.ts';
+import type { AtsDefinition } from './types.ts';
+import { parseListingUrl } from './url.ts';
 
 const hosts = ['job-boards.greenhouse.io', 'boards.greenhouse.io'] as const;
 
@@ -38,8 +38,11 @@ const JobResponse = v.looseObject({
 export type GreenhouseJob = v.InferOutput<typeof JobResponse>;
 
 class GreenhouseApiError extends Error {
-  constructor(readonly status: number) {
+  readonly status: number;
+
+  constructor(status: number) {
     super(`Greenhouse API HTTP ${status}`);
+    this.status = status;
   }
 }
 

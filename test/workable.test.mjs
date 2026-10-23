@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import {
   fetchJob,
   fetchWorkableListing,
-} from '../dist/integrations/ats/workable.js';
-import { PageError } from '../dist/integrations/extraction.js';
+} from '../src/integrations/ats/workable.ts';
+import { PageError } from '../src/integrations/extraction.ts';
 
 const id = 'AB1234CDEF';
 const url = `https://apply.workable.com/example/j/${id}`;

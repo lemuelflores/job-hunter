@@ -2,12 +2,12 @@ import {
   AuthenticationError,
   type ModelOptions,
   RateLimitError,
-} from '../types.js';
+} from '../types.ts';
 import {
   type CredentialOptions,
   type Credentials,
   getCredentials,
-} from './auth.js';
+} from './auth.ts';
 
 export interface RequestDependencies {
   getCredentials?: (options: CredentialOptions) => Promise<Credentials>;

@@ -1,7 +1,7 @@
 import * as v from 'valibot';
-import type { Decision } from '../../../core/listing.js';
-import type { LocationAssessmentInput } from '../types.js';
-import { type ChatgptRequest, request } from './request.js';
+import type { Decision } from '../../../core/listing.ts';
+import type { LocationAssessmentInput } from '../types.ts';
+import { type ChatgptRequest, request } from './request.ts';
 
 export function locationRule(location: string): string {
   return `Check only whether someone living in ${JSON.stringify(location)} can do this job remotely. Ignore technology, role, seniority, salary, and other non-location requirements.

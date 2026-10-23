@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createChatgpt } from '../../dist/integrations/llm/chatgpt/index.js';
+import { createChatgpt } from '../../src/integrations/llm/chatgpt/index.ts';
 
 export const uuid = '12345678-abcd-abcd-abcd-123456789abc';
 export const profile = {

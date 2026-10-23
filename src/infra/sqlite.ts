@@ -6,8 +6,8 @@ import {
   REVIEW_STATUSES,
   type ReviewStatus,
   type StackDecision,
-} from '../core/listing.js';
-import { STAGES, type Stage, type StageState } from '../core/stages.js';
+} from '../core/listing.ts';
+import { STAGES, type Stage, type StageState } from '../core/stages.ts';
 
 const ReviewReasonSchema = v.pipe(
   v.string(),

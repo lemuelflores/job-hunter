@@ -5,19 +5,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { main } from '../dist/entrypoints/cli.js';
-import { createLlm, GOOGLE_ATS } from '../dist/entrypoints/compose.js';
-import { startDiscoveryScheduler } from '../dist/entrypoints/scheduler.js';
+import { main } from '../src/entrypoints/cli.ts';
+import { createLlm, GOOGLE_ATS } from '../src/entrypoints/compose.ts';
+import { startDiscoveryScheduler } from '../src/entrypoints/scheduler.ts';
 import {
   startCrawlWorker,
   startFreehireWorker,
   startGoogleWorker,
   startLocationWorker,
   startTechWorker,
-} from '../dist/entrypoints/workers.js';
-import { DiscoveryQueue, ReviewQueues } from '../dist/infra/bullmq.js';
-import { SqliteStore } from '../dist/infra/sqlite.js';
-import { reviewJobs } from '../dist/workflow/review-jobs.js';
+} from '../src/entrypoints/workers.ts';
+import { DiscoveryQueue, ReviewQueues } from '../src/infra/bullmq.ts';
+import { SqliteStore } from '../src/infra/sqlite.ts';
+import { reviewJobs } from '../src/workflow/review-jobs.ts';
 import {
   externalFixture,
   profile,

@@ -4,9 +4,9 @@ import {
   type ExtractedListing,
   type ExtractionOptions,
   PageError,
-} from '../extraction.js';
-import type { AtsDefinition } from './types.js';
-import { parseListingUrl } from './url.js';
+} from '../extraction.ts';
+import type { AtsDefinition } from './types.ts';
+import { parseListingUrl } from './url.ts';
 
 const hosts = ['*.breezy.hr'] as const;
 const PositionId = v.pipe(v.string(), v.regex(/^[a-f0-9]{12}$/i));
@@ -34,8 +34,11 @@ const BoardResponse = v.array(
 export type BreezyhrBoard = v.InferOutput<typeof BoardResponse>;
 
 class BreezyhrApiError extends Error {
-  constructor(readonly status: number) {
+  readonly status: number;
+
+  constructor(status: number) {
     super(`BreezyHR API HTTP ${status}`);
+    this.status = status;
   }
 }
 

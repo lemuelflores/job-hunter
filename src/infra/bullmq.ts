@@ -1,18 +1,18 @@
 import { createNodeRedisClient, Queue, RedisConnection, Worker } from 'bullmq';
 import { createClient } from 'redis';
-import { STAGES, type Stage } from '../core/stages.js';
-import type { GoogleAts } from '../entrypoints/compose.js';
+import { STAGES, type Stage } from '../core/stages.ts';
+import type { GoogleAts } from '../entrypoints/compose.ts';
 import {
   type DiscoveryDeliveryResult,
   DiscoveryPartialFailure,
-} from '../workflow/discover.js';
-import { enqueueMissingStages } from '../workflow/enqueue.js';
-import type { SqliteStore } from './sqlite.js';
+} from '../workflow/discover.ts';
+import { enqueueMissingStages } from '../workflow/enqueue.ts';
+import type { SqliteStore } from './sqlite.ts';
 import {
   deliveryEvent,
   diagnosticError,
   safeUrl,
-} from './worker-diagnostics.js';
+} from './worker-diagnostics.ts';
 
 RedisConnection.clientFactory = (options) => {
   const producer = options.enableOfflineQueue === false;
@@ -65,12 +65,18 @@ export class DiscoveryQueue {
   readonly queue: Queue;
   readonly source: DiscoverySource;
   readonly name: string;
+  readonly target: DiscoveryTarget;
+  readonly url: string;
+  readonly prefix: string;
 
   constructor(
-    readonly target: DiscoveryTarget,
-    readonly url = process.env.REDIS_URL || 'redis://127.0.0.1:6379',
-    readonly prefix = 'job-hunter',
+    target: DiscoveryTarget,
+    url = process.env.REDIS_URL || 'redis://127.0.0.1:6379',
+    prefix = 'job-hunter',
   ) {
+    this.target = target;
+    this.url = url;
+    this.prefix = prefix;
     this.source = target === 'freehire' ? 'freehire' : 'google';
     this.name = target;
     this.queue = new Queue(this.name, {

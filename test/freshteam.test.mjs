@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   ATS_DEFINITIONS,
   normalizeJobUrl,
-} from '../dist/entrypoints/compose.js';
+} from '../src/entrypoints/compose.ts';
 
 const url = 'https://example.freshteam.com/jobs/RoJQGWitKVLI/growth-manager';
 

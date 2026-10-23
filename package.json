@@ -6,23 +6,29 @@
     "node": ">=22.18.0"
   },
   "bin": {
-    "job-hunter": "dist/entrypoints/cli.js"
+    "job-hunter": "src/entrypoints/cli.ts"
   },
   "scripts": {
     "check": "biome check .",
     "fix": "biome check --write .",
-    "build": "tsc -p tsconfig.profile.json && tsc -p tsconfig.json && cp src/web/index.html dist/web/index.html && cp node_modules/alpinejs/dist/cdn.min.js dist/web/alpine.js",
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json",
+    "dev": "vite",
     "test": "pnpm build && node --test test/*.test.mjs",
-    "test:queue": "pnpm build && node --test test/workers.queue.mjs",
-    "job-hunter": "node dist/entrypoints/cli.js"
+    "test:queue": "node --test test/workers.queue.mjs",
+    "test:web:browser": "pnpm build && node --test test/web.browser.mjs",
+    "job-hunter": "node src/entrypoints/cli.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@types/html-to-text": "^9.0.4",
     "@types/node": "^22.20.1",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vite": "8.3.5"
   },
   "dependencies": {
+    "@chenglou/pretext": "1.0.0",
+    "@tanstack/virtual-core": "3.19.7",
     "alpinejs": "3.17.5",
     "bullmq": "6.3.17",
     "citty": "^0.2.2",

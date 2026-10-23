@@ -1,6 +1,6 @@
 import * as v from 'valibot';
-import type { AtsDefinition } from '../ats/types.js';
-import type { SearchDiscovery, SearchOutcome } from './types.js';
+import type { AtsDefinition } from '../ats/types.ts';
+import type { SearchDiscovery, SearchOutcome } from './types.ts';
 
 export async function searchGoogleListings(
   config: GoogleConfig,

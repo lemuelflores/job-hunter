@@ -1,5 +1,5 @@
-import { STAGES, type Stage } from '../core/stages.js';
-import type { SqliteStore } from '../infra/sqlite.js';
+import { STAGES, type Stage } from '../core/stages.ts';
+import type { SqliteStore } from '../infra/sqlite.ts';
 
 export type EnqueueStage = (stage: Stage, listingId: number) => Promise<void>;
 export type SyncListingFailures = (listingId: number) => Promise<void>;

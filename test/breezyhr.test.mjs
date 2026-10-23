@@ -5,8 +5,8 @@ import {
   fetchBoard,
   fetchBreezyhrListing,
   normalizeBreezyhrUrl,
-} from '../dist/integrations/ats/breezyhr.js';
-import { PageError } from '../dist/integrations/extraction.js';
+} from '../src/integrations/ats/breezyhr.ts';
+import { PageError } from '../src/integrations/extraction.ts';
 
 const id = '026d43128c81';
 const url = `https://example.breezy.hr/p/${id}`;

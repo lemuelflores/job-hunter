@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as v from 'valibot';
-import { AuthenticationError, type AuthOptions } from '../types.js';
+import { AuthenticationError, type AuthOptions } from '../types.ts';
 
 // shortcut: uses the public Codex OAuth client; recheck upstream if OpenAI changes third-party access.
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PageError } from '../dist/integrations/extraction.js';
-import { scrapeListing } from '../dist/integrations/firecrawl.js';
+import { PageError } from '../src/integrations/extraction.ts';
+import { scrapeListing } from '../src/integrations/firecrawl.ts';
 
 test('extraction returns usable Markdown unchanged', async () => {
   // Arrange: provide a listing URL and the Markdown returned by the scraper.

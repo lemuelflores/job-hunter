@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   googleSearch,
   runParallelGoogleSearchesDetailed,
-} from '../dist/integrations/search/google.js';
+} from '../src/integrations/search/google.ts';
 
 test('a final page with a null next pointer retains its listings', async (t) => {
   mock(t, async () =>
