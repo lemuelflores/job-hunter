@@ -60,6 +60,7 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
       `https://apply.workable.com/example/j/${String(id).padStart(10, '0')}/`,
     breezyhr: (id) =>
       `https://example.breezy.hr/p/${String(id).padStart(12, '0')}-engineer`,
+    bamboohr: (id) => `https://example.bamboohr.com/careers/${id}`,
   };
   const f = fixture(t, ({ url }) => {
     const query = url.searchParams.get('query');
@@ -225,6 +226,20 @@ test('discovery normalizes UUID casing but preserves board casing and saved deci
 });
 
 for (const [name, url, endpoint, response] of [
+  [
+    'BambooHR',
+    'https://example.bamboohr.com/careers/123',
+    'https://example.bamboohr.com/careers/123/detail',
+    {
+      result: {
+        jobOpening: {
+          jobOpeningShareUrl: 'https://example.bamboohr.com/careers/123',
+          description: '<p>US Laravel role</p>',
+          datePosted: '2025-01-02T12:00:00Z',
+        },
+      },
+    },
+  ],
   [
     'BreezyHR',
     'https://example.breezy.hr/p/123456789abc',

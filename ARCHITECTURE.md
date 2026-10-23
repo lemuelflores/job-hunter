@@ -170,6 +170,13 @@ canonicalize together; extraction selects the exact ID and retains
 service errors remain retryable. Wildcard host patterns match one tenant label
 only; Google scopes them to the base domain, while fixed ATS hosts remain exact.
 
+BambooHR uses selector/queue/worker `bamboohr` on single-tenant
+`*.bamboohr.com`. Current `/careers/{id}` and legacy `/jobs/view.php?id={id}`
+URLs canonicalize together. The public `/careers/{id}/detail` endpoint supplies
+the full description and `datePosted`; the returned share URL must match the
+requested identity. Missing/gone responses are terminal; 403 and service errors
+remain retryable rather than triggering scraping.
+
 ### 3.1. Frontend
 
 **Name:** Local job-review UI.
