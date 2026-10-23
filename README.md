@@ -112,6 +112,11 @@ pnpm job-hunter fetch freehire             # Queue Freehire search now
 pnpm job-hunter jobs                       # List saved jobs in the terminal
 ```
 
+Google ATS choices: `ashby`, `greenhouse`, `lever`, `workable`,
+`smartrecruiters`, `breezyhr`, `bamboohr`, `pinpointhq`, `rippling`, `polymer`,
+and `freshteam`. Selecting all runs eleven independent searches (up to 1,100
+results), so use `--ats` to limit paid search usage.
+
 ### Updating
 
 After pulling new code:

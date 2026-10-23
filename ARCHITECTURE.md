@@ -20,7 +20,14 @@ job-hunter/
 │   │   │   ├── ashby.ts       # Definition, board API, posting selection/rendering
 │   │   │   ├── greenhouse.ts  # Definition, single-job API, HTML-to-text rendering
 │   │   │   ├── lever.ts       # Definition, global/EU API, listing rendering
-│   │   │   └── workable.ts    # Definition, details/short links, HTML-to-text rendering
+│   │   │   ├── workable.ts    # Definition, details/short links, HTML-to-text rendering
+│   │   │   ├── smartrecruiters.ts # Public posting details and job-ad sections
+│   │   │   ├── breezyhr.ts    # Tenant URL rules and verbose public board feed
+│   │   │   ├── bamboohr.ts    # Current/legacy links and public career details
+│   │   │   ├── pinpointhq.ts  # Current/legacy links and complete posting feed
+│   │   │   ├── rippling.ts    # Public job details, company and role HTML
+│   │   │   ├── polymer.ts     # Public job details and publication dates
+│   │   │   └── freshteam.ts   # Tenant URL rules; extraction uses Firecrawl
 │   │   ├── search/
 │   │   │   ├── types.ts       # URL-only/full-text discoveries and partial failures
 │   │   │   ├── google.ts      # Google config, scoped queries, Autom.dev requests
@@ -51,7 +58,7 @@ job-hunter/
 │   │   ├── compose.ts         # ATS registry and lazy concrete dependency factories
 │   │   ├── cli.ts             # Command parsing, lifecycle and shutdown
 │   │   ├── scheduler.ts       # Independent UTC cron producers
-│   │   └── workers.ts         # Thin adapters for eight queue consumers
+│   │   └── workers.ts         # Thin adapters for registered queue consumers
 │   └── web/
 │   │   ├── server.ts          # HTTP server, API, validation, HTML loading
 │   │   ├── types.ts           # Web API request types
@@ -87,7 +94,7 @@ profile.ts + .env
        |
 CLI fetch google / scheduler (GOOGLE_CRON)
        |
-BullMQ / Redis: ashby / greenhouse / lever / workable queues
+BullMQ / Redis: one discovery queue per registered Google ATS
        |
 independent Google ATS consumers (shared workers process)
        |--> Autom.dev API --> Google search results
@@ -97,7 +104,7 @@ SQLite: listing URLs and pending crawl
 BullMQ / Redis: crawl queue
        |
 crawl consumer (workers process)
-       |--> Ashby / Greenhouse / Lever / Workable public APIs --> listing text
+       |--> Public ATS API where available, otherwise Firecrawl --> listing text
        v
 SQLite: saved text and completed crawl
        |
@@ -136,7 +143,7 @@ SQLite is authoritative for job data and processing state. Redis coordinates wor
 
 Both discovery sources use the same scheduler process with independent cron schedules and separate queue consumers. Both validate and deduplicate listing URLs before persistence and queue crawling before either assessment. Freehire descriptions and location/technology metadata are not used as assessment evidence because descriptions can be truncated. Crawling uses supported ATS APIs, otherwise Firecrawl, and then feeds the same location and stack assessment queues.
 
-Compose uses two processing containers: `scheduler` only produces discovery tasks, while `workers` runs up to eight separate BullMQ consumers (`ashby`, `greenhouse`, `lever`, `workable`, `freehire`, `crawl`, `location`, and `stack`) in one Node process. Each source object's `enabled` flag controls its schedulers and consumers; manual commands reject disabled sources. Both configuration objects remain required. Queue names select handlers, not a task discriminator. Each queue has local and global concurrency one; asynchronous work on different queues can overlap. All consumers share startup and shutdown, the profile, SQLite connection, and process-local OAuth refresh coordination. Source remains organized by feature rather than container.
+Compose uses two processing containers: `scheduler` only produces discovery tasks, while `workers` runs one BullMQ consumer per registered ATS plus `freehire`, `crawl`, `location`, and `stack` in one Node process (up to fifteen consumers). Each source object's `enabled` flag controls its schedulers and consumers; manual commands reject disabled sources. Both configuration objects remain required. Queue names select handlers, not a task discriminator. Each queue has local and global concurrency one; asynchronous work on different queues can overlap. All consumers share startup and shutdown, the profile, SQLite connection, and process-local OAuth refresh coordination. Source remains organized by feature rather than container.
 
 ## 3. Core Components
 
@@ -155,6 +162,8 @@ unauthenticated `api.rippling.com/platform/api/ats/v1/board/{board}/jobs/{uuid}`
 detail endpoint. Company and role HTML are both retained with opaque job
 metadata. Its `createdOn` is not treated as publication time. These public
 endpoints are live-verified but undocumented and may change upstream.
+Localized Rippling paths such as `/en-US/{board}/jobs/{uuid}` canonicalize to
+the same locale-free listing identity returned by its API.
 
 Polymer uses selector/queue/worker `polymer` on `jobs.polymer.co` and its
 documented unauthenticated `api.polymer.co/v1/hire/organizations/{slug}/jobs/{id}`
@@ -186,6 +195,13 @@ with their supplied headings. Feed deadlines are never used as posting dates.
 Absent identities in valid feeds terminate crawling; ambiguous legacy matches
 and malformed feeds remain retryable. Locale and legacy URLs remain distinct
 database identities, avoiding a network request during URL normalization.
+
+Freshteam uses selector/queue/worker `freshteam` for
+`{tenant}.freshteam.com/jobs/{opaque-id}/{title-slug}`. Its JSON API requires
+credentials, so extraction deliberately uses the existing Firecrawl strategy
+against the public listing page. IDs retain their case. All eleven ATSs have
+independent consumers and Google cron tasks; Freehire adds a twelfth discovery
+schedule. No new Compose services or queue-name migration are needed.
 
 ### 3.1. Frontend
 
@@ -233,13 +249,13 @@ Valibot validates search response containers and pagination; malformed result en
 
 Autom error messages are preserved verbatim, with an HTTP-status fallback only for missing or unusable error text. Each search page allows three total attempts: rate-limit `401` responses wait two seconds between attempts, while `500` responses back off for 500 ms then one second. Other statuses are not retried; `404` ends the search as an empty page. Authentication `401` responses are distinguished from rate limits using Autom's error text.
 
-`scheduler` runs `startDiscoveryScheduler` in `src/entrypoints/scheduler.ts`, passing enabled queues. `GOOGLE_CRON` defaults to `0 * * * *`, and `FREEHIRE_CRON` to `*/15 * * * *`, both UTC. Up to five cron tasks admit work independently, with no startup enqueue and no overlapping calls per queue. Shutdown destroys all tasks and waits for active enqueues; enqueue failures are logged without stopping future ticks. Scheduler downtime misses ticks; worker downtime leaves queued work waiting. Scheduler and manual source commands load the profile for enablement, but not SQLite, model credentials or search credentials.
+`scheduler` runs `startDiscoveryScheduler` in `src/entrypoints/scheduler.ts`, passing enabled queues. `GOOGLE_CRON` defaults to `0 * * * *`, and `FREEHIRE_CRON` to `*/15 * * * *`, both UTC. One cron task per registered ATS plus Freehire admits work independently, with no startup enqueue and no overlapping calls per queue. Shutdown destroys all tasks and waits for active enqueues; enqueue failures are logged without stopping future ticks. Scheduler downtime misses ticks; worker downtime leaves queued work waiting. Scheduler and manual source commands load the profile for enablement, but not SQLite, model credentials or search credentials.
 
 `ReviewQueues` manages the three listing-stage queues and persistence-aware recovery; one `DiscoveryQueue` instance per Google ATS plus Freehire independently manages discovery delivery. Assessment workers receive only their respective review method, with `review.location` or `review.stack` bound by the CLI.
 
-`DiscoveryQueue` in `src/infra/bullmq.ts` owns queues `ashby`, `greenhouse`, `lever`, `workable`, and `freehire` under prefix `job-hunter`. Discovery worker names match their queue names. Cron and manual commands enqueue empty payloads with simple deduplication IDs matching each queue, held until completion/failure. Global/local concurrency are one per queue. `startGoogleWorker` and `startFreehireWorker` in `src/entrypoints/workers.ts` bind composed capabilities and queue callbacks to their workflows; they contain no downstream dispatch loops. BullMQ owns delivery diagnostics. CLI starts enabled consumers alongside review consumers. All drain active work before queues and SQLite close. Discovery is not a listing stage and has no `job_stages` row. Each run allows one attempt; successful pages are persisted/dispatched before reporting partial failure, without automatically repeating an entire paid search. Completed deliveries are removed and the latest 20 failures retained per queue. A later trigger can run after either outcome; stalled delivery recovery can repeat external searches after crashes. Google diagnostics retain `source=google` and add `worker` and `ats` identities.
+`DiscoveryQueue` in `src/infra/bullmq.ts` owns a queue for each registered ATS selector plus `freehire` under prefix `job-hunter`. Discovery worker names match their queue names. Cron and manual commands enqueue empty payloads with simple deduplication IDs matching each queue, held until completion/failure. Global/local concurrency are one per queue. `startGoogleWorker` and `startFreehireWorker` in `src/entrypoints/workers.ts` bind composed capabilities and queue callbacks to their workflows; they contain no downstream dispatch loops. BullMQ owns delivery diagnostics. CLI starts enabled consumers alongside review consumers. All drain active work before queues and SQLite close. Discovery is not a listing stage and has no `job_stages` row. Each run allows one attempt; successful pages are persisted/dispatched before reporting partial failure, without automatically repeating an entire paid search. Completed deliveries are removed and the latest 20 failures retained per queue. A later trigger can run after either outcome; stalled delivery recovery can repeat external searches after crashes. Google diagnostics retain `source=google` and add `worker` and `ats` identities.
 
-`fetch google --ats ashby|greenhouse|lever|workable` enqueues one ATS; omitted `--ats` enqueues all supported ATSs. Invalid/missing selectors and selectors on other sources fail before delivery. All-ATS manual fan-out attempts every sibling and reports individual failures; delivery is not atomic. Each ATS gets the shared `GOOGLE_CRON` schedule in an independent no-overlap task, so a slow/failing enqueue cannot suppress siblings. Freehire retains its independent schedule. An all-ATS trigger can retrieve up to 400 results with overlapping paid requests; repeating after completion can incur another search.
+`fetch google --ats SELECTOR` enqueues one registered ATS; omitted `--ats` enqueues all supported ATSs. Invalid/missing selectors and selectors on other sources fail before delivery. All-ATS manual fan-out attempts every sibling and reports individual failures; delivery is not atomic. Each ATS gets the shared `GOOGLE_CRON` schedule in an independent no-overlap task, so a slow/failing enqueue cannot suppress siblings. Freehire retains its independent schedule. An all-ATS trigger can retrieve up to 1,100 results across eleven overlapping paid searches; repeating after completion can incur another search.
 
 #### Discovery queue transition
 
@@ -283,9 +299,9 @@ Temporary failures receive three attempts with exponential delays of 60 and 120 
 
 Explicit retry removes exhausted Redis delivery before resetting its SQLite stage, increments the stage's retry generation, and enqueues a fresh task with the same stable ID. Failure syncing captures that generation before asynchronous Redis reads and updates only the matching generation, so a stale failed-task read cannot undo a retry. An interrupted replacement enqueue leaves pending work recoverable by `repair`.
 
-Greenhouse, Lever, and Workable API 404/410 responses are terminal and block both assessments. Other HTTP/network errors, malformed responses, mismatched IDs, and empty converted descriptions remain retryable. There is no Firecrawl fallback for these providers. Freehire discoveries on unmatched hosts use Firecrawl; Google discovery accepts only these four ATS providers.
+Native API 404/410 responses are terminal and block both assessments. Other HTTP/network errors, malformed responses, mismatched IDs, and empty converted descriptions remain retryable, with Polymer additionally recognizing its explicit missing-resource 422 responses. There is no Firecrawl fallback after native API errors. Listings without a registered native extractor, including Freshteam, use Firecrawl regardless of discovery source. Google discovery accepts only registered ATS listing identities.
 
-Workable is a sibling extraction strategy in `integrations/ats/workable.ts`, selected by `crawlJob` from the composed definitions. The `workable` discovery queue/consumer uses the shared base query scoped to `site:apply.workable.com`, alongside the other ATS queues. There are five independent discovery cron tasks including Freehire. Workable accepts `/account/j/SHORTCODE` and `/j/SHORTCODE` listing URLs, strips tracking/trailing slashes, and uppercases ten-character hexadecimal shortcodes. Short links resolve through one manual redirect, validated to the same shortcode on the HTTPS Workable host before requesting details. Short and account-scoped URLs remain distinct database identities. Its public job-detail API validates the shortcode and HTML description/requirements/benefits, preserving other metadata opaquely. Extraction verifies the shortcode, converts all three HTML sections to text, and returns `published` as the posting date, never `created_at`. Requests use a 75-second timeout and caller cancellation; missing/gone short links follow the same terminal policy.
+Workable is a sibling extraction strategy in `integrations/ats/workable.ts`, selected by `crawlJob` from the composed definitions. The `workable` discovery queue/consumer uses the shared base query scoped to `site:apply.workable.com`, alongside the other ATS queues. Workable accepts `/account/j/SHORTCODE` and `/j/SHORTCODE` listing URLs, strips tracking/trailing slashes, and uppercases ten-character hexadecimal shortcodes. Short links resolve through one manual redirect, validated to the same shortcode on the HTTPS Workable host before requesting details. Short and account-scoped URLs remain distinct database identities. Its public job-detail API validates the shortcode and HTML description/requirements/benefits, preserving other metadata opaquely. Extraction verifies the shortcode, converts all three HTML sections to text, and returns `published` as the posting date, never `created_at`. Requests use a 75-second timeout and caller cancellation; missing/gone short links follow the same terminal policy.
 
 Recovery commands are explicit:
 
@@ -391,6 +407,13 @@ and does not print browser instructions itself.
 | Greenhouse | Source job listings | Google discovery; unauthenticated GET `https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{job_id}?pay_transparency=true` |
 | Lever | Source job listings | Google discovery; unauthenticated GET `https://api.lever.co/v0/postings/{site}/{posting_id}` (EU: `api.eu.lever.co`) |
 | Workable | Source job listings | Google discovery; unauthenticated GET `https://apply.workable.com/api/v2/accounts/{account}/jobs/{shortcode}` |
+| SmartRecruiters | Source job listings | Public Posting API `https://api.smartrecruiters.com/v1/companies/{company}/postings/{id}` |
+| BreezyHR | Source job listings | Public `https://{tenant}.breezy.hr/json?verbose=true` |
+| BambooHR | Source job listings | Public `https://{tenant}.bamboohr.com/careers/{id}/detail` |
+| PinpointHQ | Source job listings | Public `https://{tenant}.pinpointhq.com/[locale/]postings.json` |
+| Rippling | Source job listings | Public `https://api.rippling.com/platform/api/ats/v1/board/{board}/jobs/{uuid}` |
+| Polymer | Source job listings | Public `https://api.polymer.co/v1/hire/organizations/{slug}/jobs/{id}` |
+| Freshteam | Source job listings | Public tenant listing pages extracted by Firecrawl; JSON API requires authentication |
 | Self-hosted Firecrawl | Extract listing Markdown | HTTP POST `/v2/scrape`; `FIRECRAWL_URL` defaults to `http://127.0.0.1:3002` |
 | OpenAI authentication | ChatGPT subscription sign-in and token refresh | OAuth using the public Codex client and loopback callback on port 1455 |
 | ChatGPT subscription backend | Independent location and stack assessments | HTTPS POST to undocumented `backend-api/codex/responses`, SSE streaming, strict JSON-schema output |
@@ -449,6 +472,7 @@ temporary directories on completion.
 - `cli.test.mjs`: command routing, arguments, help, and application-relative paths; `web.test.mjs`: HTTP behavior, local Alpine delivery, server lifecycle, pure UI assessment logic, and the production component's URL, refresh, mutation/rollback, and stale-response transitions under controlled HTTP. Node VM component tests do not exercise Alpine's DOM renderer or establish real-browser scroll/focus behavior.
 - `api-clients.test.mjs`: Ashby, Greenhouse, Lever, and Firecrawl request/response contracts, HTTP failures, timeout and cancellation with mocked network responses. `ashby.test.mjs`, `greenhouse.test.mjs`, `lever.test.mjs`, and `firecrawl.test.mjs`: extraction policy and rendering. `workable.test.mjs`: public detail contracts, safe short-link resolution, rendering, HTTP policy, timeout and cancellation. `auth.test.mjs`: authentication, real credential storage, and refresh-to-request integration; `chatgpt.test.mjs`: model adapters constructed with fake credential loading and HTTP transport; `llm.test.mjs`: provider selection.
 - `google.test.mjs`: search response validation, pagination, and preservation of completed pages after failures.
+- `smartrecruiters.test.mjs`, `breezyhr.test.mjs`, `bamboohr.test.mjs`, `pinpointhq.test.mjs`, `rippling.test.mjs`, and `polymer.test.mjs`: new ATS URL identities, public response contracts, full-text rendering, metadata/dates, cancellation, and terminal/transient policy. `freshteam.test.mjs`: public listing URL safety and deliberate scraper routing. `workflows.test.mjs` covers all eleven discovery scopes and each new extraction strategy through saved text and independent assessments; `workers.queue.mjs` exercises registry-derived CLI selection, worker startup and scheduler fan-out for every ATS against isolated Redis.
 
 Real SQLite is appropriate in HTTP and workflow tests; those suites assert their public behavior rather than duplicating database or adapter contracts. CLI execution accepts optional construction dependencies with lazy production defaults; queue tests supply real isolated queue/store instances. `createChatgpt` accepts a credential loader and HTTP transport, allowing both suites to retain real prompt construction and response validation without paid calls or local OAuth secrets. The suites share external fixtures in `test/fixtures/workflow.mjs`, not a fake or synchronous queue driver. No module replacement or experimental test-runner flags are needed.
 
@@ -496,7 +520,7 @@ No committed feature roadmap is asserted here. Existing architectural limits to 
 - **ATS:** Applicant tracking system; the hosted job boards targeted by discovery.
 - **Autom.dev:** API provider used to retrieve Google search results.
 - **BullMQ:** Redis-backed task queue used for independent processing stages.
-- **Crawl:** Extract and persist listing text through Ashby's, Greenhouse's, Lever's, or Workable's public API; Firecrawl remains for unmatched hosts.
+- **Crawl:** Extract and persist listing text through registered public ATS APIs; Firecrawl handles Freshteam and unmatched hosts.
 - **Eligibility:** Assessment of whether the candidate can perform the job remotely from their residence.
 - **Stack assessment:** Independent comparison of a role's core technologies with configured skill groups.
 - **Stage:** One processing unit: `crawl`, `location`, or `stack`.

@@ -63,7 +63,17 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
     bamboohr: (id) => `https://example.bamboohr.com/careers/${id}`,
     pinpointhq: (id) =>
       `https://example.pinpointhq.com/en/postings/${String(id).padStart(8, '0')}-abcd-abcd-abcd-123456789abc`,
+    smartrecruiters: (id) =>
+      `https://jobs.smartrecruiters.com/example/${id}-engineer`,
+    rippling: (id) =>
+      `https://ats.rippling.com/example/jobs/${String(id).padStart(8, '0')}-abcd-abcd-abcd-123456789abc`,
+    polymer: (id) => `https://jobs.polymer.co/example/${id}`,
+    freshteam: (id) => `https://example.freshteam.com/jobs/${id}/engineer`,
   };
+  assert.deepEqual(
+    Object.keys(urls).sort(),
+    ATS_DEFINITIONS.map((ats) => ats.selector).sort(),
+  );
   const f = fixture(t, ({ url }) => {
     const query = url.searchParams.get('query');
     const ats = Object.keys(urls).find(
@@ -111,6 +121,41 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
   assert.ok(
     f.store.listReviewJobs('active').every((job) => job.source === 'google'),
   );
+});
+
+test('Freshteam discovery crawls full text through Firecrawl before both assessments', async (t) => {
+  const url = 'https://example.freshteam.com/jobs/RoJQGWitKVLI/engineer';
+  const f = fixture(t, ({ url: endpoint, body }) => {
+    if (endpoint.hostname === 'api.autom.dev')
+      return Response.json({
+        organic_results: [{ link: `${url}?tracking=x`, title: 'Engineer' }],
+      });
+    if (endpoint.pathname === '/v2/scrape') {
+      assert.equal(body.url, url);
+      return Response.json({
+        success: true,
+        data: { markdown: 'US Laravel role. Remote from the US only.' },
+      });
+    }
+  });
+  assert.equal((await f.discover('freshteam')).added, 1);
+  assert.equal(f.store.getJob(1).listing_text, null);
+  assert.deepEqual(f.enqueued, [{ stage: 'crawl', id: 1 }]);
+  await f.crawl(1);
+  assert.deepEqual(f.enqueued.slice(1), [
+    { stage: 'location', id: 1 },
+    { stage: 'stack', id: 1 },
+  ]);
+  await checkLocation(f.store, 1, f.reviewLocation);
+  await checkTech(f.store, 1, f.reviewStack);
+  const saved = f.store.getJob(1);
+  assert.equal(saved.url, url);
+  assert.match(saved.listing_text, /US Laravel role/);
+  assert.equal(saved.eligibility, 'ineligible');
+  assert.equal(saved.stack_status, 'match');
+  assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
+  await f.crawl(1);
+  assert.equal(f.requests.length, 4, 'completed extraction is reused');
 });
 
 test('discovery canonicalizes, deduplicates and returns only discovered unfinished IDs', async (t) => {
@@ -229,6 +274,44 @@ test('discovery normalizes UUID casing but preserves board casing and saved deci
 
 for (const [name, url, endpoint, response] of [
   [
+    'SmartRecruiters',
+    'https://jobs.smartrecruiters.com/example/123',
+    'https://api.smartrecruiters.com/v1/companies/example/postings/123',
+    {
+      id: '123',
+      releasedDate: '2025-01-02T12:00:00Z',
+      jobAd: {
+        sections: {
+          jobDescription: { title: 'Role', text: '<p>US Laravel role</p>' },
+        },
+      },
+    },
+  ],
+  [
+    'Rippling',
+    `https://ats.rippling.com/en-US/example/jobs/${uuid}`,
+    `https://api.rippling.com/platform/api/ats/v1/board/example/jobs/${uuid}`,
+    {
+      uuid,
+      url: `https://ats.rippling.com/example/jobs/${uuid}`,
+      description: {
+        company: '<p>Example company</p>',
+        role: '<p>US Laravel role</p>',
+      },
+    },
+  ],
+  [
+    'Polymer',
+    'https://jobs.polymer.co/example/123',
+    'https://api.polymer.co/v1/hire/organizations/example/jobs/123',
+    {
+      id: 123,
+      job_post_url: 'https://jobs.polymer.co/example/123',
+      description: '<p>US Laravel role</p>',
+      published_at: '2025-01-02T12:00:00Z',
+    },
+  ],
+  [
     'PinpointHQ',
     `https://example.pinpointhq.com/en/postings/${uuid}`,
     'https://example.pinpointhq.com/en/postings.json',
@@ -327,7 +410,7 @@ for (const [name, url, endpoint, response] of [
     const text = f.store.getJob(1).listing_text;
     assert.equal(
       f.store.listReviewJobs('active')[0].posted_at,
-      name.includes('lever') || name === 'PinpointHQ'
+      name.includes('lever') || ['PinpointHQ', 'Rippling'].includes(name)
         ? null
         : '2025-01-02T12:00:00.000Z',
     );
