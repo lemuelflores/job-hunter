@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { loadProfile, ROOT } from '../infra/config.js';
 import { ashby } from '../integrations/ats/ashby.js';
+import { breezyhr } from '../integrations/ats/breezyhr.js';
 import { greenhouse } from '../integrations/ats/greenhouse.js';
 import { lever } from '../integrations/ats/lever.js';
 import { polymer } from '../integrations/ats/polymer.js';
@@ -92,6 +93,7 @@ export const ATS_DEFINITIONS = [
   smartrecruiters,
   rippling,
   polymer,
+  breezyhr,
 ] as const;
 export type GoogleAts = (typeof ATS_DEFINITIONS)[number]['selector'];
 export const GOOGLE_ATS: readonly GoogleAts[] = ATS_DEFINITIONS.map(

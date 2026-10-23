@@ -1,5 +1,6 @@
 import type { SqliteStore } from '../infra/sqlite.js';
 import type { AtsDefinition } from '../integrations/ats/types.js';
+import { matchesAtsHost } from '../integrations/ats/url.js';
 import {
   type ExtractedListing,
   type ListingExtractor,
@@ -29,7 +30,9 @@ export async function crawlJob(
   let listing: ExtractedListing;
   try {
     const hostname = new URL(job.url).hostname;
-    const ats = extractors.ats.find((ats) => ats.hosts.includes(hostname));
+    const ats = extractors.ats.find((ats) =>
+      matchesAtsHost(hostname, ats.hosts),
+    );
     const extract = ats?.extract ?? extractors.fallback;
     listing = await extract(job.url, { signal });
   } catch (error) {

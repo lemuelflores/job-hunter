@@ -73,7 +73,7 @@ test('each ATS scopes the complete normalized base query to only its host group'
         ats.hosts,
       ),
       `(engineer OR developer Laravel (APAC OR worldwide)) (${ats.hosts
-        .map((host) => `site:${host}`)
+        .map((host) => `site:${host.replace(/^\*\./, '')}`)
         .join(' OR ')})`,
     );
   }

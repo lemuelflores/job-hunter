@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { normalizeJobUrl } from '../dist/entrypoints/compose.js';
+import {
+  matchesAtsHost,
+  parseListingUrl,
+} from '../dist/integrations/ats/url.js';
 
 test('listing URLs accept supported shapes and strip tracking', () => {
   // Arrange: use a valid UUID listing identifier across supported hosts.
@@ -62,4 +66,26 @@ test('listing URLs reject unsupported hosts, paths and unsafe components', () =>
     // Act / Assert: reject each unsafe or unsupported listing URL.
     assert.equal(normalizeJobUrl(url), null, url);
   }
+});
+
+test('tenant host patterns accept exactly one DNS label without broadening fixed hosts', () => {
+  const hosts = ['*.breezy.hr'];
+  assert.ok(matchesAtsHost('example-company.breezy.hr', hosts));
+  assert.ok(parseListingUrl('https://example.breezy.hr/p/123', hosts));
+  for (const host of [
+    'breezy.hr',
+    'evil.example.breezy.hr',
+    'example.breezy.hr.evil.test',
+    '-example.breezy.hr',
+    'example-.breezy.hr',
+  ])
+    assert.equal(matchesAtsHost(host, hosts), false, host);
+  assert.equal(matchesAtsHost('evil.jobs.lever.co', ['jobs.lever.co']), false);
+  for (const url of [
+    'http://example.breezy.hr/p/123',
+    'https://u:p@example.breezy.hr/p/123',
+    'https://example.breezy.hr:8080/p/123',
+    'https://example.breezy.hr/p/ex%2Fample',
+  ])
+    assert.equal(parseListingUrl(url, hosts), null, url);
 });

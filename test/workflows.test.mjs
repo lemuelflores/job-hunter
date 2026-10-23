@@ -58,6 +58,8 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
       `https://jobs${id % 2 ? '.eu' : ''}.lever.co/example/${String(id).padStart(8, '0')}-abcd-abcd-abcd-123456789abc`,
     workable: (id) =>
       `https://apply.workable.com/example/j/${String(id).padStart(10, '0')}/`,
+    breezyhr: (id) =>
+      `https://example.breezy.hr/p/${String(id).padStart(12, '0')}-engineer`,
   };
   const f = fixture(t, ({ url }) => {
     const query = url.searchParams.get('query');
@@ -98,8 +100,11 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
       99,
     );
   }
-  assert.equal(f.requests.length, 4);
-  assert.equal(f.store.listReviewJobs('active').length, 396);
+  assert.equal(f.requests.length, Object.keys(urls).length);
+  assert.equal(
+    f.store.listReviewJobs('active').length,
+    Object.keys(urls).length * 99,
+  );
   assert.ok(
     f.store.listReviewJobs('active').every((job) => job.source === 'google'),
   );
@@ -220,6 +225,18 @@ test('discovery normalizes UUID casing but preserves board casing and saved deci
 });
 
 for (const [name, url, endpoint, response] of [
+  [
+    'BreezyHR',
+    'https://example.breezy.hr/p/123456789abc',
+    'https://example.breezy.hr/json?verbose=true',
+    [
+      {
+        id: '123456789abc',
+        description: '<p>US Laravel role</p>',
+        published_date: '2025-01-02T12:00:00Z',
+      },
+    ],
+  ],
   [
     'Workable',
     'https://apply.workable.com/example/j/AB1234CDEF',

@@ -162,6 +162,14 @@ endpoint. Extraction retains the complete HTML description and `published_at`.
 Only the recognized 422 missing-job/missing-career-page responses, alongside
 404/410, terminate crawling; other validation/service errors remain retryable.
 
+BreezyHR uses selector/queue/worker `breezyhr`, single-tenant `*.breezy.hr`
+hosts and the public `/json?verbose=true` board feed. The verbose flag is
+required for complete descriptions. Bare and slugged 12-hex position IDs
+canonicalize together; extraction selects the exact ID and retains
+`published_date`. An absent ID in a valid feed is terminal; malformed feeds and
+service errors remain retryable. Wildcard host patterns match one tenant label
+only; Google scopes them to the base domain, while fixed ATS hosts remain exact.
+
 ### 3.1. Frontend
 
 **Name:** Local job-review UI.
