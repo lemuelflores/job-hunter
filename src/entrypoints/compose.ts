@@ -3,6 +3,7 @@ import { loadProfile, ROOT } from '../infra/config.js';
 import { ashby } from '../integrations/ats/ashby.js';
 import { greenhouse } from '../integrations/ats/greenhouse.js';
 import { lever } from '../integrations/ats/lever.js';
+import { rippling } from '../integrations/ats/rippling.js';
 import { smartrecruiters } from '../integrations/ats/smartrecruiters.js';
 import { workable } from '../integrations/ats/workable.js';
 import { scrapeListing } from '../integrations/firecrawl.js';
@@ -88,6 +89,7 @@ export const ATS_DEFINITIONS = [
   lever,
   workable,
   smartrecruiters,
+  rippling,
 ] as const;
 export type GoogleAts = (typeof ATS_DEFINITIONS)[number]['selector'];
 export const GOOGLE_ATS: readonly GoogleAts[] = ATS_DEFINITIONS.map(

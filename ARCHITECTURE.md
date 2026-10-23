@@ -150,6 +150,12 @@ while API failures never fall back to scraping. Registration automatically adds
 the CLI choice, independent Google schedule and discovery consumer. Each added
 ATS increases the all-ATS paid-search allowance by up to 100 results.
 
+Rippling uses selector/queue/worker `rippling` on `ats.rippling.com` and the
+unauthenticated `api.rippling.com/platform/api/ats/v1/board/{board}/jobs/{uuid}`
+detail endpoint. Company and role HTML are both retained with opaque job
+metadata. Its `createdOn` is not treated as publication time. These public
+endpoints are live-verified but undocumented and may change upstream.
+
 ### 3.1. Frontend
 
 **Name:** Local job-review UI.
