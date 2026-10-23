@@ -140,6 +140,16 @@ Compose uses two processing containers: `scheduler` only produces discovery task
 
 ## 3. Core Components
 
+### Additional ATS support
+
+SmartRecruiters uses selector/queue/worker `smartrecruiters` and discovers
+`jobs.smartrecruiters.com/{company}/{numeric-id}[-slug]`. Numeric IDs canonicalize
+without the title slug. Its public Posting API supplies all job-ad sections,
+opaque metadata and `releasedDate`; missing/gone responses terminate crawling,
+while API failures never fall back to scraping. Registration automatically adds
+the CLI choice, independent Google schedule and discovery consumer. Each added
+ATS increases the all-ATS paid-search allowance by up to 100 results.
+
 ### 3.1. Frontend
 
 **Name:** Local job-review UI.

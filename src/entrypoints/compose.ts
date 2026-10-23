@@ -3,6 +3,7 @@ import { loadProfile, ROOT } from '../infra/config.js';
 import { ashby } from '../integrations/ats/ashby.js';
 import { greenhouse } from '../integrations/ats/greenhouse.js';
 import { lever } from '../integrations/ats/lever.js';
+import { smartrecruiters } from '../integrations/ats/smartrecruiters.js';
 import { workable } from '../integrations/ats/workable.js';
 import { scrapeListing } from '../integrations/firecrawl.js';
 import { createChatgpt } from '../integrations/llm/chatgpt/index.js';
@@ -81,7 +82,13 @@ export function createFreehireSearch(
   return () => searchFreehireListings(config, normalizeFreehireUrl, options);
 }
 
-export const ATS_DEFINITIONS = [ashby, greenhouse, lever, workable] as const;
+export const ATS_DEFINITIONS = [
+  ashby,
+  greenhouse,
+  lever,
+  workable,
+  smartrecruiters,
+] as const;
 export type GoogleAts = (typeof ATS_DEFINITIONS)[number]['selector'];
 export const GOOGLE_ATS: readonly GoogleAts[] = ATS_DEFINITIONS.map(
   (ats) => ats.selector,
