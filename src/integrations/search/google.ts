@@ -73,7 +73,8 @@ export function scopedGoogleQuery(
   const base = normalizeGoogleQuery(query);
   if (!isGoogleBaseQuery(base))
     throw new Error('Google base query must not contain site: operators');
-  return `(${base}) (${hosts.map((host) => `site:${host.replace(/^\*\./, '')}`).join(' OR ')})`;
+  // Keep domain restrictions first: long upstream queries can lose trailing operators.
+  return `(${hosts.map((host) => `site:${host.replace(/^\*\./, '')}`).join(' OR ')}) (${base})`;
 }
 
 const OrganicResult = v.object({
@@ -93,7 +94,7 @@ const SearchResponse = v.pipe(
         v.unknown(),
         v.check((value) => !Array.isArray(value)),
         v.object({
-          next: v.optional(v.pipe(v.number(), v.safeInteger(), v.minValue(1))),
+          next: v.nullish(v.pipe(v.number(), v.safeInteger(), v.minValue(1))),
           has_next_page: v.optional(v.boolean()),
         }),
       ),

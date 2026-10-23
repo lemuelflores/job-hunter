@@ -5,6 +5,23 @@ import {
   runParallelGoogleSearchesDetailed,
 } from '../dist/integrations/search/google.js';
 
+test('a final page with a null next pointer retains its listings', async (t) => {
+  mock(t, async () =>
+    Response.json({
+      organic_results: [
+        { title: 'Engineer', link: 'https://jobs.ashbyhq.com/example/job' },
+      ],
+      pagination: { next: null, has_next_page: false },
+    }),
+  );
+
+  const outcome = await runParallelGoogleSearchesDetailed(['engineer']);
+
+  assert.deepEqual(outcome.failures, []);
+  assert.equal(outcome.results.length, 1);
+  assert.equal(outcome.results[0].url, 'https://jobs.ashbyhq.com/example/job');
+});
+
 // Shared Arrange: isolate API credentials and fetch, then restore both after each test.
 function mock(t, fetcher) {
   const original = globalThis.fetch;

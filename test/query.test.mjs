@@ -57,6 +57,30 @@ test('root base query retains the existing user search terms without ATS hosts',
   assert.ok(!query.includes('site:'));
 });
 
+for (const ats of ATS_DEFINITIONS) {
+  test(`${ats.selector} sends the domain restriction before the long profile query`, async (t) => {
+    const profile = (await import('../profile.ts')).default;
+    const scope = `(${ats.hosts
+      .map((host) => `site:${host.replace(/^\*\./, '')}`)
+      .join(' OR ')})`;
+    const key = process.env.AUTOM_API_KEY;
+    process.env.AUTOM_API_KEY = 'test-key';
+    t.after(() => {
+      if (key === undefined) delete process.env.AUTOM_API_KEY;
+      else process.env.AUTOM_API_KEY = key;
+    });
+    t.mock.method(globalThis, 'fetch', async (url) => {
+      assert.equal(
+        url.searchParams.get('query'),
+        `${scope} (${normalizeGoogleQuery(profile.google.query)})`,
+      );
+      return Response.json({ organic_results: [] });
+    });
+    const outcome = await createGoogleSearch(profile.google, ats.selector)();
+    assert.deepEqual(outcome.failures, []);
+  });
+}
+
 test('each ATS scopes the complete normalized base query to only its host group', () => {
   assert.ok(GOOGLE_ATS.includes('workable'));
   assert.equal(
@@ -64,7 +88,7 @@ test('each ATS scopes the complete normalized base query to only its host group'
       'engineer',
       ATS_DEFINITIONS.find((ats) => ats.selector === 'workable').hosts,
     ),
-    '(engineer) (site:apply.workable.com)',
+    '(site:apply.workable.com) (engineer)',
   );
   for (const ats of ATS_DEFINITIONS) {
     assert.equal(
@@ -72,9 +96,9 @@ test('each ATS scopes the complete normalized base query to only its host group'
         ' engineer\n OR developer Laravel (APAC OR worldwide) ',
         ats.hosts,
       ),
-      `(engineer OR developer Laravel (APAC OR worldwide)) (${ats.hosts
+      `(${ats.hosts
         .map((host) => `site:${host.replace(/^\*\./, '')}`)
-        .join(' OR ')})`,
+        .join(' OR ')}) (engineer OR developer Laravel (APAC OR worldwide))`,
     );
   }
   assert.throws(
