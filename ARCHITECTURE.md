@@ -156,6 +156,12 @@ detail endpoint. Company and role HTML are both retained with opaque job
 metadata. Its `createdOn` is not treated as publication time. These public
 endpoints are live-verified but undocumented and may change upstream.
 
+Polymer uses selector/queue/worker `polymer` on `jobs.polymer.co` and its
+documented unauthenticated `api.polymer.co/v1/hire/organizations/{slug}/jobs/{id}`
+endpoint. Extraction retains the complete HTML description and `published_at`.
+Only the recognized 422 missing-job/missing-career-page responses, alongside
+404/410, terminate crawling; other validation/service errors remain retryable.
+
 ### 3.1. Frontend
 
 **Name:** Local job-review UI.
