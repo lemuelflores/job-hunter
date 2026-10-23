@@ -63,6 +63,8 @@ for (const ats of ATS_DEFINITIONS) {
     const scope = `(${ats.hosts
       .map((host) => `site:${host.replace(/^\*\./, '')}`)
       .join(' OR ')})`;
+    const logs = [];
+    t.mock.method(console, 'error', (message) => logs.push(message));
     const key = process.env.AUTOM_API_KEY;
     process.env.AUTOM_API_KEY = 'test-key';
     t.after(() => {
@@ -78,6 +80,7 @@ for (const ats of ATS_DEFINITIONS) {
     });
     const outcome = await createGoogleSearch(profile.google, ats.selector)();
     assert.deepEqual(outcome.failures, []);
+    assert.ok(logs[0].startsWith(`[google:${ats.selector}] page 1:`));
   });
 }
 

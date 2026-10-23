@@ -8,7 +8,7 @@ export async function searchGoogleListings(
 ): Promise<SearchOutcome> {
   const searched = await runParallelGoogleSearchesDetailed(
     [scopedGoogleQuery(config.query, ats.hosts)],
-    { num: 100 },
+    { num: 100, ats: ats.selector },
   );
   return {
     discoveries: searched.results.flatMap<SearchDiscovery>((result) => {
@@ -50,6 +50,7 @@ export interface SearchResult {
 }
 
 export interface SearchBatchOptions {
+  ats?: string;
   concurrency?: number;
   country?: string;
   language?: string;
@@ -219,7 +220,7 @@ export async function googleSearch(
   if (options.country) url.searchParams.set('gl', options.country);
   url.searchParams.set('hl', options.language ?? 'en');
 
-  console.error(`[google] search: ${query}`);
+  const label = options.ats ? `[google:${options.ats}]` : '[google]';
 
   const limit = Math.min(100, Math.max(1, options.num ?? 100));
   const results: SearchResult[] = [];
@@ -231,18 +232,30 @@ export async function googleSearch(
       const data = await searchPage(url, apiKey);
       const before = results.length;
       appendResults(results, seen, pageResults(data, query), limit);
-      for (const result of results.slice(before))
-        console.error(`[google] result: ${result.url}`);
+      console.error(
+        [
+          `${label} page ${page}: ${results.length - before} new results (${results.length} total)`,
+          `  query: ${query}`,
+          ...results.slice(before).map((result) => `  ${result.url}`),
+        ].join('\n'),
+      );
       if (results.length === before || !data.pagination?.has_next_page) break;
       const next = data.pagination.next ?? page + 1;
       if (next <= page) break;
       page = next;
     }
   } catch (error) {
+    console.error(
+      [
+        `${label} page ${page} failed (${results.length} results retained)`,
+        `  query: ${query}`,
+        `  error: ${error instanceof Error ? error.message : String(error)}`,
+      ].join('\n'),
+    );
     throw new GoogleSearchError(error, results);
   }
 
-  console.error(`[google] results: ${results.length}`);
+  console.error(`${label} complete: ${results.length} unique results`);
 
   return results;
 }

@@ -85,10 +85,63 @@ test('search logs every unique URL across pages, including before a later failur
     });
   });
   await assert.rejects(googleSearch('engineer'), /403/);
-  assert.deepEqual(
-    logs.filter((line) => line.startsWith('[google] result:')),
-    [1, 2, 3, 4, 5].map((id) => `[google] result: https://example.test/${id}`),
+  assert.deepEqual(logs, [
+    '[google] page 1: 4 new results (4 total)\n  query: engineer\n  https://example.test/1\n  https://example.test/2\n  https://example.test/3\n  https://example.test/4',
+    '[google] page 2: 1 new results (5 total)\n  query: engineer\n  https://example.test/5',
+    '[google] page 3 failed (5 results retained)\n  query: engineer\n  error: Autom.dev Google search failed (HTTP 403)',
+  ]);
+});
+
+test('concurrent ATS searches log each page together with its own query and URLs', async (t) => {
+  const logs = [];
+  t.mock.method(console, 'error', (message) => logs.push(message));
+  mock(t, async (url) => {
+    const query = url.searchParams.get('query');
+    return Response.json({
+      organic_results: [{ title: 'Engineer', link: `https://${query}/job` }],
+    });
+  });
+
+  await Promise.all([
+    googleSearch('jobs.ashbyhq.com', { ats: 'ashby' }),
+    googleSearch('jobs.lever.co', { ats: 'lever' }),
+  ]);
+
+  assert.ok(
+    logs.includes(
+      '[google:ashby] page 1: 1 new results (1 total)\n  query: jobs.ashbyhq.com\n  https://jobs.ashbyhq.com/job',
+    ),
   );
+  assert.ok(
+    logs.includes(
+      '[google:lever] page 1: 1 new results (1 total)\n  query: jobs.lever.co\n  https://jobs.lever.co/job',
+    ),
+  );
+});
+
+test('a failed page logs its ATS, query and retained result count', async (t) => {
+  const logs = [];
+  t.mock.method(console, 'error', (message) => logs.push(message));
+  mock(t, async (url) =>
+    url.searchParams.get('page') === '1'
+      ? Response.json({
+          organic_results: [
+            { title: 'Unexpected domain', link: 'https://outside.test/job' },
+          ],
+          pagination: { has_next_page: true, next: 2 },
+        })
+      : Response.json({ error: 'Search denied' }, { status: 403 }),
+  );
+
+  await assert.rejects(
+    googleSearch('site:breezy.hr engineer', { ats: 'breezyhr' }),
+    /Search denied/,
+  );
+
+  assert.deepEqual(logs, [
+    '[google:breezyhr] page 1: 1 new results (1 total)\n  query: site:breezy.hr engineer\n  https://outside.test/job',
+    '[google:breezyhr] page 2 failed (1 results retained)\n  query: site:breezy.hr engineer\n  error: Search denied',
+  ]);
 });
 
 test('parallel searches retain successes and report failed requests independently', async (t) => {
