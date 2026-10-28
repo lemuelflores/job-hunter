@@ -7,19 +7,17 @@ import {
 } from '../src/entrypoints/compose.ts';
 import { SqliteStore } from '../src/infra/sqlite.ts';
 import { scopedGoogleQuery } from '../src/integrations/search/google.ts';
+import { assessJob } from '../src/workflow/assess-job.ts';
 import { crawlJob } from '../src/workflow/crawl.ts';
 import {
   DiscoveryPartialFailure,
   discoverGoogleJobs,
 } from '../src/workflow/discover.ts';
-import { checkLocation } from '../src/workflow/location-check.ts';
-import { checkTech } from '../src/workflow/tech-check.ts';
 import {
+  assessment,
   externalFixture,
-  location,
   profile,
   result,
-  stack,
   stream,
   uuid,
 } from './fixtures/workflow.mjs';
@@ -47,6 +45,11 @@ function fixture(t, respond) {
     ...externalFixture(t, respond),
   };
 }
+
+const documents = async () => ({
+  cv: 'Candidate CV',
+  profile: 'Candidate profile',
+});
 
 test('ATS searches each keep a 100-result budget, reject sibling URLs and save executed queries', async (t) => {
   const urls = {
@@ -123,7 +126,7 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
   );
 });
 
-test('Freshteam discovery crawls full text through Firecrawl before both assessments', async (t) => {
+test('Freshteam discovery crawls full text through Firecrawl before assessment', async (t) => {
   const url = 'https://example.freshteam.com/jobs/RoJQGWitKVLI/engineer';
   const f = fixture(t, ({ url: endpoint, body }) => {
     if (endpoint.hostname === 'api.autom.dev')
@@ -142,20 +145,15 @@ test('Freshteam discovery crawls full text through Firecrawl before both assessm
   assert.equal(f.store.getJob(1).listing_text, null);
   assert.deepEqual(f.enqueued, [{ stage: 'crawl', id: 1 }]);
   await f.crawl(1);
-  assert.deepEqual(f.enqueued.slice(1), [
-    { stage: 'location', id: 1 },
-    { stage: 'stack', id: 1 },
-  ]);
-  await checkLocation(f.store, 1, f.reviewLocation);
-  await checkTech(f.store, 1, f.reviewStack);
+  assert.deepEqual(f.enqueued.slice(1), [{ stage: 'assessment', id: 1 }]);
+  await assessJob(f.store, 1, documents, f.llm.assess);
   const saved = f.store.getJob(1);
   assert.equal(saved.url, url);
   assert.match(saved.listing_text, /US Laravel role/);
-  assert.equal(saved.eligibility, 'ineligible');
-  assert.equal(saved.stack_status, 'match');
+  assert.deepEqual(f.store.getAssessment(1).assessment, assessment);
   assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
   await f.crawl(1);
-  assert.equal(f.requests.length, 4, 'completed extraction is reused');
+  assert.equal(f.requests.length, 3, 'completed extraction is reused');
 });
 
 test('discovery canonicalizes, deduplicates and returns only discovered unfinished IDs', async (t) => {
@@ -178,8 +176,7 @@ test('discovery canonicalizes, deduplicates and returns only discovered unfinish
   );
   f.store.saveResults([1, 2, 3, 4].map(result));
   f.store.saveListingText(2, 'Saved listing');
-  f.store.review(2, 'eligible', 'Saved decision');
-  f.store.reviewStack(2, stack);
+  f.store.saveAssessment(2, assessment);
   const { last_seen: _beforeSeen, ...before } = f.store.getJob(2);
   assert.deepEqual(await f.discover('greenhouse'), {
     ids: [1, 5],
@@ -263,7 +260,7 @@ test('discovery normalizes UUID casing but preserves board casing and saved deci
   );
   await f.discover('ashby');
   f.store.saveListingText(1, 'Saved listing');
-  f.store.review(1, 'eligible', 'Saved decision');
+  f.store.saveAssessment(1, assessment);
   const saved = f.store.getJob(1);
   assert.equal((await f.discover('ashby')).added, 0);
   assert.equal(f.store.listReviewJobs('active').length, 1);
@@ -397,16 +394,13 @@ for (const [name, url, endpoint, response] of [
     { id: uuid, descriptionPlain: 'US Laravel role', lists: [] },
   ]),
 ]) {
-  test(`${name} checkpoints API text and both real model adapters consume it independently`, async (t) => {
+  test(`${name} checkpoints API text and the real model adapter consumes it`, async (t) => {
     const f = fixture(t, ({ url }) =>
       url.href === endpoint ? Response.json(response) : undefined,
     );
     f.store.saveResults([{ ...result(1), url }]);
     await f.crawl(1);
-    assert.deepEqual(f.enqueued, [
-      { stage: 'location', id: 1 },
-      { stage: 'stack', id: 1 },
-    ]);
+    assert.deepEqual(f.enqueued, [{ stage: 'assessment', id: 1 }]);
     const text = f.store.getJob(1).listing_text;
     assert.equal(
       f.store.listReviewJobs('active')[0].posted_at,
@@ -416,25 +410,20 @@ for (const [name, url, endpoint, response] of [
     );
     assert.match(text, /US Laravel role/);
     assert.equal(f.requests.length, 1, 'extraction does not run assessments');
-    await checkLocation(f.store, 1, f.reviewLocation);
-    assert.equal(f.store.getJob(1).eligibility, 'ineligible');
-    await checkTech(f.store, 1, f.reviewStack);
+    await assessJob(f.store, 1, documents, f.llm.assess);
     const saved = f.store.getJob(1);
-    for (const [key, value] of Object.entries(location))
-      assert.equal(saved[key], value);
-    assert.equal(saved.stack_status, stack.status);
-    assert.equal(saved.stack_reason, stack.reason);
-    assert.equal(saved.stack_evidence, stack.evidence);
+    assert.deepEqual(f.store.getAssessment(1).assessment, assessment);
     assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
-    assert.equal(f.requests.length, 3);
+    assert.equal(f.requests.length, 2);
     for (const { body } of f.requests.slice(1)) {
-      assert.ok(body.input[0].content[0].text.includes(url));
-      assert.ok(body.input[0].content[0].text.endsWith(text));
+      const inputs = JSON.parse(body.input[0].content[0].text);
+      assert.equal(inputs.job_description, text);
+      assert.equal(inputs.cv, 'Candidate CV');
+      assert.equal(inputs.profile, 'Candidate profile');
     }
     await f.crawl(1);
-    await checkLocation(f.store, 1, f.reviewLocation);
-    await checkTech(f.store, 1, f.reviewStack);
-    assert.equal(f.requests.length, 3);
+    await assessJob(f.store, 1, documents, f.llm.assess);
+    assert.equal(f.requests.length, 2);
     assert.deepEqual(f.store.getJob(1), saved);
   });
 }
@@ -465,14 +454,10 @@ for (const status of [200, 404, 503]) {
         : new Response('', { status }),
     );
     await crawling;
-    assert.deepEqual(f.enqueued, [
-      { stage: 'location', id: 1 },
-      { stage: 'stack', id: 1 },
-    ]);
+    assert.deepEqual(f.enqueued, [{ stage: 'assessment', id: 1 }]);
     assert.deepEqual(f.store.getJob(1), saved);
     assert.deepEqual(f.store.stages(1), stages);
-    assert.equal(f.store.needsStage(1, 'location'), true);
-    assert.equal(f.store.needsStage(1, 'stack'), true);
+    assert.equal(f.store.needsStage(1, 'assessment'), true);
   });
 }
 
@@ -559,9 +544,7 @@ for (const [name, url, response, terminal] of [
     assert.equal(f.store.getJob(1).listing_text, null);
     assert.deepEqual(
       f.store.stages(1).map(({ state }) => state),
-      terminal
-        ? ['terminal', 'blocked', 'blocked']
-        : ['pending', 'pending', 'pending'],
+      terminal ? ['blocked', 'terminal'] : ['pending', 'pending'],
     );
     assert.equal(f.requests.length, 1);
     assert.ok(
@@ -572,11 +555,10 @@ for (const [name, url, response, terminal] of [
         'apply.workable.com',
       ].includes(f.requests[0].url.hostname),
     );
-    await checkLocation(f.store, 1, f.reviewLocation);
-    await checkTech(f.store, 1, f.reviewStack);
+    await assessJob(f.store, 1, documents, f.llm.assess);
     assert.equal(f.requests.length, 1);
     if (terminal) {
-      assert.ok(f.store.stages(1)[0].error);
+      assert.ok(f.store.stages(1).find((s) => s.stage === 'crawl').error);
       assert.equal(f.store.getJob(1).eligibility, 'error');
       const saved = f.store.getJob(1);
       await f.crawl(1);
@@ -589,21 +571,19 @@ for (const [name, url, response, terminal] of [
 test('distinct listings keep their own assessment inputs and results', async (t) => {
   const f = fixture(t, ({ body }) => {
     if (!body?.text) return;
-    const id = body.input[0].content[0].text.match(/Listing (\d+):/)[1];
-    assert.ok(body.input[0].content[0].text.includes(result(id).url));
-    return stream(
-      body.text.format.name === 'job_review'
-        ? { ...location, reason: `Location ${id}` }
-        : { ...stack, reason: `Stack ${id}` },
-    );
+    const inputs = JSON.parse(body.input[0].content[0].text);
+    const id = inputs.job_description.match(/Listing (\d+):/)[1];
+    assert.equal(inputs.cv, 'Candidate CV');
+    return stream({ ...assessment, verdict_reason: `Listing ${id}` });
   });
   f.store.saveResults([result(1), result(2)]);
   for (const id of [1, 2]) {
     await f.crawl(id);
-    await checkLocation(f.store, id, f.reviewLocation);
-    await checkTech(f.store, id, f.reviewStack);
-    assert.equal(f.store.getJob(id).reason, `Location ${id}`);
-    assert.equal(f.store.getJob(id).stack_reason, `Stack ${id}`);
+    await assessJob(f.store, id, documents, f.llm.assess);
+    assert.equal(
+      f.store.getAssessment(id).assessment.verdict_reason,
+      `Listing ${id}`,
+    );
   }
 });
 
@@ -625,81 +605,59 @@ test('temporary extraction errors propagate and a later call checkpoints before 
   assert.equal(f.requests.length, 2);
   assert.deepEqual(
     f.store.stages(1).map(({ state }) => state),
-    ['complete', 'pending', 'pending'],
+    ['pending', 'complete'],
   );
 });
 
-test('pending location HTTP does not block stack assessment or extraction of the next listing', async (t) => {
+test('pending assessment HTTP does not block extraction of the next listing', async (t) => {
   const started = Promise.withResolvers();
   const gate = Promise.withResolvers();
   const f = fixture(t, async ({ body }) => {
-    if (body?.text.format.name !== 'job_review') return;
+    if (body?.text.format.name !== 'job_assessment_v1') return;
     started.resolve();
     await gate.promise;
-    return stream(location);
+    return stream(assessment);
   });
   f.store.saveResults([result(1), result(2)]);
   await f.crawl(1);
-  const checking = checkLocation(f.store, 1, f.reviewLocation);
+  const checking = assessJob(f.store, 1, documents, f.llm.assess);
   try {
     await started.promise;
-    await checkTech(f.store, 1, f.reviewStack);
     await f.crawl(2);
-    await checkTech(f.store, 2, f.reviewStack);
-    assert.equal(f.store.getJob(1).eligibility, 'pending');
-    assert.equal(f.store.getJob(1).stack_status, 'match');
-    assert.equal(f.store.getJob(2).stack_status, 'match');
+    assert.equal(f.store.getAssessment(1), undefined);
     assert.match(f.store.getJob(2).listing_text, /Listing 2/);
   } finally {
     gate.resolve();
     await checking;
   }
-  assert.equal(f.store.getJob(1).eligibility, 'ineligible');
+  assert.deepEqual(f.store.getAssessment(1).assessment, assessment);
 });
 
-for (const failing of ['job_review', 'job_stack_review']) {
-  test(`${failing} failure leaves the other result intact and a later call reuses it`, async (t) => {
-    let offline = true;
-    const f = fixture(t, ({ body }) =>
-      body?.text.format.name === failing && offline
-        ? new Response('Model unavailable', { status: 503 })
-        : undefined,
-    );
-    f.store.saveResults([result(1)]);
-    await f.crawl(1);
-    const failed = failing === 'job_review' ? checkLocation : checkTech;
-    const other = failing === 'job_review' ? checkTech : checkLocation;
-    const failingReview =
-      failing === 'job_review' ? f.reviewLocation : f.reviewStack;
-    const otherReview =
-      failing === 'job_review' ? f.reviewStack : f.reviewLocation;
-    await assert.rejects(failed(f.store, 1, failingReview), /503/);
-    await other(f.store, 1, otherReview);
-    const saved = f.store.getJob(1);
-    assert.equal(
-      f.store
-        .stages(1)
-        .find(
-          (s) => s.stage === (failing === 'job_review' ? 'location' : 'stack'),
-        ).state,
-      'pending',
-    );
-    offline = false;
-    await other(f.store, 1, otherReview);
-    assert.equal(f.requests.length, 3, 'completed assessment is not repeated');
-    await failed(f.store, 1, failingReview);
-    assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
-    assert.equal(f.store.getJob(1).listing_text, saved.listing_text);
-    const keys =
-      failing === 'job_review'
-        ? ['stack_status', 'stack_reason', 'stack_evidence']
-        : ['eligibility', 'reason', 'evidence', 'company', 'location', 'title'];
-    for (const key of keys) assert.equal(f.store.getJob(1)[key], saved[key]);
-    assert.equal(f.requests.length, 4);
-  });
-}
+test('assessment failure preserves the extracted text and a later call checkpoints once', async (t) => {
+  let offline = true;
+  const f = fixture(t, ({ body }) =>
+    body?.text.format.name === 'job_assessment_v1' && offline
+      ? new Response('Model unavailable', { status: 503 })
+      : undefined,
+  );
+  f.store.saveResults([result(1)]);
+  await f.crawl(1);
+  await assert.rejects(assessJob(f.store, 1, documents, f.llm.assess), /503/);
+  const saved = f.store.getJob(1);
+  assert.equal(
+    f.store.stages(1).find((s) => s.stage === 'assessment').state,
+    'pending',
+  );
+  offline = false;
+  await assessJob(f.store, 1, documents, f.llm.assess);
+  assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
+  assert.equal(f.store.getJob(1).listing_text, saved.listing_text);
+  await assessJob(f.store, 1, documents, f.llm.assess);
+  assert.equal(f.requests.length, 3, 'completed assessment is not repeated');
+  assert.deepEqual(f.store.getAssessment(1).assessment, assessment);
+});
 
-for (const failedStage of ['location', 'stack']) {
+for (const failedStage of ['assessment']) {
   test(`crawl rerun repairs a failed ${failedStage} enqueue without extracting or changing saved dates`, async (t) => {
     const postedAt = '2025-01-02T12:00:00Z';
     const f = fixture(t, () =>
@@ -723,12 +681,12 @@ for (const failedStage of ['location', 'stack']) {
     assert.equal(saved.posted_at, '2025-01-02T12:00:00.000Z');
     assert.match(saved.listing_text, /Saved Laravel role/);
     assert.equal(f.requests.length, 1);
-    assert.equal(f.store.stages(1)[0].state, 'complete');
+    assert.equal(
+      f.store.stages(1).find((s) => s.stage === 'crawl').state,
+      'complete',
+    );
     await f.crawl(1);
-    assert.deepEqual(f.enqueued, [
-      { stage: 'location', id: 1 },
-      { stage: 'stack', id: 1 },
-    ]);
+    assert.deepEqual(f.enqueued, [{ stage: 'assessment', id: 1 }]);
     assert.equal(f.requests.length, 1);
     assert.deepEqual(f.store.getJob(1), saved);
   });
@@ -795,25 +753,19 @@ for (const apiMissing of [false, true]) {
     assert.equal(f.requests.length, 1);
     assert.ok(f.requests[0].url.pathname.endsWith('/v2/scrape'));
     assert.equal(f.store.getJob(1).listing_text, 'Remote Laravel listing');
-    assert.deepEqual(f.enqueued, [
-      { stage: 'location', id: 1 },
-      { stage: 'stack', id: 1 },
-    ]);
+    assert.deepEqual(f.enqueued, [{ stage: 'assessment', id: 1 }]);
   });
 }
 
-test('saved extraction and location checkpoints leave only the missing stack assessment', async (t) => {
+test('saved extraction leaves only the missing assessment', async (t) => {
   const f = fixture(t);
   f.store.saveResults([result(1)]);
   f.store.saveListingText(1, 'Checkpoint Laravel');
-  f.store.review(1, 'eligible', 'Saved location');
   await f.crawl(1);
-  assert.deepEqual(f.enqueued, [{ stage: 'stack', id: 1 }]);
-  await checkLocation(f.store, 1, f.reviewLocation);
-  await checkTech(f.store, 1, f.reviewStack);
+  assert.deepEqual(f.enqueued, [{ stage: 'assessment', id: 1 }]);
+  await assessJob(f.store, 1, documents, f.llm.assess);
   assert.equal(f.store.getJob(1).listing_text, 'Checkpoint Laravel');
-  assert.equal(f.store.getJob(1).reason, 'Saved location');
-  assert.equal(f.store.getJob(1).stack_status, 'match');
+  assert.deepEqual(f.store.getAssessment(1).assessment, assessment);
   assert.equal(f.requests.length, 1);
 });
 
@@ -830,8 +782,7 @@ test('not-ready, failed, missing and inactive work makes no external calls; rest
   }));
   for (const id of [1, 2, 3, 4, 999]) {
     if (id !== 3) await f.crawl(id);
-    await checkLocation(f.store, id, f.reviewLocation);
-    await checkTech(f.store, id, f.reviewStack);
+    await assessJob(f.store, id, documents, f.llm.assess);
   }
   assert.equal(f.requests.length, 0);
   assert.deepEqual(f.enqueued, []);
@@ -844,8 +795,7 @@ test('not-ready, failed, missing and inactive work makes no external calls; rest
   );
   f.store.setReviewStatus('1', 'active');
   await f.crawl(1);
-  await checkLocation(f.store, 1, f.reviewLocation);
-  await checkTech(f.store, 1, f.reviewStack);
+  await assessJob(f.store, 1, documents, f.llm.assess);
   assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
   assert.deepEqual(f.store.getJob(2), saved[1].job);
 });
@@ -854,49 +804,37 @@ test('exhausted assessment stages with saved text cannot call the model without 
   const f = fixture(t);
   f.store.saveResults([result(1)]);
   f.store.saveListingText(1, 'Checkpoint Laravel');
-  f.store.failStage(1, 'location', 'Exhausted', true);
-  f.store.failStage(1, 'stack', 'Exhausted', true);
+  f.store.failStage(1, 'assessment', 'Exhausted', true);
   const saved = f.store.getJob(1);
-  await checkLocation(f.store, 1, f.reviewLocation);
-  await checkTech(f.store, 1, f.reviewStack);
+  await assessJob(f.store, 1, documents, f.llm.assess);
   assert.equal(f.requests.length, 0);
   assert.deepEqual(f.store.getJob(1), saved);
   assert.deepEqual(
     f.store.stages(1).map(({ state }) => state),
-    ['complete', 'failed', 'failed'],
+    ['failed', 'complete'],
   );
 });
 
-for (const [operation, name] of [
-  [checkLocation, 'location'],
-  [checkTech, 'stack'],
-]) {
-  test(`${name} cancellation after the model response preserves the pending assessment`, async (t) => {
-    const controller = new AbortController();
-    const f = fixture(t, () => {
-      controller.abort(new Error('cancelled'));
-      return stream(name === 'location' ? location : stack);
-    });
-    f.store.saveResults([result(1)]);
-    f.store.saveListingText(1, 'Checkpoint Laravel');
-    const saved = f.store.getJob(1);
-    await assert.rejects(
-      operation(
-        f.store,
-        1,
-        name === 'location' ? f.reviewLocation : f.reviewStack,
-        controller.signal,
-      ),
-      /cancelled/,
-    );
-    assert.deepEqual(f.store.getJob(1), saved);
-    assert.equal(
-      f.store.stages(1).find((s) => s.stage === name).state,
-      'pending',
-    );
-    assert.equal(f.requests.length, 1);
+test('cancellation after the model response preserves the pending assessment', async (t) => {
+  const controller = new AbortController();
+  const f = fixture(t, () => {
+    controller.abort(new Error('cancelled'));
+    return stream(assessment);
   });
-}
+  f.store.saveResults([result(1)]);
+  f.store.saveListingText(1, 'Checkpoint Laravel');
+  const saved = f.store.getJob(1);
+  await assert.rejects(
+    assessJob(f.store, 1, documents, f.llm.assess, controller.signal),
+    /cancelled/,
+  );
+  assert.deepEqual(f.store.getJob(1), saved);
+  assert.equal(
+    f.store.stages(1).find((s) => s.stage === 'assessment').state,
+    'pending',
+  );
+  assert.equal(f.requests.length, 1);
+});
 
 test('cancellation before work and after an external response never saves a result', async (t) => {
   const controller = new AbortController();
@@ -909,11 +847,7 @@ test('cancellation before work and after an external response never saves a resu
   assert.equal(f.store.getJob(1).listing_text, null);
   await assert.rejects(f.crawl(1, controller.signal), /cancelled/);
   await assert.rejects(
-    checkLocation(f.store, 1, f.reviewLocation, controller.signal),
-    /cancelled/,
-  );
-  await assert.rejects(
-    checkTech(f.store, 1, f.reviewStack, controller.signal),
+    assessJob(f.store, 1, documents, f.llm.assess, controller.signal),
     /cancelled/,
   );
   assert.equal(f.requests.length, 1);

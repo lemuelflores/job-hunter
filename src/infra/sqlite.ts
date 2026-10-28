@@ -1,41 +1,34 @@
 import { DatabaseSync } from 'node:sqlite';
 import * as v from 'valibot';
 import {
+  ASSESSMENT_VERSION,
+  type Assessment,
+  AssessmentSchema,
+  parseAssessment,
+} from '../core/assessment.ts';
+import {
   type DiscoveredListing,
   type Listing,
   REVIEW_STATUSES,
   type ReviewStatus,
-  type StackDecision,
 } from '../core/listing.ts';
-import { STAGES, type Stage, type StageState } from '../core/stages.ts';
+import { STAGES, type StageState, type StoredStage } from '../core/stages.ts';
 
-const ReviewReasonSchema = v.pipe(
-  v.string(),
-  v.maxLength(5000),
-  v.trim(),
-  v.nonEmpty(),
-);
-const ReviewEvidenceSchema = v.pipe(v.string(), v.maxLength(5000));
-const ReviewMetadataSchema = v.pipe(v.string(), v.maxLength(1000));
-const LocationReviewSchema = v.object({
-  eligibility: v.picklist(['eligible', 'ineligible', 'unclear', 'error']),
-  reason: ReviewReasonSchema,
-  evidence: ReviewEvidenceSchema,
-  company: ReviewMetadataSchema,
-  location: ReviewMetadataSchema,
-  title: ReviewMetadataSchema,
-});
-const StackReviewSchema = v.object({
-  status: v.picklist([
-    'match',
-    'partial_match',
-    'potential_match',
-    'unclear',
-    'error',
-  ]),
-  reason: ReviewReasonSchema,
-  evidence: ReviewEvidenceSchema,
-});
+const ASSESSMENT_BACKFILL_CANDIDATES = `
+  SELECT jobs.id, CASE
+    WHEN crawl.state='terminal' THEN 'terminalCrawl'
+    WHEN jobs.listing_text IS NULL OR length(trim(jobs.listing_text))=0 THEN 'missingText'
+    WHEN crawl.state IS NOT 'complete' THEN 'crawlNotComplete'
+    ELSE 'eligible' END AS category
+  FROM jobs LEFT JOIN job_stages crawl ON crawl.job_id=jobs.id AND crawl.stage='crawl'
+  WHERE jobs.status='active'
+    AND NOT EXISTS (SELECT 1 FROM job_stages assessment WHERE assessment.job_id=jobs.id AND assessment.stage='assessment')
+    AND NOT EXISTS (SELECT 1 FROM job_assessments WHERE job_assessments.job_id=jobs.id)`;
+
+function validateBackfillLimit(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 1)
+    throw new Error('Invalid backfill limit');
+}
 
 function postingDate(value: unknown): string | null {
   if (
@@ -132,7 +125,7 @@ export class SqliteStore {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS job_stages (
           job_id INTEGER NOT NULL REFERENCES jobs(id),
-          stage TEXT NOT NULL CHECK(stage IN ('crawl','location','stack')),
+          stage TEXT NOT NULL CHECK(stage IN ('crawl','location','stack','assessment')),
           state TEXT NOT NULL CHECK(state IN ('pending','complete','failed','terminal','blocked')),
           error TEXT NOT NULL DEFAULT '',
           generation INTEGER NOT NULL DEFAULT 0,
@@ -143,10 +136,12 @@ export class SqliteStore {
             WHEN eligibility='pending' OR (eligibility IN ('eligible','unclear') AND stack_status='pending') THEN 'pending'
             ELSE 'complete' END FROM jobs;
         INSERT OR IGNORE INTO job_stages(job_id,stage,state)
-          SELECT id,'location',CASE WHEN eligibility='pending' THEN 'pending' ELSE 'complete' END FROM jobs;
+          SELECT id,'location',CASE WHEN eligibility='pending' THEN 'pending' ELSE 'complete' END FROM jobs
+          WHERE NOT EXISTS (SELECT 1 FROM job_stages WHERE job_id=jobs.id AND stage='assessment');
         INSERT OR IGNORE INTO job_stages(job_id,stage,state)
           SELECT id,'stack',CASE WHEN stack_status='pending' AND eligibility IN ('pending','eligible','unclear')
-            THEN 'pending' ELSE 'complete' END FROM jobs;
+            THEN 'pending' ELSE 'complete' END FROM jobs
+          WHERE NOT EXISTS (SELECT 1 FROM job_stages WHERE job_id=jobs.id AND stage='assessment');
       `);
       if (
         !this.db
@@ -157,6 +152,35 @@ export class SqliteStore {
         this.db.exec(
           'ALTER TABLE job_stages ADD COLUMN generation INTEGER NOT NULL DEFAULT 0',
         );
+      const stagesTable = this.db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type='table' AND name='job_stages'",
+        )
+        .get();
+      if (!stagesTable) throw new Error('Stages table is missing');
+      if (!String(stagesTable.sql).includes("'assessment'")) {
+        const objects = this.db
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE tbl_name='job_stages' AND type IN ('index','trigger') AND sql IS NOT NULL",
+          )
+          .all();
+        this.db.exec(`CREATE TABLE job_stages_with_assessment (
+          job_id INTEGER NOT NULL REFERENCES jobs(id),
+          stage TEXT NOT NULL CHECK(stage IN ('crawl','location','stack','assessment')),
+          state TEXT NOT NULL CHECK(state IN ('pending','complete','failed','terminal','blocked')),
+          error TEXT NOT NULL DEFAULT '', generation INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(job_id,stage));
+          INSERT INTO job_stages_with_assessment(job_id,stage,state,error,generation)
+            SELECT job_id,stage,state,error,generation FROM job_stages;
+          DROP TABLE job_stages;
+          ALTER TABLE job_stages_with_assessment RENAME TO job_stages;`);
+        for (const object of objects) this.db.exec(String(object.sql));
+      }
+      this.db.exec(`CREATE TABLE IF NOT EXISTS job_assessments (
+        job_id INTEGER PRIMARY KEY REFERENCES jobs(id),
+        version INTEGER NOT NULL,
+        report TEXT NOT NULL
+      )`);
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -260,6 +284,20 @@ export class SqliteStore {
       .get(id) as unknown as Listing | undefined;
   }
 
+  hasListingUrl(url: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM jobs WHERE url=?').get(url));
+  }
+
+  hideActiveListingUrl(url: string): boolean {
+    return Boolean(
+      this.db
+        .prepare(
+          "UPDATE jobs SET status='hidden' WHERE url=? AND status='active'",
+        )
+        .run(url).changes,
+    );
+  }
+
   deliveryListing(id: number): Pick<Listing, 'url' | 'status'> | undefined {
     return this.db.prepare('SELECT url,status FROM jobs WHERE id=?').get(id) as
       | Pick<Listing, 'url' | 'status'>
@@ -277,11 +315,11 @@ export class SqliteStore {
   unfinished(limit?: number): Pick<Listing, 'id' | 'url'>[] {
     return this.db
       .prepare(`SELECT id,url FROM jobs WHERE status='active' AND id IN
-      (SELECT job_id FROM job_stages WHERE state IN ('pending','failed')) ORDER BY id LIMIT ?`)
+      (SELECT job_id FROM job_stages WHERE stage IN ('crawl','assessment') AND state IN ('pending','failed')) ORDER BY id LIMIT ?`)
       .all(limit ?? -1) as unknown as Pick<Listing, 'id' | 'url'>[];
   }
 
-  needsStage(id: number, stage: Stage): boolean {
+  needsStage(id: number, stage: StoredStage): boolean {
     return Boolean(
       this.db
         .prepare(`SELECT 1 FROM jobs JOIN job_stages ON job_stages.job_id=jobs.id
@@ -293,7 +331,7 @@ export class SqliteStore {
 
   failStage(
     id: number,
-    stage: Stage,
+    stage: StoredStage,
     error: string,
     exhausted: boolean,
     generation: number | null = null,
@@ -313,7 +351,7 @@ export class SqliteStore {
       );
   }
 
-  resetStage(id: number, stage: Stage): void {
+  resetStage(id: number, stage: StoredStage): void {
     const changed = this.db
       .prepare(
         `UPDATE job_stages SET state='pending',error='',generation=generation+1 WHERE job_id=? AND stage=? AND state='failed'`,
@@ -322,7 +360,11 @@ export class SqliteStore {
     if (!changed) throw new Error('Stage is not failed');
   }
 
-  private completeStage(id: number, stage: Stage, save: () => void): void {
+  private completeStage(
+    id: number,
+    stage: StoredStage,
+    save: () => void,
+  ): void {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const changed = this.db
@@ -337,6 +379,114 @@ export class SqliteStore {
       this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  activateAssessment(id: number): boolean {
+    if (!Number.isSafeInteger(id) || id < 1)
+      throw new Error('Invalid listing ID');
+    return Boolean(
+      this.db
+        .prepare(`INSERT OR IGNORE INTO job_stages(job_id,stage,state)
+      SELECT jobs.id,'assessment','pending' FROM jobs JOIN job_stages crawl
+      ON crawl.job_id=jobs.id AND crawl.stage='crawl' AND crawl.state='complete'
+      WHERE jobs.id=? AND jobs.status='active' AND jobs.listing_text IS NOT NULL
+      AND length(trim(jobs.listing_text))>0`)
+        .run(id).changes,
+    );
+  }
+
+  previewAssessmentBackfill(
+    limit: number,
+    id?: number,
+  ): {
+    eligible: number;
+    missingText: number;
+    terminalCrawl: number;
+    crawlNotComplete: number;
+    selectedIds: number[];
+  } {
+    validateBackfillLimit(limit);
+    if (id !== undefined && (!Number.isSafeInteger(id) || id < 1))
+      throw new Error('Invalid listing ID');
+    const counts = {
+      eligible: 0,
+      missingText: 0,
+      terminalCrawl: 0,
+      crawlNotComplete: 0,
+    };
+    for (const row of this.db
+      .prepare(`WITH candidates AS (${ASSESSMENT_BACKFILL_CANDIDATES})
+      SELECT category,count(*) AS count FROM candidates WHERE (? IS NULL OR id=?) GROUP BY category`)
+      .all(id ?? null, id ?? null)) {
+      const category = row.category;
+      if (
+        category === 'eligible' ||
+        category === 'missingText' ||
+        category === 'terminalCrawl' ||
+        category === 'crawlNotComplete'
+      )
+        counts[category] = Number(row.count);
+    }
+    const selectedIds = this.db
+      .prepare(`WITH candidates AS (${ASSESSMENT_BACKFILL_CANDIDATES})
+      SELECT id FROM candidates WHERE category='eligible' AND (? IS NULL OR id=?) ORDER BY id LIMIT ?`)
+      .all(id ?? null, id ?? null, limit)
+      .map((row) => Number(row.id));
+    return { ...counts, selectedIds };
+  }
+
+  queueAssessmentBackfill(limit: number, id?: number): number[] {
+    validateBackfillLimit(limit);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const { selectedIds } = this.previewAssessmentBackfill(limit, id);
+      if (id !== undefined && selectedIds.length === 0)
+        throw new Error(
+          `Listing ${id} is not eligible for assessment backfill`,
+        );
+      const insert = this.db.prepare(
+        "INSERT INTO job_stages(job_id,stage,state) VALUES (?,'assessment','pending')",
+      );
+      for (const id of selectedIds) insert.run(id);
+      this.db.exec('COMMIT');
+      return selectedIds;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  saveAssessment(id: number, assessment: Assessment): void {
+    const validated = v.safeParse(AssessmentSchema, assessment);
+    if (!Number.isSafeInteger(id) || id < 1 || !validated.success)
+      throw new Error('Invalid assessment');
+    this.completeStage(id, 'assessment', () => {
+      this.db
+        .prepare(
+          'INSERT INTO job_assessments(job_id,version,report) VALUES (?,?,?)',
+        )
+        .run(id, ASSESSMENT_VERSION, JSON.stringify(validated.output));
+      const location = validated.output.location?.trim();
+      if (location)
+        this.db
+          .prepare('UPDATE jobs SET location=? WHERE id=?')
+          .run(location, id);
+    });
+  }
+
+  getAssessment(
+    id: number,
+  ): { version: number; assessment: Assessment } | undefined {
+    const row = this.db
+      .prepare('SELECT version,report FROM job_assessments WHERE job_id=?')
+      .get(id);
+    if (!row) return undefined;
+    if (row.version !== ASSESSMENT_VERSION || typeof row.report !== 'string')
+      throw new Error('Unsupported saved assessment');
+    return {
+      version: ASSESSMENT_VERSION,
+      assessment: parseAssessment(row.report),
+    };
   }
 
   terminalCrawl(id: number, error: string): void {
@@ -364,48 +514,6 @@ export class SqliteStore {
     });
   }
 
-  review(
-    id: number,
-    eligibility: string,
-    reason: string,
-    evidence = '',
-    company = '',
-    location = '',
-    title = '',
-  ): void {
-    if (
-      !Number.isSafeInteger(id) ||
-      id < 1 ||
-      !v.safeParse(LocationReviewSchema, {
-        eligibility,
-        reason,
-        evidence,
-        company,
-        location,
-        title,
-      }).success
-    )
-      throw new Error('Invalid review');
-    this.completeStage(id, 'location', () => {
-      const result = this.db
-        .prepare(`UPDATE jobs SET eligibility=?, reason=?, evidence=?, company=?, location=?,
-      title=CASE WHEN ?='' THEN title ELSE ? END, reviewed_at=?
-      WHERE id=? AND eligibility='pending'`)
-        .run(
-          eligibility,
-          reason,
-          evidence,
-          company,
-          location,
-          title,
-          title,
-          new Date().toISOString(),
-          id,
-        );
-      if (!result.changes) throw new Error('Location is not pending');
-    });
-  }
-
   saveListingText(id: number, text: string, postedAt?: string | null): void {
     this.validateListingText(text);
     this.completeStage(id, 'crawl', () => {
@@ -422,63 +530,12 @@ export class SqliteStore {
       throw new Error('Invalid listing text');
   }
 
-  reviewStack(
-    id: number,
-    decision:
-      | StackDecision
-      | { status: 'error'; reason: string; evidence: string },
-  ): void {
-    if (
-      !Number.isSafeInteger(id) ||
-      id < 1 ||
-      !v.safeParse(StackReviewSchema, decision).success
-    )
-      throw new Error('Invalid stack review');
-    this.completeStage(id, 'stack', () => {
-      const result = this.db
-        .prepare(`UPDATE jobs SET stack_status=?, stack_reason=?, stack_evidence=?,
-      reviewed_at=?
-      WHERE id=? AND stack_status='pending'`)
-        .run(
-          decision.status,
-          decision.reason,
-          decision.evidence,
-          new Date().toISOString(),
-          id,
-        );
-      if (!result.changes) throw new Error('Stack review is not pending');
-    });
-  }
-
-  queueStackBackfill(): number {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const rows = this.db
-        .prepare(`UPDATE jobs SET stack_status='pending'
-        WHERE status='active' AND eligibility IN ('eligible','unclear','ineligible') AND stack_status='not_checked'
-        AND id NOT IN (SELECT job_id FROM job_stages WHERE stage='crawl' AND state='terminal') RETURNING id,listing_text`)
-        .all();
-      for (const row of rows) {
-        this.db
-          .prepare(
-            "UPDATE job_stages SET state='pending',error='' WHERE job_id=? AND (stage='stack' OR (stage='crawl' AND ? IS NULL))",
-          )
-          .run(row.id, row.listing_text);
-      }
-      this.db.exec('COMMIT');
-      return rows.length;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
-  }
-
   pendingCount(): number {
     return Number(
       this.db
         .prepare(`SELECT COUNT(*) AS count FROM jobs
       WHERE status='active' AND id IN
-      (SELECT job_id FROM job_stages WHERE state IN ('pending','failed'))`)
+      (SELECT job_id FROM job_stages WHERE stage IN ('crawl','assessment') AND state IN ('pending','failed'))`)
         .get()?.count,
     );
   }

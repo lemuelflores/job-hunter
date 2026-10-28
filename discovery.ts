@@ -1,18 +1,6 @@
 import type { Profile } from './src/infra/config.ts';
 
 export default {
-  review: {
-    location: 'Philippines',
-    stack: [
-      'Laravel',
-      'PHP',
-      'Vue',
-      'Nuxt',
-      'Node.js',
-      'JavaScript',
-      'TypeScript',
-    ],
-  },
   google: {
     enabled: true,
     query: `
@@ -36,7 +24,8 @@ export default {
       'laravel',
       'nuxt',
     ],
-    skills_exclude: ['dotnet'],
+    skills_exclude: ['dotnet', 'sharepoint', 'servicenow', 'wordpress'],
+    seniority_exclude: ['intern', 'junior'],
     countries: ['ph'],
     countries_exclude: ['in'],
     reality: ['fresh'],

@@ -14,7 +14,9 @@ async function reviewOutcome(
   if (store.getJob(id)?.status !== 'active')
     return [`Job ${id}: no longer active`];
   await syncFailures(id);
-  const states = store.stages(id);
+  const states = store
+    .stages(id)
+    .filter((s) => s.stage === 'crawl' || s.stage === 'assessment');
   const crawlFailed =
     store.getJob(id)?.listing_text === null &&
     states.some((s) => s.stage === 'crawl' && s.state === 'failed');

@@ -10,18 +10,17 @@ import {
 import { SqliteStore } from '../src/infra/sqlite.ts';
 import { searchFreehire } from '../src/integrations/search/freehire.ts';
 import { scopedGoogleQuery } from '../src/integrations/search/google.ts';
+import { assessJob } from '../src/workflow/assess-job.ts';
 import { crawlJob } from '../src/workflow/crawl.ts';
 import {
   discoverFreehireJobs,
   discoverGoogleJobs,
 } from '../src/workflow/discover.ts';
-import { checkLocation } from '../src/workflow/location-check.ts';
-import { checkTech } from '../src/workflow/tech-check.ts';
 import {
+  assessment,
   externalFixture,
   profile,
   result,
-  stack,
 } from './fixtures/workflow.mjs';
 
 const config = {
@@ -36,6 +35,10 @@ const config = {
   reality: ['fresh'],
   posted_within_days: 14,
 };
+const documents = async () => ({
+  cv: 'Candidate CV',
+  profile: 'Candidate profile',
+});
 const job = (id = 1) => ({
   url: result(id).url,
   title: 'Freehire engineer',
@@ -480,25 +483,22 @@ for (const viaAts of [true, false]) {
     assert.deepEqual(JSON.parse(store.getJob(1).query), config);
     assert.equal(store.getJob(1).listing_text, null);
     assert.equal(store.stages(1)[0].state, 'pending');
-    await checkLocation(store, 1, f.reviewLocation);
-    await checkTech(store, 1, f.reviewStack);
+    await assessJob(store, 1, documents, f.llm.assess);
     assert.equal(f.requests.length, 1, 'assessments wait for crawling');
     await crawlJob(store, 1, createCrawlExtractors(), async (stage, id) => {
       enqueued.push({ stage, id });
     });
-    assert.deepEqual(enqueued.slice(1), [
-      { stage: 'location', id: 1 },
-      { stage: 'stack', id: 1 },
-    ]);
+    assert.deepEqual(enqueued.slice(1), [{ stage: 'assessment', id: 1 }]);
     const text = store.getJob(1).listing_text;
     assert.ok(text.includes(extracted));
     assert.ok(!text.includes(job().description));
     assert.ok(!text.includes('Freehire listing metadata'));
-    assert.equal(store.stages(1)[0].state, 'complete');
-    await checkLocation(store, 1, f.reviewLocation);
-    await checkTech(store, 1, f.reviewStack);
-    assert.equal(store.getJob(1).eligibility, 'ineligible');
-    assert.equal(store.getJob(1).stack_status, 'match');
+    assert.equal(
+      store.stages(1).find((s) => s.stage === 'crawl').state,
+      'complete',
+    );
+    await assessJob(store, 1, documents, f.llm.assess);
+    assert.deepEqual(store.getAssessment(1).assessment, assessment);
     assert.equal(
       f.requests[1].url.pathname,
       viaAts ? '/v1/boards/example/jobs/1' : '/v2/scrape',
@@ -506,19 +506,12 @@ for (const viaAts of [true, false]) {
     const assessments = f.requests.filter(
       ({ url }) => url.hostname === 'chatgpt.com',
     );
-    assert.equal(assessments.length, 2);
-    for (const { body } of assessments)
-      assert.ok(body.input[0].content[0].text.includes(text));
-    const locationRequest = JSON.stringify(assessments[0].body);
-    const techRequest = JSON.stringify(assessments[1].body);
-    assert.ok(locationRequest.includes(profile.review.location));
-    assert.ok(!locationRequest.includes(JSON.stringify(profile.review.stack)));
-    assert.ok(
-      assessments[1].body.input[0].content[0].text.includes(
-        JSON.stringify(profile.review.stack),
-      ),
-    );
-    assert.ok(!techRequest.includes(profile.review.location));
+    assert.equal(assessments.length, 1);
+    assert.deepEqual(JSON.parse(assessments[0].body.input[0].content[0].text), {
+      job_description: text,
+      cv: 'Candidate CV',
+      profile: 'Candidate profile',
+    });
   });
 }
 
@@ -639,8 +632,7 @@ test('cross-source ingestion preserves canonical identities in both arrival orde
     assert.equal(store.listReviewJobs('active').length, 1);
     assert.equal(store.getJob(1).listing_text, null);
     store.saveListingText(1, 'Original source description');
-    store.review(1, 'eligible', 'Keep decision');
-    store.reviewStack(1, stack);
+    store.saveAssessment(1, assessment);
     store.setReviewStatus('1', 'hidden');
     const { last_seen: _before, ...before } = store.getJob(1);
     const stages = store.stages(1);
@@ -677,7 +669,10 @@ test('inactive, failed and terminal checkpoints stay unchanged; failed generatio
       assert.equal(store.getJob(id).status, before[id - 1].job.status);
     }
     assert.equal(store.getJob(4).listing_text, job().description);
-    assert.equal(store.stages(4)[0].generation, 1);
+    assert.equal(
+      store.stages(4).find((s) => s.stage === 'crawl').generation,
+      1,
+    );
   } finally {
     store.close();
   }
@@ -697,9 +692,11 @@ test('description ingestion rolls back the whole local transaction on an invalid
     assert.equal(store.getJob(1), undefined);
     assert.deepEqual(store.stages(1), []);
     store.saveResults([{ ...result(1), listingText: job().description }]);
-    assert.equal(store.stages(1)[0].state, 'complete');
-    assert.equal(store.needsStage(1, 'location'), true);
-    assert.equal(store.needsStage(1, 'stack'), true);
+    assert.equal(
+      store.stages(1).find((s) => s.stage === 'crawl').state,
+      'complete',
+    );
+    assert.equal(store.needsStage(1, 'assessment'), true);
   } finally {
     store.close();
   }

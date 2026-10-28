@@ -1,8 +1,9 @@
-export const STAGES = ['crawl', 'location', 'stack'] as const;
+export const STAGES = ['crawl', 'assessment'] as const;
 export type Stage = (typeof STAGES)[number];
+export type StoredStage = Stage | 'location' | 'stack';
 
 export interface StageState {
-  stage: Stage;
+  stage: StoredStage;
   state: 'pending' | 'complete' | 'failed' | 'terminal' | 'blocked';
   error: string;
   generation: number;

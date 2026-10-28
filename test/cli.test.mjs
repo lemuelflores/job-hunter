@@ -11,11 +11,10 @@ import { SqliteStore } from '../src/infra/sqlite.ts';
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'job-hunter-cli-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await cp(resolve('dist'), join(root, 'dist'), { recursive: true });
   await cp(resolve('src'), join(root, 'src'), { recursive: true });
   await cp(resolve('package.json'), join(root, 'package.json'));
   await symlink(resolve('node_modules'), join(root, 'node_modules'), 'dir');
-  await cp(resolve('profile.ts'), join(root, 'profile.ts'));
+  await cp(resolve('discovery.ts'), join(root, 'discovery.ts'));
   const cli = (...args) =>
     spawnSync(
       process.execPath,
@@ -83,15 +82,21 @@ test('CLI rejects unknown commands, unsupported options and invalid arguments', 
     [['toString'], /Unknown command: toString/],
     [['jobs', 'extra'], /Unexpected argument/],
     [['jobs', '--unexpected'], /Unknown option.*--unexpected/],
+    [['check-url'], /Missing required argument.*url/i],
+    [
+      ['check-url', '--url', 'https://example.com/job'],
+      /Unknown option.*--url/,
+    ],
+    [['check-url', 'https://example.com/job', 'extra'], /Unexpected argument/],
     [['review', '--limit'], /--limit.*argument/],
     [['review', '--limit', '1.5'], /Expected an integer/],
     [['review', '--limit', '9007199254740992'], /Expected an integer/],
-    [['serve', '--port', '65536'], /Expected an integer/],
-    [['serve', '--port', '0'], /Expected an integer/],
+    [['serve'], /Unknown command: serve/],
     [['retry'], /Missing required argument: --stage/],
     [['retry', '--id', '1'], /Missing required argument: --stage/],
-    [['retry', '--stage', 'stack'], /Missing required argument: --id/],
-    [['retry', '--stage', 'stack', '--id', '0'], /Expected an integer/],
+    [['retry', '--stage', 'assessment'], /Missing required argument: --id/],
+    [['retry', '--stage', 'assessment', '--id', '0'], /Expected an integer/],
+    [['retry', '--stage', 'stack', '--id', '1'], /Invalid.*stage/],
     [['repair', '--stage', 'invalid'], /Invalid.*stage/],
     [['repair', '--id', '1'], /Unknown option.*--id/],
   ]) {
@@ -115,7 +120,7 @@ test('CLI prints global and command help including required retry options', asyn
     'workers',
     'scheduler',
     'retry',
-    'serve',
+    'backfill',
   ]) {
     // Act: request this command's help page.
     const help = cli(command, '--help');
@@ -127,6 +132,7 @@ test('CLI prints global and command help including required retry options', asyn
   assert.match(cli('retry', '--help').stdout, /--stage/);
   assert.match(cli('retry', '-h').stdout, /--id/);
   assert.match(cli('fetch', 'google', '--help').stdout, /--ats/);
+  assert.match(cli('check-url', '--help').stdout, /<url>/i);
 });
 
 test('invalid selectors and disabled Google fail before constructing a queue', async (t) => {
@@ -152,22 +158,22 @@ test('invalid selectors and disabled Google fail before constructing a queue', a
 test('CLI loads profiles only for commands that need them', async (t) => {
   // Arrange: break the copied profile's syntax.
   const { root, cli } = await fixture(t);
-  await writeFile(join(root, 'profile.ts'), 'export default {broken');
+  await writeFile(join(root, 'discovery.ts'), 'export default {broken');
   // Act: invoke workers, which requires the profile.
   const invalid = cli('workers');
   // Assert: report the profile failure instead of starting work.
   assert.equal(invalid.status, 1);
-  assert.match(invalid.stderr, /Cannot load profile.ts/);
+  assert.match(invalid.stderr, /Cannot load discovery.ts/);
   // Act / Assert: listing and help do not need a valid profile.
   assert.equal(cli('jobs').status, 0);
   assert.equal(cli('--help').status, 0);
   // Arrange: remove the profile entirely.
-  await rm(join(root, 'profile.ts'));
+  await rm(join(root, 'discovery.ts'));
   // Act: invoke discovery with the missing profile.
   const missing = cli('workers');
   // Assert: identify the missing profile in the diagnostic.
   assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /Cannot load profile.ts.*profile.ts/);
+  assert.match(missing.stderr, /Cannot load discovery.ts.*discovery.ts/);
 });
 
 test('CLI help works without the database implementation installed', async (t) => {
@@ -185,15 +191,14 @@ test('CLI help works without the database implementation installed', async (t) =
 });
 
 test('non-web commands work without the UI asset', async (t) => {
-  const { root, cli } = await fixture(t);
-  await rm(join(root, 'dist/web/index.html'));
-  for (const args of [[], ['--help'], ['serve', '--help'], ['jobs']]) {
+  const { cli } = await fixture(t);
+  for (const args of [[], ['--help'], ['backfill', '--help'], ['jobs']]) {
     const result = cli(...args);
     assert.equal(result.status, 0, result.stderr);
   }
   const result = cli('serve');
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /ENOENT.*index.html/);
+  assert.match(result.stderr, /Unknown command: serve/);
 });
 
 test('queue module imports without loading SQLite or connecting to Redis', () => {

@@ -3,18 +3,17 @@ import type { Profile } from '../infra/config.ts';
 import type { SqliteStore } from '../infra/sqlite.ts';
 import type { ListingExtractor } from '../integrations/extraction.ts';
 import type {
-  LocationReviewer,
-  StackReviewer,
+  AssessmentReviewer,
+  CandidateDocuments,
 } from '../integrations/llm/types.ts';
 import type { FreehireConfig } from '../integrations/search/freehire.ts';
+import { assessJob } from '../workflow/assess-job.ts';
 import { crawlJob } from '../workflow/crawl.ts';
 import {
   type DiscoveryResult,
   discoverFreehireJobs,
   discoverGoogleJobs,
 } from '../workflow/discover.ts';
-import { checkLocation } from '../workflow/location-check.ts';
-import { checkTech } from '../workflow/tech-check.ts';
 import {
   createCrawlExtractors,
   createFreehireSearch,
@@ -99,30 +98,17 @@ export function startCrawlWorker(
   );
 }
 
-export function startLocationWorker(
+export function startAssessmentWorker(
   store: SqliteStore,
   queues: ReviewQueues,
-  reviewLocation: LocationReviewer,
+  loadDocuments: () => Promise<CandidateDocuments>,
+  assess: AssessmentReviewer,
   signal?: AbortSignal,
 ) {
   return queues.startWorker(
     store,
-    'location',
-    (id) => checkLocation(store, id, reviewLocation, signal),
-    signal,
-  );
-}
-
-export function startTechWorker(
-  store: SqliteStore,
-  queues: ReviewQueues,
-  reviewStack: StackReviewer,
-  signal?: AbortSignal,
-) {
-  return queues.startWorker(
-    store,
-    'stack',
-    (id) => checkTech(store, id, reviewStack, signal),
+    'assessment',
+    (id) => assessJob(store, id, loadDocuments, assess, signal),
     signal,
   );
 }

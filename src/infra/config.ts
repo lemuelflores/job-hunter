@@ -2,7 +2,6 @@ import { resolve } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as v from 'valibot';
-import { type CandidatePreferences, CandidateSchema } from '../core/profile.ts';
 import {
   type FreehireConfig,
   FreehireSchema,
@@ -28,13 +27,11 @@ export function loadEnvironment(): void {
 }
 
 export interface Profile {
-  review: CandidatePreferences;
   google: GoogleConfig;
   freehire: FreehireConfig;
 }
 
 const ProfileSchema: v.GenericSchema<unknown, Profile> = v.strictObject({
-  review: CandidateSchema,
   google: GoogleSchema,
   freehire: FreehireSchema,
 });
@@ -44,12 +41,12 @@ export function validateProfile(value: unknown): Profile {
   if (parsed.success) return parsed.output;
   const issue = parsed.issues[0];
   throw new Error(
-    `Invalid profile.ts: ${v.getDotPath(issue) ?? 'profile'}: ${issue.message}`,
+    `Invalid discovery.ts: ${v.getDotPath(issue) ?? 'discovery'}: ${issue.message}`,
   );
 }
 
 export async function loadProfile(
-  path: string | URL = new URL('../../profile.ts', import.meta.url),
+  path: string | URL = new URL('../../discovery.ts', import.meta.url),
 ): Promise<Profile> {
   const url = path instanceof URL ? path : pathToFileURL(resolve(path));
   let value: unknown;
@@ -57,7 +54,7 @@ export async function loadProfile(
     value = (await import(url.href)).default;
   } catch (error) {
     throw new Error(
-      `Cannot load profile.ts (${url.href}): ${error instanceof Error ? error.message : String(error)}`,
+      `Cannot load discovery.ts (${url.href}): ${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }

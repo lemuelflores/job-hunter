@@ -13,6 +13,18 @@ export interface CrawlExtractors {
   fallback: ListingExtractor;
 }
 
+export function extractListing(
+  url: string,
+  extractors: CrawlExtractors,
+  signal?: AbortSignal,
+): Promise<ExtractedListing> {
+  const hostname = new URL(url).hostname;
+  const ats = extractors.ats.find((definition) =>
+    matchesAtsHost(hostname, definition.hosts),
+  );
+  return (ats?.extract ?? extractors.fallback)(url, { signal });
+}
+
 export async function crawlJob(
   store: SqliteStore,
   id: number,
@@ -29,12 +41,7 @@ export async function crawlJob(
   if (job?.status !== 'active' || job.listing_text !== null) return;
   let listing: ExtractedListing;
   try {
-    const hostname = new URL(job.url).hostname;
-    const ats = extractors.ats.find((ats) =>
-      matchesAtsHost(hostname, ats.hosts),
-    );
-    const extract = ats?.extract ?? extractors.fallback;
-    listing = await extract(job.url, { signal });
+    listing = await extractListing(job.url, extractors, signal);
   } catch (error) {
     signal?.throwIfAborted();
     // Another caller can complete this crawl while the request is in flight.

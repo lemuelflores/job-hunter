@@ -11,30 +11,33 @@
   "scripts": {
     "check": "biome check .",
     "fix": "biome check --write .",
-    "build": "vite build",
+    "build": "next build",
     "typecheck": "tsc -p tsconfig.json",
-    "dev": "vite",
-    "test": "pnpm build && node --test test/*.test.mjs",
+    "dev": "JOB_HUNTER_WEB_PORT=3001 next dev --hostname 127.0.0.1 --port 3001",
+    "test": "node --test test/*.test.mjs",
     "test:queue": "node --test test/workers.queue.mjs",
-    "test:web:browser": "pnpm build && node --test test/web.browser.mjs",
+    "test:browser": "pnpm build && playwright test --config test/v2/playwright.config.ts && node --test test/web-next.browser.mjs",
     "job-hunter": "node src/entrypoints/cli.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
+    "@playwright/test": "^1.64.1",
     "@types/html-to-text": "^9.0.4",
     "@types/node": "^22.20.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "typescript": "^5.8.0",
     "vite": "8.3.5"
   },
   "dependencies": {
-    "@chenglou/pretext": "1.0.0",
-    "@tanstack/virtual-core": "3.19.7",
-    "alpinejs": "3.17.5",
     "bullmq": "6.3.17",
     "citty": "^0.2.2",
     "entities": "^8.1.0",
     "html-to-text": "^10.0.1",
+    "next": "16.4.3",
     "node-cron": "^4.6.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "redis": "6.3.0",
     "valibot": "1.5.0"
   }

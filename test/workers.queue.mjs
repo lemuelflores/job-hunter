@@ -5,24 +5,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { Queue } from 'bullmq';
 import { main } from '../src/entrypoints/cli.ts';
 import { createLlm, GOOGLE_ATS } from '../src/entrypoints/compose.ts';
 import { startDiscoveryScheduler } from '../src/entrypoints/scheduler.ts';
 import {
+  startAssessmentWorker,
   startCrawlWorker,
   startFreehireWorker,
   startGoogleWorker,
-  startLocationWorker,
-  startTechWorker,
 } from '../src/entrypoints/workers.ts';
 import { DiscoveryQueue, ReviewQueues } from '../src/infra/bullmq.ts';
 import { SqliteStore } from '../src/infra/sqlite.ts';
 import { reviewJobs } from '../src/workflow/review-jobs.ts';
 import {
+  assessment,
   externalFixture,
   profile,
   result,
-  stack,
   stages,
   stream,
 } from './fixtures/workflow.mjs';
@@ -101,18 +101,17 @@ test('queue dispatch, recovery and process lifecycle', {
             case 'crawl':
               workers.push(await startCrawlWorker(store, queues));
               break;
-            case 'location':
+            case 'assessment':
               workers.push(
-                await startLocationWorker(
+                await startAssessmentWorker(
                   store,
                   queues,
-                  external.reviewLocation,
+                  async () => ({
+                    cv: 'Candidate CV',
+                    profile: 'Candidate profile',
+                  }),
+                  external.llm.assess,
                 ),
-              );
-              break;
-            case 'stack':
-              workers.push(
-                await startTechWorker(store, queues, external.reviewStack),
               );
               break;
             default:
@@ -154,6 +153,104 @@ test('queue dispatch, recovery and process lifecycle', {
     });
     return f;
   }
+
+  await t.test(
+    'new workers leave retained legacy queue deliveries untouched',
+    async (t) => {
+      const f = fixture(t);
+      const legacy = new Queue('crawl', {
+        prefix: `${f.queues.prefix}-legacy`,
+        connection: { url: redisUrl },
+      });
+      t.after(async () => {
+        await legacy.obliterate();
+        await legacy.close();
+      });
+      const retained = await legacy.add(
+        'crawl',
+        { id: 1 },
+        { jobId: 'listing-1' },
+      );
+      f.store.saveResults([result(1)]);
+      await f.start();
+      await f.queues.enqueue('crawl', 1);
+      await f.idle();
+      assert.ok(f.store.getAssessment(1));
+      assert.equal(await retained.getState(), 'waiting');
+      assert.deepEqual((await legacy.getJob('listing-1')).data, { id: 1 });
+    },
+  );
+
+  await t.test(
+    'assessment delivery repair and explicit retry preserve the checkpoint',
+    async (t) => {
+      const f = fixture(t);
+      f.store.saveResults([result(1)]);
+      f.store.saveListingText(1, 'Complete description');
+      f.store.activateAssessment(1);
+      const docs = async () => ({
+        cv: 'Private CV',
+        profile: 'Private profile',
+      });
+      let worker = await startAssessmentWorker(
+        f.store,
+        f.queues,
+        docs,
+        async () => {
+          throw new Error('Model unavailable');
+        },
+      );
+      try {
+        await f.queues.repair(f.store, 'assessment');
+        await until(
+          () =>
+            f.store.stages(1).find((stage) => stage.stage === 'assessment')
+              .state === 'failed',
+        );
+      } finally {
+        await worker.close();
+      }
+      const report = {
+        company: null,
+        role: null,
+        summary: 'Build software.',
+        schedule_manila: null,
+        hard_stops: [],
+        eligibility: [],
+        requirements: [],
+        compensation: { advertised: null, vs_profile: 'not_stated' },
+        strengths: [],
+        concerns: [],
+        confidence: 'medium',
+        decision_changing_questions: [],
+        score: 4,
+        verdict_reason: 'Strong fit.',
+        verdict: 'Apply',
+      };
+      worker = await startAssessmentWorker(
+        f.store,
+        f.queues,
+        docs,
+        async () => report,
+      );
+      try {
+        await f.queues.retry(f.store, 'assessment', 1);
+        await until(() => f.store.getAssessment(1) !== undefined);
+        assert.deepEqual(f.store.getAssessment(1), {
+          version: 1,
+          assessment: report,
+        });
+        assert.equal(
+          f.store.stages(1).find((stage) => stage.stage === 'assessment')
+            .generation,
+          1,
+        );
+        assert.ok(!JSON.stringify(f.output).includes('Private CV'));
+      } finally {
+        await worker.close();
+      }
+    },
+  );
 
   await t.test(
     'delivery events distinguish terminal, skipped, retrying and exhausted work',
@@ -266,7 +363,7 @@ test('queue dispatch, recovery and process lifecycle', {
   );
 
   await t.test(
-    'Freehire source crawls before dispatching both checks',
+    'Freehire source crawls before dispatching assessment',
     async (t) => {
       const f = fixture(t, ({ url }) =>
         url.hostname === 'freehire.me'
@@ -341,7 +438,10 @@ test('queue dispatch, recovery and process lifecycle', {
         .listReviewJobs('active')
         .find((job) => job.url === result(1).url);
       assert.equal(f.store.getJob(imported.id).listing_text, null);
-      assert.equal(f.store.stages(1)[0].state, 'failed');
+      assert.equal(
+        f.store.stages(1).find((s) => s.stage === 'crawl').state,
+        'failed',
+      );
       delete f.queues.queues.crawl.jobsOpts.sizeLimit;
       await f.start(stages);
       await f.queues.repair(f.store);
@@ -491,11 +591,11 @@ test('queue dispatch, recovery and process lifecycle', {
   );
 
   await t.test(
-    'exhausted assessment delivery, repair and explicit retry preserve the other result',
+    'exhausted assessment delivery, repair and explicit retry preserve the crawl',
     async (t) => {
       let offline = true;
       const f = fixture(t, ({ body }) =>
-        body?.text.format.name === 'job_review' && offline
+        body?.text.format.name === 'job_assessment_v1' && offline
           ? new Response('Model unavailable', { status: 503 })
           : undefined,
       );
@@ -503,9 +603,18 @@ test('queue dispatch, recovery and process lifecycle', {
       await f.start();
       await f.queues.enqueue('crawl', 1);
       await f.idle();
-      assert.equal(f.store.stages(1)[1].state, 'failed');
-      assert.match(f.store.stages(1)[1].error, /503/);
-      assert.equal(f.store.stages(1)[2].state, 'complete');
+      assert.equal(
+        f.store.stages(1).find((s) => s.stage === 'assessment').state,
+        'failed',
+      );
+      assert.match(
+        f.store.stages(1).find((s) => s.stage === 'assessment').error,
+        /503/,
+      );
+      assert.equal(
+        f.store.stages(1).find((s) => s.stage === 'crawl').state,
+        'complete',
+      );
       const saved = f.store.getJob(1);
       const count = f.requests.length;
       const outcome = await reviewJobs(
@@ -517,17 +626,20 @@ test('queue dispatch, recovery and process lifecycle', {
         1,
       );
       assert.equal(outcome.reviewed, 0);
-      assert.match(outcome.failures[0], /Job 1 location:/);
+      assert.match(outcome.failures[0], /Job 1 assessment:/);
       await f.queues.repair(f.store);
       await f.idle();
       assert.equal(f.requests.length, count);
       offline = false;
-      await f.queues.retry(f.store, 'location', 1);
+      await f.queues.retry(f.store, 'assessment', 1);
       await f.idle();
       assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
-      assert.equal(f.store.stages(1)[1].generation, 1);
+      assert.equal(
+        f.store.stages(1).find((s) => s.stage === 'assessment').generation,
+        1,
+      );
       assert.equal(f.store.getJob(1).listing_text, saved.listing_text);
-      assert.equal(f.store.getJob(1).stack_reason, saved.stack_reason);
+      assert.deepEqual(f.store.getAssessment(1).assessment, assessment);
       assert.equal(f.requests.length, count + 1);
     },
   );
@@ -540,13 +652,25 @@ test('queue dispatch, recovery and process lifecycle', {
       await f.start(['crawl']);
       await f.queues.enqueue('crawl', 1);
       await f.idle();
-      assert.equal(f.store.stages(1)[0].state, 'failed');
+      assert.equal(
+        f.store.stages(1).find((s) => s.stage === 'crawl').state,
+        'failed',
+      );
       const reading = f.queues.syncFailures(f.store, 1);
       f.store.resetStage(1, 'crawl');
       await reading;
-      assert.equal(f.store.stages(1)[0].state, 'pending');
-      assert.equal(f.store.stages(1)[0].generation, 1);
-      assert.equal(f.store.stages(1)[0].error, '');
+      assert.equal(
+        f.store.stages(1).find((s) => s.stage === 'crawl').state,
+        'pending',
+      );
+      assert.equal(
+        f.store.stages(1).find((s) => s.stage === 'crawl').generation,
+        1,
+      );
+      assert.equal(
+        f.store.stages(1).find((s) => s.stage === 'crawl').error,
+        '',
+      );
     },
   );
 
@@ -558,8 +682,14 @@ test('queue dispatch, recovery and process lifecycle', {
       f.store.failStage(1, 'crawl', 'Previous outage', true);
       f.queues.queues.crawl.jobsOpts.sizeLimit = 1;
       await assert.rejects(f.queues.retry(f.store, 'crawl', 1), /size/i);
-      assert.equal(f.store.stages(1)[0].state, 'pending');
-      assert.equal(f.store.stages(1)[0].generation, 1);
+      assert.equal(
+        f.store.stages(1).find((s) => s.stage === 'crawl').state,
+        'pending',
+      );
+      assert.equal(
+        f.store.stages(1).find((s) => s.stage === 'crawl').generation,
+        1,
+      );
       delete f.queues.queues.crawl.jobsOpts.sizeLimit;
       await f.start();
       await f.queues.repair(f.store);
@@ -569,20 +699,18 @@ test('queue dispatch, recovery and process lifecycle', {
   );
 
   await t.test(
-    'crawl redelivery repairs partial fan-out without repeating saved work',
+    'crawl redelivery repairs assessment handoff without repeating extraction',
     async (t) => {
       const f = fixture(t);
       f.store.saveResults([result(1)]);
       f.store.saveListingText(1, 'Checkpoint Laravel');
-      f.store.review(1, 'eligible', 'Saved location');
       await f.start();
       await f.queues.enqueue('crawl', 1);
       await f.idle();
       assert.equal(f.store.getJob(1).listing_text, 'Checkpoint Laravel');
-      assert.equal(f.store.getJob(1).reason, 'Saved location');
-      assert.equal(f.store.getJob(1).stack_status, 'match');
+      assert.deepEqual(f.store.getAssessment(1).assessment, assessment);
       assert.equal(f.requests.length, 1);
-      assert.equal(f.requests[0].body.text.format.name, 'job_stack_review');
+      assert.equal(f.requests[0].body.text.format.name, 'job_assessment_v1');
     },
   );
 
@@ -640,7 +768,6 @@ test('queue dispatch, recovery and process lifecycle', {
       const f = fixture(t);
       f.store.saveResults([result(1)]);
       f.store.saveListingText(1, 'Checkpoint Laravel');
-      f.store.review(1, 'eligible', 'Saved location');
       const saved = f.store.getJob(1);
       const controller = new AbortController();
       controller.abort(new Error('cancelled'));
@@ -666,7 +793,7 @@ test('queue dispatch, recovery and process lifecycle', {
         1,
       );
       await until(async () =>
-        Boolean(await f.queues.queues.stack.getJob('listing-1')),
+        Boolean(await f.queues.queues.assessment.getJob('listing-1')),
       );
       f.store.setReviewStatus('1', 'hidden');
       assert.deepEqual((await waiting).failures, ['Job 1: no longer active']);
@@ -677,7 +804,7 @@ test('queue dispatch, recovery and process lifecycle', {
     'CLI starts all consumers with the shared profile and drains active work',
     async (t) => {
       const gate = Promise.withResolvers();
-      let stackStarted = false;
+      let assessmentStarted = false;
       const f = fixture(t, async ({ url, body }) => {
         if (url.hostname === 'api.autom.dev')
           return Response.json({
@@ -686,10 +813,10 @@ test('queue dispatch, recovery and process lifecycle', {
               title: 'Engineer',
             })),
           });
-        if (body?.text.format.name !== 'job_stack_review') return;
-        stackStarted = true;
+        if (body?.text.format.name !== 'job_assessment_v1') return;
+        assessmentStarted = true;
         await gate.promise;
-        return stream(stack);
+        return stream(assessment);
       });
       f.releases.push(gate.resolve);
       const observer = new SqliteStore(f.path);
@@ -709,6 +836,14 @@ test('queue dispatch, recovery and process lifecycle', {
       running = main(['workers'], {
         loadProfile: async () => profile,
         createLlm: () => f.llm,
+        startAssessmentWorker: (store, queues, _load, assess, signal) =>
+          startAssessmentWorker(
+            store,
+            queues,
+            async () => ({ cv: 'Candidate CV', profile: 'Candidate profile' }),
+            assess,
+            signal,
+          ),
         createStore: async () => new SqliteStore(f.path),
         createReviewQueues: async () =>
           new ReviewQueues(redisUrl, f.queues.prefix),
@@ -725,43 +860,23 @@ test('queue dispatch, recovery and process lifecycle', {
         }
       });
       await f.google.enqueue();
-      await until(() => stackStarted);
-      await until(
-        () =>
-          observer.getJob(2).listing_text !== null &&
-          observer.getJob(1).eligibility === 'ineligible',
-      );
+      await until(() => assessmentStarted);
+      await until(() => observer.getJob(2)?.listing_text != null);
       process.emit('SIGTERM');
       await delay(30);
       assert.equal(stopped, false);
       gate.resolve();
       assert.equal(await running, 0);
       running = undefined;
-      assert.equal(observer.getJob(1).stack_status, 'match');
-      const locationRequest = f.requests.find(
-        ({ body }) => body?.text.format.name === 'job_review',
+      assert.deepEqual(observer.getAssessment(1).assessment, assessment);
+      const request = f.requests.find(
+        ({ body }) => body?.text.format.name === 'job_assessment_v1',
       ).body;
-      const stackRequest = f.requests.find(
-        ({ body }) => body?.text.format.name === 'job_stack_review',
-      ).body;
-      assert.ok(
-        locationRequest.instructions.includes(
-          JSON.stringify(profile.review.location),
-        ),
-      );
-      assert.ok(
-        stackRequest.input[0].content[0].text.includes(
-          JSON.stringify(profile.review.stack),
-        ),
-      );
-      assert.ok(
-        !locationRequest.input[0].content[0].text.includes(
-          JSON.stringify(profile.review.stack),
-        ),
-      );
-      assert.ok(
-        !JSON.stringify(stackRequest).includes(profile.review.location),
-      );
+      assert.deepEqual(JSON.parse(request.input[0].content[0].text), {
+        job_description: observer.getJob(1).listing_text,
+        cv: 'Candidate CV',
+        profile: 'Candidate profile',
+      });
       assert.deepEqual(
         ['SIGINT', 'SIGTERM'].map((event) => process.listeners(event)),
         signals,
@@ -769,7 +884,7 @@ test('queue dispatch, recovery and process lifecycle', {
     },
   );
 
-  for (const failing of [...GOOGLE_ATS, 'freehire', 'location']) {
+  for (const failing of [...GOOGLE_ATS, 'freehire', 'assessment']) {
     await t.test(`CLI cleans up when ${failing} cannot start`, async (t) => {
       const f = fixture(t);
       const queues = new ReviewQueues(redisUrl, f.queues.prefix);
@@ -777,8 +892,8 @@ test('queue dispatch, recovery and process lifecycle', {
         (target) => new DiscoveryQueue(target, redisUrl, f.google.prefix),
       );
       const unavailable =
-        failing === 'location'
-          ? queues.queues.location
+        failing === 'assessment'
+          ? queues.queues.assessment
           : discovery.find((queue) => queue.target === failing).queue;
       await unavailable.waitUntilReady();
       await unavailable.close();
@@ -809,7 +924,7 @@ test('queue dispatch, recovery and process lifecycle', {
   }
 
   await t.test(
-    'Workable discovery dispatches public API extraction and both assessments',
+    'Workable discovery dispatches public API extraction and assessment',
     async (t) => {
       const url = 'https://apply.workable.com/example/j/AB1234CDEF';
       const f = fixture(t, ({ url: endpoint }) => {
@@ -845,14 +960,14 @@ test('queue dispatch, recovery and process lifecycle', {
       );
       try {
         await queue.enqueue();
-        await until(() => f.store.getJob(1)?.stack_status === 'match');
+        await until(() => Boolean(f.store.getAssessment(1)));
         await f.idle();
         assert.ok(f.store.stages(1).every(({ state }) => state === 'complete'));
         assert.equal(f.store.getJob(1).url, url);
         assert.equal(f.store.getJob(1).posted_at, '2026-10-20T00:00:00.000Z');
         assert.match(f.store.getJob(1).listing_text, /US Laravel role/);
-        assert.equal(f.store.getJob(1).eligibility, 'ineligible');
-        assert.equal(f.requests.length, 4);
+        assert.deepEqual(f.store.getAssessment(1).assessment, assessment);
+        assert.equal(f.requests.length, 3);
       } finally {
         await worker.close();
       }
@@ -975,9 +1090,7 @@ test('queue dispatch, recovery and process lifecycle', {
         const tasks = await Promise.all(
           f.googles.map((queue) => queue.enqueue()),
         );
-        await until(
-          () => ashbyStarted && f.store.getJob(1)?.stack_status === 'match',
-        );
+        await until(() => ashbyStarted && Boolean(f.store.getAssessment(1)));
         await until(() =>
           f.output.some(
             (event) =>

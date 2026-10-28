@@ -1,18 +1,18 @@
 # Architecture
 
 Job Hunter is a local, single-user application for discovering job listings,
-assessing remote-location eligibility and technology fit, and organizing the
+assessing them against a candidate's CV and preferences, and organizing the
 results. It is one TypeScript application with separate CLI, scheduler, worker,
 and web execution roles—not a collection of independent services.
 
-This guide describes the checked-in design. See [README.md](README.md) for setup,
+This guide describes the current design. See [README.md](README.md) for setup,
 commands, and everyday operation. Provider contracts and edge cases live beside
 their implementations and tests.
 
 ## System at a glance
 
 ```text
-profile.ts + environment
+discovery.ts + environment
          |
 CLI / scheduler --> discovery queues --> search providers
                               |
@@ -26,39 +26,37 @@ CLI / scheduler --> discovery queues --> search providers
                               v
                        SQLite: saved text
                               |
-                   +----------+----------+
-                   |                     |
-             location queue         stack queue
-                   |                     |
-                   +--> LLM assessments <-+
+                       assessment queue
+                              |
+                  LLM <-- CV + candidate profile
                               |
                               v
-Browser <--> local HTTP server <--> SQLite: results and review status
+             SQLite: assessments and review status <--> Next.js UI and API <--> Browser
 ```
 
 SQLite is authoritative for listings, assessments, and processing state. BullMQ
 and Redis deliver work; listing-stage payloads carry IDs rather than listing text
 or model results. The scheduler only produces discovery tasks. A shared workers
 process runs discovery, extraction, and assessment consumers. The web process
-reads saved results and changes review status; it does not run the pipeline.
+reads saved results, changes review status, and requests explicit retries; it
+does not run assessments.
 
 Both discovery sources, Google and Freehire, feed the same crawl-first pipeline.
 Crawling uses a registered ATS's public API when available and Firecrawl otherwise.
-Native API failures never trigger a scraping fallback. Both assessments use the
-saved source text, not search snippets or Freehire descriptions, which may be
-truncated. Location and technology checks are independent: location rejection
-does not suppress the technology check.
+Native API failures never trigger a scraping fallback. The single holistic
+assessment uses saved source text, not search snippets or Freehire descriptions,
+which may be truncated. A hard stop does not suppress the rest of the report.
 
 ## Code map and dependency boundaries
 
 | Module | Responsibility and useful landmarks |
 | --- | --- |
-| `src/core/` | Provider-independent listings, decisions, candidate preferences, and stages. Start with `listing.ts`, `profile.ts`, and `stages.ts`. Imports no outer layer. |
+| `src/core/` | Provider-independent listings, decisions, and stages. Start with `listing.ts` and `stages.ts`. Imports no outer layer. |
 | `src/integrations/` | External capabilities: `search/`, `ats/`, `llm/`, and Firecrawl. Owns HTTP contracts, validation, rendering, and provider-specific policy; imports no workflow, storage, queue, or entrypoint code. |
-| `src/workflow/` | Application operations: discovery, crawl, location/technology checks, and review orchestration. Owns readiness checks, checkpoint reuse, persistence, and downstream handoff. |
-| `src/infra/` | `sqlite.ts` owns schema, migrations, transactions, and stage transitions. `bullmq.ts` owns delivery, retries, failure reconciliation, and recovery. `config.ts` assembles executable configuration. |
+| `src/workflow/` | Application operations: discovery, crawl, assessment, manual backfill, and review orchestration. Owns readiness checks, checkpoint reuse, persistence, and downstream handoff. |
+| `src/infra/` | `sqlite.ts` owns schema, migrations, transactions, and stage transitions. `bullmq.ts` owns delivery, retries, failure reconciliation, and recovery. `candidate-documents.ts` loads the private CV and profile. |
 | `src/entrypoints/` | `compose.ts` assembles the ATS registry and lazy concrete dependencies. CLI, scheduler, and worker adapters own process wiring and lifecycle, not business logic. |
-| `src/web/` | `server.ts` owns the local HTTP boundary; `index.html` contains the UI template and styles, `review.js` owns its single Alpine component, and `card-size.ts` estimates virtualized card heights. `main.js` wires browser dependencies through Vite. |
+| `src/app/` | Next.js React inbox, Node route handlers, request validation, and the mapping from saved data to browser-safe results. `src/proxy.ts` enforces local Host checks. |
 
 Workflows receive integration capabilities and the concrete `SqliteStore`; there
 is deliberately no generic repository layer. They do not import concrete
@@ -84,22 +82,21 @@ opaque rather than becoming a model of the provider's entire schema.
   source-specific behavior; `src/workflow/crawl.ts` owns strategy selection and
   checkpointing. Shared contracts and page errors live in
   `src/integrations/extraction.ts`.
-- **Change assessments:** prompts, response contracts, and authentication belong
-  in `src/integrations/llm/`; readiness and persistence belong in
-  `src/workflow/location-check.ts` and `tech-check.ts`. The existing persisted and
-  queue stage name for technology checks is `stack`.
+- **Change assessments:** prompts and authentication belong in
+  `src/integrations/llm/`, the persisted response contract in
+  `src/core/assessment.ts`, and readiness in `src/workflow/assess-job.ts`.
 - **Change storage or recovery:** start in `src/infra/sqlite.ts` or `bullmq.ts`,
   respectively. Keep domain checkpoints separate from delivery state.
-- **Change review UI/API:** start in `src/web/`. Browser state stays in
-  `review.js`, rendering in `index.html`, and request validation and persistence
-  in `server.ts`. The variable-height list mounts a measured window of cards;
-  evidence selections and focus/scroll continuity survive virtual unmounts.
+- **Change review UI/API:** start in `src/app/`. The React inbox consumes the
+  route handlers; request validation, status updates, and retries remain on the
+  server.
 
-Node executes backend TypeScript directly; TypeScript only checks types. Vite
-builds browser assets into `dist/web/`. The production HTTP server serves only
-that built page and its JavaScript/CSS assets, never source files. Vite's
-loopback development server proxies API requests to the local backend while
-retaining same-origin mutation checks.
+Node executes backend TypeScript directly; TypeScript checks types. Next.js is
+the production and development web entrypoint. The inbox and listing URLs are
+server-rendered from SQLite, then refreshed in the browser. Node route handlers
+open and close SQLite per request, and open Redis only for retry. `JOB_HUNTER_WEB_PORT`
+must match the listening port so Host checks remain meaningful. The browser
+never receives candidate documents or saved listing text as raw inputs.
 
 ## State, failure, and concurrency invariants
 
@@ -109,13 +106,17 @@ retaining same-origin mutation checks.
 - **Checkpoints survive redelivery:** saving a result and completing its stage is
   one SQLite transaction. Completed work is reused, not overwritten. Rediscovery
   does not reset saved text, decisions, review status, or exhausted stages.
+- **Historical work is opt-in:** migration and rediscovery never create a new
+  assessment stage for old listings. Bounded backfill selects eligible saved
+  text explicitly; old location and stack decisions remain historical and are
+  not converted into holistic assessments.
 - **Delivery is not a transaction with SQLite:** a crash can leave saved work
   without its downstream enqueue, or repeat an external call before its result is
   saved. Operations must remain checkpoint-aware; `repair` restores missing
   pending delivery without granting failed stages more attempts.
 - **Failures have different meanings:** transient extraction/model failures use
   bounded delivery retries. Permanent listing-page failures terminate crawling
-  and block dependent checks. Explicit `retry` resets an exhausted stage; retry
+  and block assessment. Explicit `retry` resets an exhausted stage; retry
   generations prevent stale Redis failures from undoing that reset.
 - **Partial discovery is useful:** successful pages are saved and dispatched
   before reporting a later-page failure. Discovery runs are not automatically
@@ -127,27 +128,34 @@ retaining same-origin mutation checks.
 
 Discovery provenance and first-seen time are preserved across rediscovery.
 Publication dates represent source posting dates, never catalogue creation or
-update times. Root `profile.ts` contains candidate preferences and native search
-settings; prompts and assessment rules belong to the application.
+update times. Root `discovery.ts` contains search settings; the private `cv.md`
+and `candidate-profile.md` supply candidate evidence and preferences. The worker
+rereads them before each assessment; prompts belong to the application.
 
 ## Trust and deployment boundaries
 
 The application assumes one trusted local user. The web UI has no login;
 loopback exposure, Host checks, and same-origin mutation checks are not a public
 service authentication scheme. Listing/model text is untrusted: integrations
-validate interpreted fields, prompts separate listing content from instructions,
+validate interpreted fields, prompts separate all three input documents from instructions,
 and the browser renders text rather than listing-supplied HTML.
 
 Compose runs the application roles alongside Redis and self-hosted Firecrawl
 with its browser service. Application processes share the checkout, SQLite file,
 and OAuth credentials. SQLite, Redis, and credentials have separate persistence
 and backup needs; Redis is not a replacement for domain storage. Secrets and
-credentials are local plaintext files and must remain private. Root `profile.ts`
-is executable, trusted configuration. Unmatched listing URLs reach the scraper,
+credentials and candidate documents are local plaintext files and must remain
+private. All application containers share the checkout and can access those
+files; browser access is restricted separately. Root `discovery.ts` is executable,
+trusted configuration. Unmatched listing URLs reach the scraper,
 so its network access must remain within trusted deployment boundaries.
 
 The ChatGPT subscription integration uses unofficial endpoints, and some public
 ATS APIs are undocumented. Keep upstream assumptions inside their adapters.
+
+The current queues use the `job-hunter-v2` prefix; legacy deliveries remain inert,
+not deleted or replayed. Old and new workers must not run together. See the
+README for upgrade and rollback precautions.
 
 ## Verification strategy
 
@@ -155,16 +163,13 @@ The default Node test suite exercises application operations directly with real
 in-memory SQLite and real adapters, replacing external HTTP and credential
 loading. It needs neither Redis nor paid calls. Start with
 `test/workflows.test.mjs` for pipeline behavior, provider-named suites for adapter
-contracts, `test/sqlite.integration.test.mjs` for storage, and `test/web.test.mjs`
-for HTTP and browser-state logic.
+contracts, `test/sqlite.integration.test.mjs` for storage, and
+`test/inbox-api.test.mjs` for the current HTTP boundary.
 
-`test/web.browser.mjs` provides opt-in real-browser checks using local fixtures
-for rendering and measurement behavior that browser-state tests cannot establish.
-Run it with `CHROMIUM_PATH=/path/to/chromium pnpm test:web:browser`.
-
-`test/workers.queue.mjs` separately exercises application-owned delivery,
-recovery, and lifecycle behavior against isolated Redis namespaces. It does not
-retest BullMQ's retry engine. Browser-state tests do not establish real-browser
-rendering, scroll, or focus behavior. Use `pnpm build`, `pnpm typecheck`,
-`pnpm check`, and the relevant test suites for code changes; queue checks are
-explicitly opt-in.
+`test/web-next.browser.mjs` provides an opt-in production-mode browser smoke
+against an isolated database. Browser-state tests alone cannot establish real
+rendering, scroll, or focus behavior. `test/workers.queue.mjs` separately checks
+application-owned delivery, recovery, and lifecycle against isolated Redis
+namespaces; it does not retest BullMQ's retry engine. Run it with
+`pnpm test:queue`. See the README and `package.json` for other verification
+commands.

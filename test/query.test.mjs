@@ -20,7 +20,7 @@ test('explicit query only collapses whitespace, without hidden filters or aliase
 });
 
 test('root base query retains the existing user search terms without ATS hosts', async () => {
-  const profile = (await import('../profile.ts')).default;
+  const profile = (await import('../discovery.ts')).default;
   const query = normalizeGoogleQuery(profile.google.query);
   for (const term of [
     'fullstack',
@@ -59,7 +59,7 @@ test('root base query retains the existing user search terms without ATS hosts',
 
 for (const ats of ATS_DEFINITIONS) {
   test(`${ats.selector} sends the domain restriction before the long profile query`, async (t) => {
-    const profile = (await import('../profile.ts')).default;
+    const profile = (await import('../discovery.ts')).default;
     const scope = `(${ats.hosts
       .map((host) => `site:${host.replace(/^\*\./, '')}`)
       .join(' OR ')})`;

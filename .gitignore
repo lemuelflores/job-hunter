@@ -1,6 +1,12 @@
 node_modules/
 .opencode/
 dist/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+test-results/
+/cv.md
+/candidate-profile.md
 .env
 .auth.json
 .auth.json.*.tmp

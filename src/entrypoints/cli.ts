@@ -17,14 +17,18 @@ import type {
   DiscoveryTarget,
   ReviewQueues,
 } from '../infra/bullmq.ts';
+import { loadCandidateDocuments } from '../infra/candidate-documents.ts';
 import { loadEnvironment, type Profile } from '../infra/config.ts';
 import type { SqliteStore } from '../infra/sqlite.ts';
+import { PageError } from '../integrations/extraction.ts';
 import type {
+  AssessmentReviewer,
+  CandidateDocuments,
   LlmProvider,
-  LocationReviewer,
-  StackReviewer,
 } from '../integrations/llm/types.ts';
 import type { FreehireConfig } from '../integrations/search/freehire.ts';
+import { backfillAssessments } from '../workflow/backfill-assessments.ts';
+import { type CrawlExtractors, extractListing } from '../workflow/crawl.ts';
 import { reviewJobs } from '../workflow/review-jobs.ts';
 import { cliDependencies, GOOGLE_ATS, type GoogleAts } from './compose.ts';
 import type { DiscoverySchedules } from './scheduler.ts';
@@ -44,19 +48,31 @@ function integer(value: string, max = Number.MAX_SAFE_INTEGER): number {
 
 function validateArguments(argv: string[], args: ArgsDef = {}) {
   // Citty permits unknown flags and surplus positionals; keep CLI input strict.
-  const { values } = parseArgs({
+  const positionalArgs = Object.entries(args).filter(
+    ([, arg]) => arg.type === 'positional',
+  );
+  const { values, positionals } = parseArgs({
     args: argv,
     options: Object.fromEntries(
-      Object.entries(args).map(([name, arg]) => [
-        name,
-        { type: arg.type === 'boolean' ? 'boolean' : 'string' },
-      ]),
+      Object.entries(args)
+        .filter(([, arg]) => arg.type !== 'positional')
+        .map(([name, arg]) => [
+          name,
+          { type: arg.type === 'boolean' ? 'boolean' : 'string' },
+        ]),
     ),
     strict: true,
-    allowPositionals: false,
+    allowPositionals: positionalArgs.length > 0,
   });
+  if (positionals.length > positionalArgs.length)
+    throw new Error(
+      `Unexpected argument: ${positionals[positionalArgs.length]}`,
+    );
+  for (const [index, [name, arg]] of positionalArgs.entries())
+    if (arg.required && positionals[index] === undefined)
+      throw new Error(`Missing required argument: ${name}`);
   for (const [name, arg] of Object.entries(args))
-    if (arg.required && values[name] === undefined)
+    if (arg.type !== 'positional' && arg.required && values[name] === undefined)
       throw new Error(`Missing required argument: --${name}`);
 }
 
@@ -101,6 +117,7 @@ function selectInvocation(
 export interface CliDependencies {
   loadProfile(): Promise<Profile>;
   createLlm(): LlmProvider;
+  createCrawlExtractors(): CrawlExtractors;
   createStore(): Promise<SqliteStore>;
   createReviewQueues(): Promise<ReviewQueues>;
   createDiscoveryQueue(target: DiscoveryTarget): Promise<DiscoveryQueue>;
@@ -119,15 +136,12 @@ export interface CliDependencies {
     config: FreehireConfig,
   ): Promise<Worker>;
   startCrawlWorker(store: SqliteStore, queues: ReviewQueues): Promise<Worker>;
-  startLocationWorker(
+  startAssessmentWorker(
     store: SqliteStore,
     queues: ReviewQueues,
-    reviewLocation: LocationReviewer,
-  ): Promise<Worker>;
-  startTechWorker(
-    store: SqliteStore,
-    queues: ReviewQueues,
-    reviewStack: StackReviewer,
+    loadDocuments: () => Promise<CandidateDocuments>,
+    assess: AssessmentReviewer,
+    signal?: AbortSignal,
   ): Promise<Worker>;
 }
 
@@ -186,7 +200,7 @@ export async function main(
       run: async ({ args }) => {
         const profile = await deps.loadProfile();
         if (!profile.google.enabled)
-          throw new Error('google discovery is disabled in profile.ts');
+          throw new Error('google discovery is disabled in discovery.ts');
         const targets = args.ats ? [args.ats] : GOOGLE_ATS;
         const results = await Promise.allSettled(
           targets.map(async (ats) => {
@@ -219,7 +233,7 @@ export async function main(
       run: async () => {
         const profile = await deps.loadProfile();
         if (!profile.freehire.enabled)
-          throw new Error('freehire discovery is disabled in profile.ts');
+          throw new Error('freehire discovery is disabled in discovery.ts');
         const task = await (await discoveryQueue('freehire')).enqueue();
         console.log(JSON.stringify({ source: 'freehire', queued: task.id }));
       },
@@ -236,6 +250,55 @@ export async function main(
         console.log(
           JSON.stringify((await database()).listReviewJobs('active'), null, 2),
         ),
+    }),
+    'check-url': defineCommand({
+      meta: {
+        description: 'Check one saved listing URL and hide it if missing',
+      },
+      args: {
+        url: {
+          type: 'positional',
+          required: true,
+          description: 'Exact saved listing URL',
+        },
+      },
+      run: async ({ args }) => {
+        let url: URL;
+        try {
+          url = new URL(args.url);
+        } catch {
+          throw new Error('Invalid listing URL');
+        }
+        if (
+          !['http:', 'https:'].includes(url.protocol) ||
+          url.username ||
+          url.password
+        )
+          throw new Error(
+            'Listing URL must be HTTP or HTTPS without credentials',
+          );
+        const store = await database();
+        if (!store.hasListingUrl(args.url))
+          throw new Error('Listing URL not found');
+        let status = 200;
+        try {
+          await extractListing(args.url, deps.createCrawlExtractors());
+        } catch (error) {
+          if (
+            !(error instanceof PageError) ||
+            ![404, 410].includes(error.status)
+          )
+            throw error;
+          status = error.status;
+        }
+        console.log(
+          JSON.stringify({
+            url: args.url,
+            status,
+            hidden: status !== 200 && store.hideActiveListingUrl(args.url),
+          }),
+        );
+      },
     }),
     fetch: defineCommand({
       meta: { description: 'Queue source-specific discovery' },
@@ -285,8 +348,7 @@ export async function main(
     }),
     workers: defineCommand({
       meta: {
-        description:
-          'Run enabled discovery, crawl, location and stack consumers',
+        description: 'Run enabled discovery, crawl and assessment consumers',
       },
       run: async () => {
         const profile = await deps.loadProfile();
@@ -318,19 +380,11 @@ export async function main(
             );
           workers.push(await deps.startCrawlWorker(store, queues));
           workers.push(
-            await deps.startLocationWorker(store, queues, (url, options) =>
-              llm.reviewJob(url, {
-                ...options,
-                location: profile.review.location,
-              }),
-            ),
-          );
-          workers.push(
-            await deps.startTechWorker(store, queues, (url, options) =>
-              llm.reviewStack(url, {
-                ...options,
-                stack: profile.review.stack,
-              }),
+            await deps.startAssessmentWorker(
+              store,
+              queues,
+              loadCandidateDocuments,
+              llm.assess,
             ),
           );
           console.info(
@@ -371,28 +425,47 @@ export async function main(
         console.log(JSON.stringify({ retried: id, stage: args.stage }));
       },
     }),
-    'stack-backfill': defineCommand({
+    backfill: defineCommand({
       meta: {
         description:
-          'Queue missing historical stack checks, preserving location decisions',
+          'Preview or queue a bounded historical assessment backfill',
       },
-      run: async () => {
-        const store = await database();
-        const queued = store.queueStackBackfill();
-        const queues = await reviewQueues();
-        await queues.repair(store);
-        console.log(JSON.stringify({ queued }));
-      },
-    }),
-    serve: defineCommand({
-      meta: { description: 'Open the local review UI (127.0.0.1 only)' },
       args: {
-        port: { type: 'string', default: '3000', description: 'HTTP port' },
+        limit: {
+          type: 'string',
+          description: 'Maximum listings to queue',
+        },
+        id: { type: 'string', description: 'Specific listing ID to queue' },
+        preview: {
+          type: 'boolean',
+          description: 'Preview without queuing assessments',
+        },
       },
       run: async ({ args }) => {
-        const port = integer(args.port, 65535);
-        const { serveReviewServer } = await import('../web/server.ts');
-        return serveReviewServer(await database(), port);
+        if ((args.limit === undefined) === (args.id === undefined))
+          throw new Error('Provide exactly one of --limit or --id');
+        const id = args.id === undefined ? undefined : integer(args.id);
+        const limit = args.limit === undefined ? 1 : integer(args.limit);
+        const store = await database();
+        if (args.preview) {
+          console.log(
+            JSON.stringify({
+              mode: 'preview',
+              ...store.previewAssessmentBackfill(limit, id),
+            }),
+          );
+          return;
+        }
+        const queues = await reviewQueues();
+        const queued = await backfillAssessments(
+          store,
+          limit,
+          async (stage, id) => {
+            await queues.enqueue(stage, id);
+          },
+          id,
+        );
+        console.log(JSON.stringify({ mode: 'run', queued }));
       },
     }),
   };

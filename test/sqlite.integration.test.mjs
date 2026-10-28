@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { SqliteStore } from '../src/infra/sqlite.ts';
+import { assessment } from './fixtures/workflow.mjs';
 
 // Arrange: share canonical listing results.
 const result = (id) => ({
@@ -13,9 +15,6 @@ const result = (id) => ({
   title: 'Engineer',
   query: 'remote',
 });
-// Arrange: share a valid stack result for persistence tests.
-const stack = { status: 'match', reason: 'Laravel', evidence: 'Laravel' };
-
 // Arrange: seed three pending listings in an isolated store with automatic cleanup.
 function fixture(t) {
   const store = new SqliteStore(':memory:');
@@ -24,12 +23,31 @@ function fixture(t) {
   return store;
 }
 
+function legacyFixture(t, seedCompleted = false) {
+  const root = mkdtempSync('/tmp/opencode/job-historical-storage-');
+  const path = join(root, 'jobs.sqlite');
+  let store = new SqliteStore(path);
+  store.saveResults([result(1), result(2), result(3)]);
+  store.close();
+  const db = new DatabaseSync(path);
+  db.exec("DELETE FROM job_stages WHERE stage='assessment'");
+  if (seedCompleted) {
+    db.exec(
+      "UPDATE jobs SET listing_text='Saved text',eligibility='eligible',reason='Saved location',stack_status='match',stack_reason='Laravel',stack_evidence='Laravel' WHERE id=1; UPDATE job_stages SET state='complete' WHERE job_id=1",
+    );
+  }
+  db.close();
+  store = new SqliteStore(path);
+  t.after(() => {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  return store;
+}
+
 test('rediscovery deduplicates canonical URLs without resetting saved decisions', (t) => {
   // Arrange: save both decisions and hide the listing before rediscovery.
-  const store = fixture(t);
-  store.saveListingText(1, 'Saved text');
-  store.review(1, 'eligible', 'Saved location');
-  store.reviewStack(1, stack);
+  const store = legacyFixture(t, true);
   store.setReviewStatus('1', 'hidden');
   const before = store.getJob(1);
   // Act / Assert: rediscover the same canonical URL without inserting a row.
@@ -89,138 +107,17 @@ test('posting-date migration recovers saved metadata without changing listing te
 test('invalid results and completed-stage guards reject unsafe writes', (t) => {
   // Arrange: start with pending stages.
   const store = fixture(t);
-  // Act / Assert: reject invalid location decisions and empty listing text.
+  // Act / Assert: reject invalid discovery results and empty listing text.
   assert.throws(
     () => store.saveResults([{ ...result(4), source: 'unknown' }]),
     /CHECK constraint failed/,
   );
   assert.equal(store.getJob(4), undefined);
-  assert.throws(() => store.review(1, 'deleted', 'invalid'), /Invalid review/);
-  assert.throws(() => store.review(1, 'eligible', ''), /Invalid review/);
   assert.throws(() => store.saveListingText(1, ''), /Invalid listing/);
-  // Arrange: complete a valid location assessment.
   store.saveListingText(1, 'text');
-  store.review(1, 'eligible', 'Worldwide');
-  // Act / Assert: reject overwriting the completed location assessment.
-  assert.throws(
-    () => store.review(1, 'ineligible', 'overwrite'),
-    /not pending/,
-  );
-  // Assert: the original eligibility survives the rejected overwrite.
-  assert.equal(store.getJob(1).eligibility, 'eligible');
-  // Act / Assert: reject each unsupported stack result status.
-  for (const status of ['deleted', 'pending'])
-    assert.throws(
-      () => store.reviewStack(1, { ...stack, status }),
-      /Invalid stack/,
-    );
-  // Arrange: complete a valid stack assessment.
-  store.reviewStack(1, stack);
-  // Act / Assert: completed stack assessments cannot be overwritten either.
-  assert.throws(() => store.reviewStack(1, stack), /not pending/);
-});
-
-test('review validation preserves pending data and accepts storage error decisions at length limits', (t) => {
-  const store = fixture(t);
-  const before = store.getJob(1);
-  const stages = store.stages(1);
-  for (const id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-    assert.throws(
-      () => store.review(id, 'eligible', 'Valid'),
-      /Invalid review/,
-    );
-    assert.throws(() => store.reviewStack(id, stack), /Invalid stack review/);
-  }
-  for (const [reason, evidence, company, location, title] of [
-    [' \t'],
-    [null],
-    ['x'.repeat(5001)],
-    ['Valid', 'x'.repeat(5001)],
-    ['Valid', null],
-    ['Valid', '', 'x'.repeat(1001)],
-    ['Valid', '', '', 'x'.repeat(1001)],
-    ['Valid', '', '', '', 'x'.repeat(1001)],
-  ]) {
-    assert.throws(
-      () =>
-        store.review(1, 'eligible', reason, evidence, company, location, title),
-      /Invalid review/,
-    );
-  }
-  for (const decision of [
-    null,
-    {},
-    { ...stack, reason: ' \t' },
-    { ...stack, reason: null },
-    { ...stack, reason: 'x'.repeat(5001) },
-    { ...stack, evidence: null },
-    { ...stack, evidence: 'x'.repeat(5001) },
-  ]) {
-    assert.throws(() => store.reviewStack(1, decision), /Invalid stack review/);
-  }
-  assert.deepEqual(store.getJob(1), before);
-  assert.deepEqual(store.stages(1), stages);
-
-  const reason = ` ${'x'.repeat(4998)} `;
-  const evidence = 'x'.repeat(5000);
-  const metadata = 'x'.repeat(1000);
-  store.review(1, 'error', reason, evidence, metadata, metadata, metadata);
-  store.reviewStack(1, { status: 'error', reason, evidence, extra: 'ignored' });
-  const saved = store.getJob(1);
-  assert.equal(saved.eligibility, 'error');
-  assert.equal(saved.reason, reason);
-  assert.equal(saved.evidence, evidence);
-  assert.equal(saved.company, metadata);
-  assert.equal(saved.location, metadata);
-  assert.equal(saved.title, metadata);
-  assert.equal(saved.stack_status, 'error');
-  assert.equal(saved.stack_reason, reason);
-  assert.equal(saved.stack_evidence, evidence);
-});
-
-test('a failed result write rolls back stage completion and permits retry', async (t) => {
-  // Arrange: use a second database connection to force result writes to fail.
-  const root = await mkdtemp(join(tmpdir(), 'job-rollback-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const path = join(root, 'jobs.sqlite');
-  const store = new SqliteStore(path);
-  const db = new DatabaseSync(path);
-  t.after(() => {
-    db.close();
-    store.close();
-  });
-  store.saveResults([
-    {
-      url: 'https://job-boards.greenhouse.io/example/jobs/1',
-      title: 'Engineer',
-      query: 'remote',
-      source: 'google',
-    },
-  ]);
-  const before = store.getJob(1);
-  db.exec(`CREATE TRIGGER reject_review BEFORE UPDATE OF eligibility ON jobs
-    BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END;`);
-  // Act / Assert: the injected SQLite failure rejects the review write.
-  assert.throws(
-    () => store.review(1, 'eligible', 'Worldwide'),
-    /simulated write failure/,
-  );
-  // Assert: the transaction preserves both the listing and its pending stage.
-  assert.deepEqual(store.getJob(1), before);
-  assert.equal(
-    store.stages(1).find((stage) => stage.stage === 'location').state,
-    'pending',
-  );
-  // Arrange: remove the injected write failure.
-  db.exec('DROP TRIGGER reject_review');
-  // Act: retry the same location decision.
-  store.review(1, 'eligible', 'Worldwide');
-  // Assert: result persistence and stage completion now succeed together.
-  assert.equal(store.getJob(1).eligibility, 'eligible');
-  assert.equal(
-    store.stages(1).find((stage) => stage.stage === 'location').state,
-    'complete',
-  );
+  store.saveAssessment(1, assessment);
+  assert.throws(() => store.saveAssessment(1, assessment), /not pending/);
+  assert.deepEqual(store.getAssessment(1).assessment, assessment);
 });
 
 test('migration preserves historical decisions, indexes and triggers without implicit backfill', async (t) => {
@@ -283,10 +180,10 @@ test('migration preserves historical decisions, indexes and triggers without imp
         .prepare("SELECT name FROM sqlite_master WHERE name='audit_job'")
         .get(),
     );
-    // Act / Assert: explicit stack backfill queues selected history exactly once.
-    assert.equal(store.queueStackBackfill(), 2);
-    assert.equal(store.queueStackBackfill(), 0);
-    // Assert: backfill does not reset the completed location stage.
+    // Historical queue state can exist without scheduling a new assessment.
+    check.exec(
+      "UPDATE jobs SET stack_status='pending' WHERE id=1; UPDATE job_stages SET state='pending' WHERE job_id=1 AND stage IN ('crawl','stack')",
+    );
     assert.equal(
       store.stages(1).find((s) => s.stage === 'location').state,
       'complete',
@@ -316,7 +213,7 @@ test('migration preserves historical decisions, indexes and triggers without imp
   }
 });
 
-test('migration preserves assessment results and snapshots and restores only unfinished stage state', async (t) => {
+test('migration preserves historical decisions and snapshots without scheduling assessments', async (t) => {
   // Arrange: preserve historical decisions and snapshots but remove the stage table.
   const root = await mkdtemp(join(tmpdir(), 'job-snapshots-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -331,30 +228,28 @@ test('migration preserves assessment results and snapshots and restores only unf
     })),
   );
   store.saveListingText(1, 'Saved snapshot');
-  store.review(1, 'eligible', 'Historical eligible');
-  store.reviewStack(1, stack);
-  store.review(2, 'ineligible', 'Historical rejected');
   store.saveListingText(3, 'Stack retry snapshot');
-  store.review(3, 'unclear', 'Historical unclear');
   store.close();
   const db = new DatabaseSync(path);
   db.exec(
-    "DROP TABLE job_stages; UPDATE jobs SET stack_status='not_checked' WHERE id=2",
+    "DROP TABLE job_stages; UPDATE jobs SET eligibility='eligible',reason='Historical eligible',stack_status='match',stack_reason='Laravel',stack_evidence='Laravel' WHERE id=1; UPDATE jobs SET eligibility='ineligible',reason='Historical rejected',stack_status='not_checked' WHERE id=2; UPDATE jobs SET eligibility='unclear',reason='Historical unclear' WHERE id=3",
   );
   const before = db.prepare('SELECT * FROM jobs ORDER BY id').all();
   db.close();
   // Act: reopen the database to rebuild stages from persisted listing data.
   store = new SqliteStore(path);
   try {
-    // Assert: all historical rows survive and only the unfinished stack retry is selected.
+    // Assert: all historical rows survive and old stages remain outside active work.
     for (const row of before) assert.deepEqual(store.getJob(row.id), row);
     assert.deepEqual(
       store.unfinished().map((row) => row.id),
-      [3],
+      [],
     );
-    // Act: save the outstanding stack result directly.
-    store.reviewStack(3, stack);
-    // Assert: completing the stage preserves its snapshot and historical decisions.
+    // Historical unfinished stages remain inert and their evidence remains intact.
+    assert.equal(
+      store.stages(3).find((stage) => stage.stage === 'stack').state,
+      'pending',
+    );
     assert.equal(store.getJob(3).reason, 'Historical unclear');
     assert.equal(store.getJob(3).listing_text, 'Stack retry snapshot');
     assert.deepEqual(store.getJob(1), before[0]);
@@ -372,7 +267,7 @@ test('stage failures remain pending until exhausted and only failed stages can r
   store.failStage(2, 'crawl', 'Temporary page error', false);
   // Assert: the stage remains pending for another delivery.
   assert.deepEqual(
-    { ...store.stages(2)[0] },
+    { ...store.stages(2).find((s) => s.stage === 'crawl') },
     {
       stage: 'crawl',
       state: 'pending',
@@ -383,7 +278,10 @@ test('stage failures remain pending until exhausted and only failed stages can r
   // Act: record retry exhaustion.
   store.failStage(2, 'crawl', 'Temporary page error', true);
   // Assert: only the crawl fails; the listing remains undecided.
-  assert.equal(store.stages(2)[0].state, 'failed');
+  assert.equal(
+    store.stages(2).find((s) => s.stage === 'crawl').state,
+    'failed',
+  );
   assert.equal(store.getJob(2).eligibility, 'pending');
   // Act / Assert: terminal stages cannot be reset as failed stages.
   assert.throws(() => store.resetStage(1, 'crawl'), /not failed/);
@@ -393,7 +291,7 @@ test('stage failures remain pending until exhausted and only failed stages can r
   store.failStage(2, 'crawl', 'Stale failure', true, 0);
   // Assert: reset clears the error and restores pending work.
   assert.deepEqual(
-    { ...store.stages(2)[0] },
+    { ...store.stages(2).find((s) => s.stage === 'crawl') },
     {
       stage: 'crawl',
       state: 'pending',
@@ -416,20 +314,35 @@ test('migration adds retry generations without resetting existing stage failures
   db.close();
   const migrated = new SqliteStore(path);
   t.after(() => migrated.close());
-  assert.equal(migrated.stages(1)[0].state, 'failed');
-  assert.equal(migrated.stages(1)[0].error, 'Preserved failure');
-  assert.equal(migrated.stages(1)[0].generation, 0);
+  assert.equal(
+    migrated.stages(1).find((s) => s.stage === 'crawl').state,
+    'failed',
+  );
+  assert.equal(
+    migrated.stages(1).find((s) => s.stage === 'crawl').error,
+    'Preserved failure',
+  );
+  assert.equal(
+    migrated.stages(1).find((s) => s.stage === 'crawl').generation,
+    0,
+  );
   migrated.resetStage(1, 'crawl');
   migrated.failStage(1, 'crawl', 'Stale failure', true, 0);
-  assert.equal(migrated.stages(1)[0].state, 'pending');
+  assert.equal(
+    migrated.stages(1).find((s) => s.stage === 'crawl').state,
+    'pending',
+  );
   migrated.failStage(1, 'crawl', 'Current failure', true, 1);
-  assert.equal(migrated.stages(1)[0].state, 'failed');
+  assert.equal(
+    migrated.stages(1).find((s) => s.stage === 'crawl').state,
+    'failed',
+  );
 });
 
 test('listing summaries omit snapshots and counts retain stage and visibility rules', (t) => {
   const store = fixture(t);
   store.saveListingText(1, 'Large saved description'.repeat(10000));
-  store.failStage(1, 'location', 'Exhausted', true);
+  store.failStage(1, 'assessment', 'Exhausted', true);
   store.setReviewStatus('2', 'hidden');
   store.terminalCrawl(3, 'Gone');
   const { listing_text, batch, ...job } = store.getJob(1);
@@ -447,8 +360,7 @@ test('listing summaries omit snapshots and counts retain stage and visibility ru
     [{ id: 1, url: result(1).url }],
   );
   assert.equal(store.pendingCount(), 1);
-  store.resetStage(1, 'location');
-  store.review(1, 'eligible', 'Worldwide');
-  store.reviewStack(1, stack);
+  store.resetStage(1, 'assessment');
+  store.saveAssessment(1, assessment);
   assert.equal(store.pendingCount(), 0);
 });

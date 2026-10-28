@@ -72,7 +72,7 @@ export class DiscoveryQueue {
   constructor(
     target: DiscoveryTarget,
     url = process.env.REDIS_URL || 'redis://127.0.0.1:6379',
-    prefix = 'job-hunter',
+    prefix = 'job-hunter-v2',
   ) {
     this.target = target;
     this.url = url;
@@ -167,7 +167,7 @@ export class ReviewQueues {
 
   constructor(
     url = process.env.REDIS_URL || 'redis://127.0.0.1:6379',
-    prefix = 'job-hunter',
+    prefix = 'job-hunter-v2',
   ) {
     this.url = url;
     this.prefix = prefix;
@@ -275,6 +275,7 @@ export class ReviewQueues {
 
   async syncFailures(store: SqliteStore, id: number) {
     for (const { stage, generation } of store.stages(id)) {
+      if (stage !== 'crawl' && stage !== 'assessment') continue;
       const task = await this.queues[stage].getJob(`listing-${id}`);
       if (task && (await task.getState()) === 'failed')
         store.failStage(

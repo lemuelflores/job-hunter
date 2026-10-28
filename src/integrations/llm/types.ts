@@ -1,4 +1,4 @@
-import type { Decision, StackDecision } from '../../core/listing.ts';
+import type { Assessment } from '../../core/assessment.ts';
 
 export interface ModelOptions {
   model?: string;
@@ -6,37 +6,27 @@ export interface ModelOptions {
   signal?: AbortSignal;
 }
 
-export interface SavedListingInput extends ModelOptions {
+export interface CandidateDocuments {
+  cv: string;
+  profile: string;
+}
+
+export interface AssessmentInput extends ModelOptions, CandidateDocuments {
   listingText: string;
 }
 
-export interface LocationAssessmentInput extends SavedListingInput {
-  location: string;
-}
-
-export interface StackAssessmentInput extends SavedListingInput {
-  stack: string[];
-}
+export type AssessmentReviewer = (
+  input: AssessmentInput,
+) => Promise<Assessment>;
 
 export interface AuthOptions {
   signal?: AbortSignal;
   onAuthorize?: (url: string) => void;
 }
 
-export type LocationReviewer = (
-  url: string,
-  input: SavedListingInput,
-) => Promise<Decision>;
-
-export type StackReviewer = (
-  url: string,
-  input: SavedListingInput,
-) => Promise<StackDecision>;
-
 export interface LlmProvider {
   authenticate(options?: AuthOptions): Promise<void>;
-  reviewJob(url: string, input: LocationAssessmentInput): Promise<Decision>;
-  reviewStack(url: string, input: StackAssessmentInput): Promise<StackDecision>;
+  assess: AssessmentReviewer;
 }
 
 export class AuthenticationError extends Error {}

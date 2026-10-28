@@ -26,9 +26,11 @@ x-app: &app
 services:
   web:
     <<: *app
-    command: [serve]
+    entrypoint: [node, node_modules/next/dist/bin/next]
+    command: [dev, --hostname, 0.0.0.0, --port, "3000"]
     environment:
-      JOB_HUNTER_HOST: 0.0.0.0
+      JOB_HUNTER_WEB_PORT: "3000"
+      REDIS_URL: redis://redis:6379
     ports:
       - "127.0.0.1:3000:3000"
 

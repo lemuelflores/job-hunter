@@ -30,6 +30,7 @@ import type { CliDependencies } from './cli.ts';
 export const cliDependencies: CliDependencies = {
   loadProfile,
   createLlm,
+  createCrawlExtractors,
   createStore: async () => {
     const { SqliteStore } = await import('../infra/sqlite.ts');
     return new SqliteStore(resolve(ROOT, 'jobs.sqlite'));
@@ -58,13 +59,15 @@ export const cliDependencies: CliDependencies = {
     const { startCrawlWorker } = await import('./workers.ts');
     return startCrawlWorker(store, queues);
   },
-  startLocationWorker: async (store, queues, reviewLocation) => {
-    const { startLocationWorker } = await import('./workers.ts');
-    return startLocationWorker(store, queues, reviewLocation);
-  },
-  startTechWorker: async (store, queues, reviewStack) => {
-    const { startTechWorker } = await import('./workers.ts');
-    return startTechWorker(store, queues, reviewStack);
+  startAssessmentWorker: async (
+    store,
+    queues,
+    loadDocuments,
+    assess,
+    signal,
+  ) => {
+    const { startAssessmentWorker } = await import('./workers.ts');
+    return startAssessmentWorker(store, queues, loadDocuments, assess, signal);
   },
 };
 

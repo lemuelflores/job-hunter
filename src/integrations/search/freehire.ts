@@ -68,7 +68,7 @@ function validateFreehire(value: unknown): asserts value is FreehireConfig {
   if (parsed.success) return;
   const issue = parsed.issues[0];
   throw new Error(
-    `Invalid profile.ts: freehire.${v.getDotPath(issue) ?? 'enabled'}: ${issue.message}`,
+    `Invalid discovery.ts: freehire.${v.getDotPath(issue) ?? 'enabled'}: ${issue.message}`,
   );
 }
 
