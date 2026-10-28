@@ -66,6 +66,8 @@ model calls when workers are running. It uses saved descriptions and reports
 listings without usable saved text or with terminal extraction failures rather
 than recrawling them. Repeating it does not overwrite completed results or
 automatically retry failed work.
+Backfill selects the newest listings first, using the posting date when known
+and otherwise the date the listing was found. Already queued work keeps its order.
 Use `--id` instead of `--limit` to select one specific listing. The listing
 must be active, have a usable saved description and completed extraction, and
 not already have an assessment or assessment stage. An ineligible ID returns an

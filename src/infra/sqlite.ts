@@ -22,7 +22,7 @@ function needsJobsMigration(schema: string): boolean {
 }
 
 const ASSESSMENT_BACKFILL_CANDIDATES = `
-  SELECT jobs.id, CASE
+  SELECT jobs.id, COALESCE(jobs.posted_at, jobs.first_seen) AS freshness, CASE
     WHEN crawl.state='terminal' THEN 'terminalCrawl'
     WHEN jobs.listing_text IS NULL OR length(trim(jobs.listing_text))=0 THEN 'missingText'
     WHEN crawl.state IS NOT 'complete' THEN 'crawlNotComplete'
@@ -436,7 +436,8 @@ export class SqliteStore {
     }
     const selectedIds = this.db
       .prepare(`WITH candidates AS (${ASSESSMENT_BACKFILL_CANDIDATES})
-      SELECT id FROM candidates WHERE category='eligible' AND (? IS NULL OR id=?) ORDER BY id LIMIT ?`)
+      SELECT id FROM candidates WHERE category='eligible' AND (? IS NULL OR id=?)
+      ORDER BY julianday(freshness) DESC, id LIMIT ?`)
       .all(id ?? null, id ?? null, limit)
       .map((row) => Number(row.id));
     return { ...counts, selectedIds };

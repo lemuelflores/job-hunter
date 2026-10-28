@@ -7,7 +7,7 @@ import { SqliteStore } from '../src/infra/sqlite.ts';
 import { backfillAssessments } from '../src/workflow/backfill-assessments.ts';
 import { enqueueMissingStages } from '../src/workflow/enqueue.ts';
 
-function fixture(t) {
+function fixture(t, prepare = () => {}) {
   const root = mkdtempSync('/tmp/opencode/job-backfill-history-');
   const path = join(root, 'jobs.sqlite');
   let store = new SqliteStore(path);
@@ -26,6 +26,7 @@ function fixture(t) {
   store.close();
   const db = new DatabaseSync(path);
   db.exec("DELETE FROM job_stages WHERE stage='assessment'");
+  prepare(db);
   db.close();
   store = new SqliteStore(path);
   t.after(() => {
@@ -34,6 +35,26 @@ function fixture(t) {
   });
   return store;
 }
+
+test('backfill selects and queues the freshest listings first', async (t) => {
+  const store = fixture(t, (db) => {
+    db.exec(`UPDATE jobs SET posted_at='2025-01-01T00:00:00.000Z', first_seen='2026-01-01T00:00:00.000Z' WHERE id=1;
+      UPDATE jobs SET posted_at=NULL, first_seen='2025-06-01T00:00:00.000Z' WHERE id=2;
+      UPDATE jobs SET posted_at='2025-09-01T00:00:00.000Z', first_seen='2024-01-01T00:00:00.000Z' WHERE id=3`);
+  });
+  const deliveries = [];
+  assert.deepEqual(store.previewAssessmentBackfill(2).selectedIds, [3, 2]);
+  assert.deepEqual(
+    await backfillAssessments(store, 2, async (stage, id) =>
+      deliveries.push([stage, id]),
+    ),
+    [3, 2],
+  );
+  assert.deepEqual(deliveries, [
+    ['assessment', 3],
+    ['assessment', 2],
+  ]);
+});
 
 test('backfill preview is bounded and read-only; execution claims only the selected rows', (t) => {
   const store = fixture(t);
