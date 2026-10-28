@@ -86,7 +86,7 @@ docker compose down                            # Stop services
 ```
 
 `check-url` checks one exact saved URL using the same extraction strategy as
-the crawler. It hides an active listing only when the source reports HTTP 404
+the crawler. It marks an active listing stale only when the source reports HTTP 404
 or 410. Other extraction errors leave it unchanged and return a nonzero exit
 code. A successful extraction does not guarantee the position is still open.
 The command reports status 200 for successful extraction; scheduling and pacing

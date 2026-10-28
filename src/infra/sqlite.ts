@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import * as v from 'valibot';
+
 import {
   ASSESSMENT_VERSION,
   type Assessment,
@@ -13,6 +14,12 @@ import {
   type ReviewStatus,
 } from '../core/listing.ts';
 import { STAGES, type StageState, type StoredStage } from '../core/stages.ts';
+
+function needsJobsMigration(schema: string): boolean {
+  const eligibility = schema.match(/\beligibility\s+IN\s*\(([^)]+)\)/i)?.[1];
+  const status = schema.match(/\bstatus\s+IN\s*\(([^)]+)\)/i)?.[1];
+  return !eligibility?.includes("'error'") || !status?.includes("'stale'");
+}
 
 const ASSESSMENT_BACKFILL_CANDIDATES = `
   SELECT jobs.id, CASE
@@ -64,12 +71,13 @@ export class SqliteStore {
         evidence TEXT NOT NULL DEFAULT '',
         company TEXT NOT NULL DEFAULT '',
         location TEXT NOT NULL DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','hidden','rejected')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','hidden','rejected','stale')),
         reviewed_at TEXT,
         last_attempt TEXT,
         batch TEXT
       );
     `);
+    this.db.exec('PRAGMA foreign_keys = OFF');
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const columns = this.db
@@ -105,17 +113,15 @@ export class SqliteStore {
         .get();
       if (!table) throw new Error('Jobs table is missing');
       const schema = String(table.sql);
-      const eligibilityValues = schema.match(
-        /\beligibility\s+IN\s*\(([^)]+)\)/i,
-      )?.[1];
-      if (!eligibilityValues?.includes("'error'")) {
+      const needsMigration = needsJobsMigration(schema);
+      if (needsMigration) {
         const objects = this.db
           .prepare(
             "SELECT sql FROM sqlite_master WHERE tbl_name='jobs' AND type IN ('index','trigger') AND sql IS NOT NULL",
           )
           .all();
         this.db.exec(
-          `CREATE TABLE jobs_with_error ${schema.slice(schema.indexOf('(')).replace("'pending','eligible','ineligible','unclear'", "'pending','eligible','ineligible','unclear','error'")}`,
+          `CREATE TABLE jobs_with_error ${schema.slice(schema.indexOf('(')).replace("'pending','eligible','ineligible','unclear'", "'pending','eligible','ineligible','unclear','error'").replace("'active','hidden','rejected'", "'active','hidden','rejected','stale'")}`,
         );
         this.db.exec(
           'INSERT INTO jobs_with_error SELECT * FROM jobs; DROP TABLE jobs; ALTER TABLE jobs_with_error RENAME TO jobs',
@@ -182,6 +188,7 @@ export class SqliteStore {
         report TEXT NOT NULL
       )`);
       this.db.exec('COMMIT');
+      this.db.exec('PRAGMA foreign_keys = ON');
     } catch (error) {
       this.db.exec('ROLLBACK');
       this.db.close();
@@ -288,11 +295,11 @@ export class SqliteStore {
     return Boolean(this.db.prepare('SELECT 1 FROM jobs WHERE url=?').get(url));
   }
 
-  hideActiveListingUrl(url: string): boolean {
+  staleActiveListingUrl(url: string): boolean {
     return Boolean(
       this.db
         .prepare(
-          "UPDATE jobs SET status='hidden' WHERE url=? AND status='active'",
+          "UPDATE jobs SET status='stale' WHERE url=? AND status='active'",
         )
         .run(url).changes,
     );

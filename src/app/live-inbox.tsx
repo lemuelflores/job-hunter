@@ -19,7 +19,7 @@ const listingSchema = v.object({
   source: v.string(),
   postedAt: v.nullable(v.string()),
   foundAt: v.nullable(v.string()),
-  reviewStatus: v.picklist(['active', 'hidden', 'rejected']),
+  reviewStatus: v.picklist(['active', 'hidden', 'rejected', 'stale']),
   processing: v.picklist([
     'waiting',
     'complete',

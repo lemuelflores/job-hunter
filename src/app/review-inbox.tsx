@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import type { Assessment } from '../core/assessment.ts';
 import { relativeDate } from './relative-date.ts';
 
-export type ReviewStatus = 'active' | 'hidden' | 'rejected';
+export type ReviewStatus = 'active' | 'hidden' | 'rejected' | 'stale';
 export interface ReviewListing {
   id: number;
   company: string;
@@ -567,7 +567,8 @@ export function ReviewInbox({
                         if (
                           value === 'active' ||
                           value === 'hidden' ||
-                          value === 'rejected'
+                          value === 'rejected' ||
+                          value === 'stale'
                         ) {
                           setStatus(value);
                           if (selected !== null) select(null, 'replace');
@@ -577,6 +578,7 @@ export function ReviewInbox({
                       <option value="active">Active</option>
                       <option value="hidden">Hidden</option>
                       <option value="rejected">Rejected</option>
+                      <option value="stale">Stale</option>
                     </select>
                   </label>
                   <fieldset className="filters__group">

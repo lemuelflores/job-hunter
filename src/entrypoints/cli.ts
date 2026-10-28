@@ -295,7 +295,7 @@ export async function main(
           JSON.stringify({
             url: args.url,
             status,
-            hidden: status !== 200 && store.hideActiveListingUrl(args.url),
+            stale: status !== 200 && store.staleActiveListingUrl(args.url),
           }),
         );
       },

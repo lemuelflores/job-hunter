@@ -54,14 +54,14 @@ test('a supported ATS is checked using its extractor rather than the listing pag
   );
   const result = new SqliteStore(path);
   t.after(() => result.close());
-  assert.equal(result.listReviewJobs('hidden')[0].url, url);
+  assert.equal(result.listReviewJobs('stale')[0].url, url);
   assert.equal(JSON.parse(output.mock.calls[0].arguments[0]).status, 404);
 });
 
 for (const [status, expected, code] of [
   [200, 'active', 0],
-  [404, 'hidden', 0],
-  [410, 'hidden', 0],
+  [404, 'stale', 0],
+  [410, 'stale', 0],
   [403, 'active', 1],
   [500, 'active', 1],
 ]) {
@@ -105,7 +105,7 @@ for (const [status, expected, code] of [
       assert.deepEqual(JSON.parse(output.mock.calls[0].arguments[0]), {
         url,
         status,
-        hidden: expected === 'hidden',
+        stale: expected === 'stale',
       });
     } else {
       assert.match(
@@ -149,7 +149,7 @@ test('a missing URL does not overwrite a rejected listing', async (t) => {
   const result = new SqliteStore(path);
   t.after(() => result.close());
   assert.equal(result.listReviewJobs('rejected')[0].url, url);
-  assert.equal(JSON.parse(output.mock.calls[0].arguments[0]).hidden, false);
+  assert.equal(JSON.parse(output.mock.calls[0].arguments[0]).stale, false);
 });
 
 test('a network failure leaves the listing active and reports an error', async (t) => {

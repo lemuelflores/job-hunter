@@ -1,4 +1,9 @@
-export const REVIEW_STATUSES = ['active', 'hidden', 'rejected'] as const;
+export const REVIEW_STATUSES = [
+  'active',
+  'hidden',
+  'rejected',
+  'stale',
+] as const;
 export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
 export type ListingSource = 'google' | 'freehire';
 
