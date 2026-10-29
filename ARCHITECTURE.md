@@ -46,7 +46,7 @@ Both discovery sources, Google and Freehire, feed the same crawl-first pipeline.
 Crawling uses a registered ATS's public API when available and Firecrawl otherwise.
 Native API failures never trigger a scraping fallback. The single holistic
 assessment uses saved source text, not search snippets or Freehire descriptions,
-which may be truncated. A hard stop does not suppress the rest of the report.
+which may be truncated.
 
 ## Code map and dependency boundaries
 
@@ -68,8 +68,7 @@ callbacks. This keeps the same application operations callable outside workers.
 Provider code is co-located by feature. An ATS module owns its URL identity rules,
 definition, optional API client, and extraction policy. Low-level HTTP functions
 validate the fields the application interprets and return typed data; they do not
-perform persistence or orchestration. Metadata that is only forwarded stays
-opaque rather than becoming a model of the provider's entire schema.
+perform persistence or orchestration.
 
 ## Where to make changes
 
@@ -95,11 +94,7 @@ opaque rather than becoming a model of the provider's entire schema.
   route handlers; request validation, status updates, and retries remain on the
   server.
 
-Node executes backend TypeScript directly; TypeScript checks types. Next.js is
-the production and development web entrypoint. The inbox and listing URLs are
-server-rendered from SQLite, then refreshed in the browser. Node route handlers
-open and close SQLite per request, and open Redis only for retry. `JOB_HUNTER_WEB_PORT`
-must match the listening port so Host checks remain meaningful. The browser
+Next.js serves the inbox from SQLite and refreshes it in the browser. The browser
 never receives candidate documents or saved listing text as raw inputs.
 
 ## State, failure, and concurrency invariants
@@ -110,34 +105,32 @@ never receives candidate documents or saved listing text as raw inputs.
 - **Checkpoints survive redelivery:** saving a result and completing its stage is
   one SQLite transaction. Completed work is reused, not overwritten. Rediscovery
   does not reset saved text, decisions, review status, or exhausted stages.
-- **Historical work is opt-in:** migration and rediscovery never create a new
-  assessment stage for old listings. Bounded backfill selects eligible saved
-  text explicitly; old location and stack decisions remain historical and are
-  not converted into holistic assessments.
+- **Historical work is opt-in:** migration and rediscovery do not create new
+  assessment work for old listings. Backfill explicitly selects eligible saved
+  text rather than converting historical decisions into assessments.
 - **Delivery is not a transaction with SQLite:** a crash can leave saved work
   without its downstream enqueue, or repeat an external call before its result is
   saved. Operations must remain checkpoint-aware; `repair` restores missing
   pending delivery without granting failed stages more attempts.
 - **Failures have different meanings:** transient extraction/model failures use
   bounded delivery retries. Permanent listing-page failures terminate crawling
-  and block assessment. Explicit `retry` resets an exhausted stage; retry
-  generations prevent stale Redis failures from undoing that reset.
+  and block assessment. Explicit retry resets an exhausted stage without letting
+  stale delivery failures undo the reset.
 - **Partial discovery is useful:** successful pages are saved and dispatched
   before reporting a later-page failure. Discovery runs are not automatically
   retried as a whole, because repeating paid searches has a cost.
 - **Stale checks are fenced:** SQLite persists sweep progress, pacing and provider
-  cooldowns independently of queue delivery. Claim tokens fence late results,
-  and review-status versions prevent checks from overwriting later decisions.
+  cooldowns independently of queue delivery. Late results cannot overwrite a
+  later claim or review decision.
 - **Concurrency is per queue:** each queue admits one active task, while different
   queues can overlap. Consumers share process resources and drain active work
   before shutdown. OAuth refresh coordination is process-local; additional worker
   processes require reconsidering shared credential writes and token rotation.
 
-Discovery provenance and first-seen time are preserved across rediscovery.
-Publication dates represent source posting dates, never catalogue creation or
-update times. Root `discovery.ts` contains search settings; the private `cv.md`
-and `candidate-profile.md` supply candidate evidence and preferences. The worker
-rereads them before each assessment; prompts belong to the application.
+Discovery provenance is preserved across rediscovery. Root `discovery.ts` contains
+search settings; the private `cv.md` and `candidate-profile.md` supply candidate
+evidence and preferences. The worker rereads them before each assessment; prompts
+belong to the application.
 
 ## Trust and deployment boundaries
 
@@ -160,23 +153,12 @@ so its network access must remain within trusted deployment boundaries.
 The ChatGPT subscription integration uses unofficial endpoints, and some public
 ATS APIs are undocumented. Keep upstream assumptions inside their adapters.
 
-The current queues use the `job-hunter-v2` prefix; legacy deliveries remain inert,
-not deleted or replayed. Old and new workers must not run together. See the
-README for upgrade and rollback precautions.
-
 ## Verification strategy
 
 The default Node test suite exercises application operations directly with real
 in-memory SQLite and real adapters, replacing external HTTP and credential
-loading. It needs neither Redis nor paid calls. Start with
-`test/workflows.test.mjs` for pipeline behavior, provider-named suites for adapter
-contracts, `test/sqlite.integration.test.mjs` for storage, and
-`test/inbox-api.test.mjs` for the current HTTP boundary.
-
-`test/web-next.browser.mjs` provides an opt-in production-mode browser smoke
-against an isolated database. Browser-state tests alone cannot establish real
-rendering, scroll, or focus behavior. `test/workers.queue.mjs` separately checks
-application-owned delivery, recovery, and lifecycle against isolated Redis
-namespaces; it does not retest BullMQ's retry engine. Run it with
-`pnpm test:queue`. See the README and `package.json` for other verification
+loading. It needs neither Redis nor paid calls. Separate opt-in tests exercise
+queue delivery and recovery against isolated Redis namespaces and smoke-test the
+production web UI in a browser. Browser-state tests alone cannot establish real
+rendering, scroll, or focus behavior. See the README and `package.json` for test
 commands.
