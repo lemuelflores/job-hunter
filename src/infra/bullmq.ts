@@ -1,12 +1,15 @@
+import { randomUUID } from 'node:crypto';
 import { createNodeRedisClient, Queue, RedisConnection, Worker } from 'bullmq';
 import { createClient } from 'redis';
 import { STAGES, type Stage } from '../core/stages.ts';
 import type { GoogleAts } from '../entrypoints/compose.ts';
+import type { CrawlExtractors } from '../workflow/crawl.ts';
 import {
   type DiscoveryDeliveryResult,
   DiscoveryPartialFailure,
 } from '../workflow/discover.ts';
 import { enqueueMissingStages } from '../workflow/enqueue.ts';
+import { runStaleCheck } from '../workflow/stale-check.ts';
 import type { SqliteStore } from './sqlite.ts';
 import {
   deliveryEvent,
@@ -162,6 +165,7 @@ export class DiscoveryQueue {
 
 export class ReviewQueues {
   readonly queues: Record<Stage, Queue>;
+  readonly stale: Queue;
   readonly url: string;
   readonly prefix: string;
 
@@ -171,6 +175,14 @@ export class ReviewQueues {
   ) {
     this.url = url;
     this.prefix = prefix;
+    this.stale = new Queue('stale-check', {
+      prefix,
+      connection: { url, enableOfflineQueue: false },
+      defaultJobOptions: { removeOnComplete: true, removeOnFail: 20 },
+    });
+    this.stale.on('error', (error) =>
+      console.error(`[queue] stale-check: ${error.message}`),
+    );
     this.queues = Object.fromEntries(
       STAGES.map((stage) => {
         const queue = new Queue(stage, {
@@ -267,6 +279,60 @@ export class ReviewQueues {
     return worker;
   }
 
+  async startStaleWorker(store: SqliteStore, extractors: CrawlExtractors) {
+    await this.stale.setGlobalConcurrency(1);
+    await this.stale.upsertJobScheduler(
+      'daily-stale-check',
+      { every: 5_000 },
+      {
+        name: 'stale-check',
+        data: {},
+        opts: { removeOnComplete: true, removeOnFail: 20 },
+      },
+    );
+    const worker = new Worker(
+      'stale-check',
+      async (task) => {
+        const started = performance.now();
+        deliveryEvent({
+          event: 'delivery_started',
+          worker: 'stale-check',
+          delivery_id: task.id,
+        });
+        try {
+          const result = await runStaleCheck({
+            store,
+            extractors,
+            now: Date.now,
+            token: randomUUID(),
+          });
+          deliveryEvent({
+            event: 'delivery_finished',
+            worker: 'stale-check',
+            delivery_id: task.id,
+            elapsed_ms: Math.round(performance.now() - started),
+            outcome: result?.kind ?? 'idle',
+          });
+        } catch (error) {
+          deliveryEvent({
+            event: 'delivery_finished',
+            worker: 'stale-check',
+            delivery_id: task.id,
+            elapsed_ms: Math.round(performance.now() - started),
+            outcome: 'failed',
+            error: diagnosticError(error),
+          });
+          throw error;
+        }
+      },
+      { prefix: this.prefix, connection: { url: this.url }, concurrency: 1 },
+    );
+    worker.on('error', (error) =>
+      console.error(`[worker] stale-check: ${error.message}`),
+    );
+    return worker;
+  }
+
   async enqueue(stage: Stage, id: number) {
     if (!Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid listing ID');
@@ -325,6 +391,8 @@ export class ReviewQueues {
   }
 
   async close() {
-    await Promise.all(Object.values(this.queues).map((queue) => queue.close()));
+    await Promise.all(
+      [...Object.values(this.queues), this.stale].map((queue) => queue.close()),
+    );
   }
 }

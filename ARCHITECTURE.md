@@ -37,7 +37,8 @@ CLI / scheduler --> discovery queues --> search providers
 SQLite is authoritative for listings, assessments, and processing state. BullMQ
 and Redis deliver work; listing-stage payloads carry IDs rather than listing text
 or model results. The scheduler only produces discovery tasks. A shared workers
-process runs discovery, extraction, and assessment consumers. The web process
+process runs discovery, extraction, assessment, and scheduled stale-check
+consumers. The web process
 reads saved results, changes review status, and requests explicit retries; it
 does not run assessments.
 
@@ -82,6 +83,9 @@ opaque rather than becoming a model of the provider's entire schema.
   source-specific behavior; `src/workflow/crawl.ts` owns strategy selection and
   checkpointing. Shared contracts and page errors live in
   `src/integrations/extraction.ts`.
+- **Change stale checks:** `src/workflow/stale-check.ts` selects extractors and
+  classifies availability; `src/infra/sqlite.ts` owns sweep, pacing, and provider
+  cooldown state, while `src/infra/bullmq.ts` delivers checks.
 - **Change assessments:** prompts and authentication belong in
   `src/integrations/llm/`, the persisted response contract in
   `src/core/assessment.ts`, and readiness in `src/workflow/assess-job.ts`.
@@ -121,6 +125,9 @@ never receives candidate documents or saved listing text as raw inputs.
 - **Partial discovery is useful:** successful pages are saved and dispatched
   before reporting a later-page failure. Discovery runs are not automatically
   retried as a whole, because repeating paid searches has a cost.
+- **Stale checks are fenced:** SQLite persists sweep progress, pacing and provider
+  cooldowns independently of queue delivery. Claim tokens fence late results,
+  and review-status versions prevent checks from overwriting later decisions.
 - **Concurrency is per queue:** each queue admits one active task, while different
   queues can overlap. Consumers share process resources and drain active work
   before shutdown. OAuth refresh coordination is process-local; additional worker

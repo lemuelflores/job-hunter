@@ -142,7 +142,8 @@ test('queue dispatch, recovery and process lifecycle', {
           ...googles.map((queue) => queue.queue),
           freehire.queue,
           ...Object.values(queues.queues),
-        ].map((queue) => queue.obliterate()),
+          queues.stale,
+        ].map((queue) => queue.obliterate({ force: true })),
       );
       await Promise.all([
         queues.close(),
@@ -861,6 +862,7 @@ test('queue dispatch, recovery and process lifecycle', {
       });
       await f.google.enqueue();
       await until(() => assessmentStarted);
+      await until(() => f.queues.stale.getJobScheduler('daily-stale-check'));
       await until(() => observer.getJob(2)?.listing_text != null);
       process.emit('SIGTERM');
       await delay(30);

@@ -36,6 +36,14 @@ costs. The worker rereads both candidate files for each assessment, so edits
 apply to later work without restarting it. Completed assessments are not
 automatically regenerated.
 
+Workers also check active listings for availability in daily sweeps, oldest
+posting date first (or first-found date when unknown). Checks start at least
+five seconds apart. A rate-limited provider is paused while other providers
+continue; a missing listing is marked stale, while failed or invalid lookups
+leave it unchanged. An overdue sweep finishes before the next begins. These
+checks use the same ATS APIs or Firecrawl as crawling and may overlap discovery
+or crawling requests.
+
 The web container reloads changes from the checkout automatically; no web build
 is needed before starting it.
 

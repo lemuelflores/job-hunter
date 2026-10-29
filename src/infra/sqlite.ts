@@ -14,6 +14,11 @@ import {
   type ReviewStatus,
 } from '../core/listing.ts';
 import { STAGES, type StageState, type StoredStage } from '../core/stages.ts';
+import {
+  type Availability,
+  rateLimitDelay,
+  type StaleCheckClaim,
+} from '../core/stale-check.ts';
 
 function needsJobsMigration(schema: string): boolean {
   const eligibility = schema.match(/\beligibility\s+IN\s*\(([^)]+)\)/i)?.[1];
@@ -187,6 +192,37 @@ export class SqliteStore {
         version INTEGER NOT NULL,
         report TEXT NOT NULL
       )`);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS stale_sweep (
+          singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+          started_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS stale_sweep_items (
+          job_id INTEGER PRIMARY KEY REFERENCES jobs(id),
+          position INTEGER NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS stale_delivery (
+          singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+          last_started INTEGER NOT NULL,
+          token TEXT,
+          lease_until INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS stale_provider_backoff (
+          provider TEXT PRIMARY KEY,
+          consecutive INTEGER NOT NULL,
+          until_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS job_status_versions (
+          job_id INTEGER PRIMARY KEY REFERENCES jobs(id),
+          version INTEGER NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS job_status_version_changed
+        AFTER UPDATE OF status ON jobs WHEN OLD.status IS NOT NEW.status
+        BEGIN
+          INSERT INTO job_status_versions(job_id,version) VALUES(NEW.id,1)
+          ON CONFLICT(job_id) DO UPDATE SET version=version+1;
+        END;
+      `);
       this.db.exec('COMMIT');
       this.db.exec('PRAGMA foreign_keys = ON');
     } catch (error) {
@@ -283,6 +319,181 @@ export class SqliteStore {
       throw error;
     }
     return added;
+  }
+
+  startStaleSweep(now: number): boolean {
+    if (!Number.isSafeInteger(now) || now < 0)
+      throw new Error('Invalid stale sweep time');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const previous = this.db
+        .prepare('SELECT started_at FROM stale_sweep WHERE singleton=1')
+        .get();
+      const pending = this.db
+        .prepare('SELECT 1 FROM stale_sweep_items LIMIT 1')
+        .get();
+      if (
+        pending ||
+        (previous && now - Number(previous.started_at) < 86_400_000)
+      ) {
+        this.db.exec('COMMIT');
+        return false;
+      }
+      this.db
+        .prepare(
+          'INSERT INTO stale_sweep(singleton,started_at) VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET started_at=excluded.started_at',
+        )
+        .run(now);
+      this.db.exec(`INSERT INTO stale_sweep_items(job_id,position)
+        SELECT id,ROW_NUMBER() OVER (ORDER BY julianday(COALESCE(posted_at,first_seen)),id)
+        FROM jobs WHERE status='active'`);
+      this.db.exec('COMMIT');
+      return true;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  pendingStaleSweep(): number[] {
+    return this.db
+      .prepare('SELECT job_id FROM stale_sweep_items ORDER BY position')
+      .all()
+      .map((row) => Number(row.job_id));
+  }
+
+  private hasStaleSweepItem(id: number, startedAt: number): boolean {
+    return Boolean(
+      this.db
+        .prepare(`SELECT 1 FROM stale_sweep_items WHERE job_id=? AND EXISTS
+      (SELECT 1 FROM stale_sweep WHERE singleton=1 AND started_at=?)`)
+        .get(id, startedAt),
+    );
+  }
+
+  claimStaleCheck(
+    now: number,
+    token: string,
+    providerForUrl: (url: string) => string,
+  ): StaleCheckClaim | null {
+    if (!Number.isSafeInteger(now) || now < 0 || !token)
+      throw new Error('Invalid stale delivery claim');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const delivery = this.db
+        .prepare(
+          'SELECT last_started,token,lease_until FROM stale_delivery WHERE singleton=1',
+        )
+        .get();
+      if (
+        delivery &&
+        (now - Number(delivery.last_started) < 5_000 ||
+          (delivery.token !== null && Number(delivery.lease_until) > now))
+      ) {
+        this.db.exec('COMMIT');
+        return null;
+      }
+      this.db.exec(
+        "DELETE FROM stale_sweep_items WHERE job_id IN (SELECT id FROM jobs WHERE status<>'active')",
+      );
+      const rows = this.db
+        .prepare(`SELECT jobs.id,jobs.url,COALESCE(job_status_versions.version,0) AS version,stale_sweep.started_at
+        FROM stale_sweep_items JOIN jobs ON jobs.id=stale_sweep_items.job_id
+        JOIN stale_sweep ON stale_sweep.singleton=1
+        LEFT JOIN job_status_versions ON job_status_versions.job_id=jobs.id ORDER BY stale_sweep_items.position`)
+        .all();
+      for (const row of rows) {
+        const url = String(row.url);
+        const provider = providerForUrl(url);
+        if (!provider) throw new Error('Invalid stale check provider');
+        const backoff = this.db
+          .prepare(
+            'SELECT until_at FROM stale_provider_backoff WHERE provider=?',
+          )
+          .get(provider);
+        if (backoff && Number(backoff.until_at) > now) continue;
+        this.db
+          .prepare(`INSERT INTO stale_delivery(singleton,last_started,token,lease_until) VALUES(1,?,?,?)
+          ON CONFLICT(singleton) DO UPDATE SET last_started=excluded.last_started,token=excluded.token,lease_until=excluded.lease_until`)
+          .run(now, token, now + 120_000);
+        this.db.exec('COMMIT');
+        return {
+          id: Number(row.id),
+          url,
+          startedAt: Number(row.started_at),
+          version: Number(row.version),
+          provider,
+          token,
+        };
+      }
+      this.db.exec('COMMIT');
+      return null;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  completeStaleCheck(
+    claim: StaleCheckClaim,
+    outcome: Availability,
+    now: number,
+  ): boolean {
+    if (!Number.isSafeInteger(now) || now < 0)
+      throw new Error('Invalid stale completion time');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const delivery = this.db
+        .prepare(
+          'SELECT token,lease_until FROM stale_delivery WHERE singleton=1',
+        )
+        .get();
+      if (
+        !delivery ||
+        delivery.token !== claim.token ||
+        Number(delivery.lease_until) <= now ||
+        !this.hasStaleSweepItem(claim.id, claim.startedAt)
+      ) {
+        this.db.exec('COMMIT');
+        return false;
+      }
+      if (outcome.kind === 'rate-limited') {
+        const previous = this.db
+          .prepare(
+            'SELECT consecutive FROM stale_provider_backoff WHERE provider=?',
+          )
+          .get(claim.provider);
+        const consecutive = Number(previous?.consecutive ?? 0) + 1;
+        const until =
+          now + rateLimitDelay(outcome.retryAfter, consecutive, now);
+        this.db
+          .prepare(`INSERT INTO stale_provider_backoff(provider,consecutive,until_at) VALUES(?,?,?)
+          ON CONFLICT(provider) DO UPDATE SET consecutive=excluded.consecutive,until_at=excluded.until_at`)
+          .run(claim.provider, consecutive, until);
+      } else {
+        this.db
+          .prepare('DELETE FROM stale_provider_backoff WHERE provider=?')
+          .run(claim.provider);
+        if (outcome.kind === 'missing')
+          this.db
+            .prepare(`UPDATE jobs SET status='stale' WHERE id=? AND status='active'
+          AND COALESCE((SELECT version FROM job_status_versions WHERE job_id=jobs.id),0)=?`)
+            .run(claim.id, claim.version);
+        this.db
+          .prepare('DELETE FROM stale_sweep_items WHERE job_id=?')
+          .run(claim.id);
+      }
+      this.db
+        .prepare(
+          'UPDATE stale_delivery SET token=NULL,lease_until=0 WHERE singleton=1',
+        )
+        .run();
+      this.db.exec('COMMIT');
+      return true;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   getJob(id: number): Listing | undefined {

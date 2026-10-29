@@ -348,7 +348,8 @@ export async function main(
     }),
     workers: defineCommand({
       meta: {
-        description: 'Run enabled discovery, crawl and assessment consumers',
+        description:
+          'Run discovery, crawl, assessment and stale-check consumers',
       },
       run: async () => {
         const profile = await deps.loadProfile();
@@ -387,8 +388,11 @@ export async function main(
               llm.assess,
             ),
           );
+          workers.push(
+            await queues.startStaleWorker(store, deps.createCrawlExtractors()),
+          );
           console.info(
-            `[workers] Started ${Object.keys(discoveryQueues).join(', ')} discovery; ${STAGES.join(', ')} consumers`,
+            `[workers] Started ${Object.keys(discoveryQueues).join(', ')} discovery; ${STAGES.join(', ')}, stale-check consumers`,
           );
           if (!signal.aborted)
             await new Promise<void>((resolve) =>

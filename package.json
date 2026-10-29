@@ -15,7 +15,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "dev": "JOB_HUNTER_WEB_PORT=3001 next dev --hostname 127.0.0.1 --port 3001",
     "test": "node --test test/*.test.mjs",
-    "test:queue": "node --test test/workers.queue.mjs",
+    "test:queue": "node --test test/workers.queue.mjs test/stale-worker.queue.mjs",
     "test:browser": "pnpm build && playwright test --config test/v2/playwright.config.ts && node --test test/web-next.browser.mjs",
     "job-hunter": "node src/entrypoints/cli.ts"
   },
