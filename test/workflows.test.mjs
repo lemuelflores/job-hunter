@@ -72,6 +72,8 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
       `https://ats.rippling.com/example/jobs/${String(id).padStart(8, '0')}-abcd-abcd-abcd-123456789abc`,
     polymer: (id) => `https://jobs.polymer.co/example/${id}`,
     freshteam: (id) => `https://example.freshteam.com/jobs/${id}/engineer`,
+    himalayas: (id) =>
+      `https://himalayas.app/companies/example/jobs/engineer-${id}`,
   };
   assert.deepEqual(
     Object.keys(urls).sort(),

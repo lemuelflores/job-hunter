@@ -5,6 +5,7 @@ import { bamboohr } from '../integrations/ats/bamboohr.ts';
 import { breezyhr } from '../integrations/ats/breezyhr.ts';
 import { freshteam } from '../integrations/ats/freshteam.ts';
 import { greenhouse } from '../integrations/ats/greenhouse.ts';
+import { himalayas } from '../integrations/ats/himalayas.ts';
 import { lever } from '../integrations/ats/lever.ts';
 import { pinpointhq } from '../integrations/ats/pinpointhq.ts';
 import { polymer } from '../integrations/ats/polymer.ts';
@@ -103,6 +104,7 @@ export const ATS_DEFINITIONS = [
   bamboohr,
   pinpointhq,
   freshteam,
+  himalayas,
 ] as const;
 export type GoogleAts = (typeof ATS_DEFINITIONS)[number]['selector'];
 export const GOOGLE_ATS: readonly GoogleAts[] = ATS_DEFINITIONS.map(
