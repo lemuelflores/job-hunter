@@ -4,8 +4,10 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { SqliteStore } from '../src/infra/sqlite.ts';
+import { assessJob } from '../src/workflow/assess-job.ts';
 import { backfillAssessments } from '../src/workflow/backfill-assessments.ts';
 import { enqueueMissingStages } from '../src/workflow/enqueue.ts';
+import { assessment } from './fixtures/workflow.mjs';
 
 function fixture(t, prepare = () => {}) {
   const root = mkdtempSync('/tmp/opencode/job-backfill-history-');
@@ -35,6 +37,55 @@ function fixture(t, prepare = () => {}) {
   });
   return store;
 }
+
+test('re-evaluation preserves the old assessment until a replacement succeeds', async (t) => {
+  const store = fixture(t);
+  store.activateAssessment(1);
+  store.saveAssessment(1, assessment);
+  store.queueReassessment(1);
+  assert.deepEqual(store.getAssessment(1).assessment, assessment);
+  await assessJob(
+    store,
+    1,
+    async () => ({ cv: 'CV', profile: 'Profile' }),
+    async ({ listingText }) => {
+      assert.equal(listingText, 'Full text 1');
+      return { ...assessment, summary: 'Updated summary' };
+    },
+  );
+  assert.equal(store.getAssessment(1).assessment.summary, 'Updated summary');
+  assert.equal(
+    store.stages(1).find((stage) => stage.stage === 'assessment').state,
+    'complete',
+  );
+});
+
+test('a failed re-evaluation retains the previous assessment', async (t) => {
+  const store = fixture(t);
+  store.activateAssessment(1);
+  store.saveAssessment(1, assessment);
+  store.queueReassessment(1);
+  await assert.rejects(
+    assessJob(
+      store,
+      1,
+      async () => ({ cv: 'CV', profile: 'Profile' }),
+      async () => {
+        throw new Error('Model unavailable');
+      },
+    ),
+    /Model unavailable/,
+  );
+  assert.deepEqual(store.getAssessment(1).assessment, assessment);
+  assert.throws(() => store.queueReassessment(1), /not eligible/);
+});
+
+test('re-evaluation rejects incomplete or inactive listings', (t) => {
+  const store = fixture(t);
+  assert.throws(() => store.queueReassessment(1), /not eligible/);
+  assert.throws(() => store.queueReassessment(4), /not eligible/);
+  assert.throws(() => store.queueReassessment(99), /not eligible/);
+});
 
 test('backfill selects and queues the freshest listings first', async (t) => {
   const store = fixture(t, (db) => {

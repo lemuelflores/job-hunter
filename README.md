@@ -91,6 +91,7 @@ pnpm job-hunter check-url 'https://example.com/job' # Check one saved URL
 pnpm job-hunter review --limit 10              # Queue and wait for unfinished work
 pnpm job-hunter repair                         # Restore missing deliveries
 pnpm job-hunter retry --stage assessment --id 42 # Retry one exhausted stage
+pnpm job-hunter reassess 42                    # Re-evaluate a completed assessment
 docker compose logs -f scheduler workers       # Follow background activity
 docker compose down                            # Stop services
 ```
@@ -102,9 +103,15 @@ code. A successful extraction does not guarantee the position is still open.
 The command reports status 200 for successful extraction; scheduling and pacing
 are the caller's responsibility.
 
+`reassess` queues a new assessment for an active listing with a completed
+assessment and usable saved description. It does not recrawl the listing. The
+worker uses the current CV and profile; the previous assessment remains saved
+until the replacement succeeds. This may incur a paid model call. For a failed
+re-evaluation, use `retry --stage assessment --id 42`.
+
 Use `crawl` or `assessment` as the failed stage for `retry`. A failed enqueue
-after backfill or retry leaves the selected work pending; `repair` can restore
-its delivery. It does not grant exhausted stages new attempts.
+after backfill, reassessment or retry leaves the selected work pending; `repair`
+can restore its delivery. It does not grant exhausted stages new attempts.
 
 ## Updating and protecting your data
 

@@ -372,6 +372,22 @@ export class ReviewQueues {
     return jobs.length;
   }
 
+  async reassess(store: SqliteStore, id: number) {
+    const task = await this.queues.assessment.getJob(`listing-${id}`);
+    if (task && (await task.getState()) !== 'completed')
+      throw new Error('Assessment task is still queued or active');
+    if (task) await task.remove();
+    store.queueReassessment(id);
+    try {
+      await this.enqueue('assessment', id);
+    } catch (error) {
+      throw new Error(
+        'Assessment delivery failed; run repair --stage assessment',
+        { cause: error },
+      );
+    }
+  }
+
   async retry(store: SqliteStore, stage: Stage, id: number) {
     await this.syncFailures(store, id);
     const job = store.getJob(id);

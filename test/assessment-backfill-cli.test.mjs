@@ -6,6 +6,25 @@ import { test } from 'node:test';
 import { main } from '../src/entrypoints/cli.ts';
 import { SqliteStore } from '../src/infra/sqlite.ts';
 
+test('reassess CLI accepts a positional listing ID', async (t) => {
+  const root = await mkdtemp('/tmp/opencode/job-reassess-cli-');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'jobs.sqlite');
+  const calls = [];
+  const output = [];
+  t.mock.method(console, 'log', (value) => output.push(JSON.parse(value)));
+  const code = await main(['reassess', '42'], {
+    createStore: async () => new SqliteStore(path),
+    createReviewQueues: async () => ({
+      reassess: async (_store, id) => calls.push(id),
+      close: async () => {},
+    }),
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(calls, [42]);
+  assert.deepEqual(output, [{ queued: 42, stage: 'assessment' }]);
+});
+
 test('backfill CLI previews without Redis and explicitly queues only its limit', async (t) => {
   const root = await mkdtemp('/tmp/opencode/job-backfill-cli-');
   t.after(() => rm(root, { recursive: true, force: true }));

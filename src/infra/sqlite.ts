@@ -675,6 +675,21 @@ export class SqliteStore {
     }
   }
 
+  queueReassessment(id: number): void {
+    if (!Number.isSafeInteger(id) || id < 1)
+      throw new Error('Invalid listing ID');
+    const changed = this.db
+      .prepare(`UPDATE job_stages SET state='pending',error='',generation=generation+1
+      WHERE job_id=? AND stage='assessment' AND state='complete'
+      AND EXISTS (SELECT 1 FROM jobs WHERE id=? AND status='active'
+        AND listing_text IS NOT NULL AND length(trim(listing_text))>0)
+      AND EXISTS (SELECT 1 FROM job_stages WHERE job_id=? AND stage='crawl' AND state='complete')
+      AND EXISTS (SELECT 1 FROM job_assessments WHERE job_id=?)`)
+      .run(id, id, id, id).changes;
+    if (!changed)
+      throw new Error(`Listing ${id} is not eligible for re-evaluation`);
+  }
+
   saveAssessment(id: number, assessment: Assessment): void {
     const validated = v.safeParse(AssessmentSchema, assessment);
     if (!Number.isSafeInteger(id) || id < 1 || !validated.success)
@@ -682,7 +697,7 @@ export class SqliteStore {
     this.completeStage(id, 'assessment', () => {
       this.db
         .prepare(
-          'INSERT INTO job_assessments(job_id,version,report) VALUES (?,?,?)',
+          'INSERT INTO job_assessments(job_id,version,report) VALUES (?,?,?) ON CONFLICT(job_id) DO UPDATE SET version=excluded.version,report=excluded.report',
         )
         .run(id, ASSESSMENT_VERSION, JSON.stringify(validated.output));
       const location = validated.output.location?.trim();

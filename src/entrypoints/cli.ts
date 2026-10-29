@@ -429,6 +429,20 @@ export async function main(
         console.log(JSON.stringify({ retried: id, stage: args.stage }));
       },
     }),
+    reassess: defineCommand({
+      meta: {
+        description: 'Queue a fresh assessment using the saved description',
+      },
+      args: {
+        id: { type: 'positional', required: true, description: 'Listing ID' },
+      },
+      run: async ({ args }) => {
+        const id = integer(args.id);
+        const store = await database();
+        await (await reviewQueues()).reassess(store, id);
+        console.log(JSON.stringify({ queued: id, stage: 'assessment' }));
+      },
+    }),
     backfill: defineCommand({
       meta: {
         description:
