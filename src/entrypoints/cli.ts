@@ -27,6 +27,7 @@ import type {
   LlmProvider,
 } from '../integrations/llm/types.ts';
 import type { FreehireConfig } from '../integrations/search/freehire.ts';
+import { addManualListing } from '../workflow/add-manual-listing.ts';
 import { backfillAssessments } from '../workflow/backfill-assessments.ts';
 import { type CrawlExtractors, extractListing } from '../workflow/crawl.ts';
 import { reviewJobs } from '../workflow/review-jobs.ts';
@@ -240,6 +241,22 @@ export async function main(
     }),
   };
   const subCommands = {
+    add: defineCommand({
+      meta: { description: 'Add a listing URL for processing' },
+      args: {
+        url: { type: 'positional', required: true, description: 'Listing URL' },
+      },
+      run: async ({ args }) => {
+        const store = await database();
+        console.log(
+          JSON.stringify(
+            await addManualListing(store, args.url, async (stage, id) => {
+              await (await reviewQueues()).enqueue(stage, id);
+            }),
+          ),
+        );
+      },
+    }),
     auth: defineCommand({
       meta: { description: 'Sign in with your ChatGPT subscription' },
       run: () => authenticate(deps.createLlm()),

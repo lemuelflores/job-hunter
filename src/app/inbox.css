@@ -79,6 +79,34 @@ a:focus-visible,
   margin: 0;
   font-size: 24px;
 }
+.add-dialog {
+  width: min(32rem, calc(100% - 32px));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--ink);
+  padding: 24px;
+}
+.add-dialog::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+.add-dialog h2 {
+  margin-top: 0;
+}
+.add-dialog label,
+.add-dialog input {
+  display: block;
+  width: 100%;
+}
+.add-dialog input {
+  padding: 9px 10px;
+}
+.add-dialog__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
 .review__columns {
   display: grid;
   grid-template-columns: 400px minmax(0, 1fr);
@@ -102,22 +130,27 @@ a:focus-visible,
   font-size: 12px;
   line-height: 1.5;
 }
-.inbox__label {
+.inbox__label,
+.add-dialog label {
   display: block;
   margin-bottom: 4px;
   color: var(--muted);
   font-size: 12px;
 }
-.inbox__search {
+.inbox__search,
+.add-dialog input {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 9px 48px 9px 10px;
   background: var(--card);
   color: var(--ink);
   font-size: 13px;
 }
-.inbox__search::placeholder {
+.inbox__search {
+  padding: 9px 48px 9px 10px;
+}
+.inbox__search::placeholder,
+.add-dialog input::placeholder {
   color: var(--muted);
 }
 .search-box {

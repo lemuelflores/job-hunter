@@ -42,7 +42,7 @@ consumers. The web process
 reads saved results, changes review status, and requests explicit retries; it
 does not run assessments.
 
-Both discovery sources, Google and Freehire, feed the same crawl-first pipeline.
+Google, Freehire, and manually submitted URLs feed the same crawl-first pipeline.
 Crawling uses a registered ATS's public API when available and Firecrawl otherwise.
 Native API failures never trigger a scraping fallback. The single holistic
 assessment uses saved source text, not search snippets or Freehire descriptions,

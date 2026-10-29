@@ -5,7 +5,7 @@ export const REVIEW_STATUSES = [
   'stale',
 ] as const;
 export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
-export type ListingSource = 'google' | 'freehire';
+export type ListingSource = 'google' | 'freehire' | 'user';
 
 export interface Decision {
   eligibility: 'eligible' | 'ineligible' | 'unclear';

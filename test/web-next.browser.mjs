@@ -105,6 +105,24 @@ test('production inbox displays and updates isolated saved reviews', {
   await noJavaScript.close();
   const page = await browser.newPage();
   await page.goto(base);
+  await t.test('manual URL dialog submits and reports success', async () => {
+    await page.route('**/api/inbox/add', async (route) => {
+      assert.deepEqual(route.request().postDataJSON(), {
+        url: 'https://example.com/job',
+      });
+      await route.fulfill({ json: { id: 2, added: true } });
+    });
+    await page.getByRole('button', { name: 'Add URL' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Add a listing' });
+    await dialog.getByLabel('Job listing URL').fill('https://example.com/job');
+    await dialog.getByRole('button', { name: 'Add listing' }).click();
+    await expect(dialog.getByRole('status')).toHaveText(
+      'Listing added and queued.',
+    );
+    await dialog.getByRole('button', { name: 'Close' }).click();
+    await expect(dialog).not.toBeVisible();
+    await page.unroute('**/api/inbox/add');
+  });
   await expect(page).toHaveURL(`${base}/1`);
   await expect(
     page.getByRole('heading', { name: 'Production test engineer' }),

@@ -14,6 +14,7 @@ function setup(t) {
   const handler = createInboxHandler({
     store,
     port: 3000,
+    enqueue: async () => {},
     retry: async (stage, id) => {
       retries.push({ stage, id });
     },
@@ -39,6 +40,21 @@ test('GET returns saved inbox data without listing text', async (t) => {
   );
   assert.ok(!JSON.stringify(body).includes('Private listing text'));
   assert.equal(response.headers.get('cache-control'), 'no-store');
+});
+
+test('manual submission saves a user listing through the API', async (t) => {
+  const { handler, store } = setup(t);
+  const response = await handler(
+    request('/api/inbox/add', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://example.com/job' }),
+    }),
+  );
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.added, true);
+  assert.equal(store.getJob(body.id).source, 'user');
 });
 
 test('status mutation persists a valid change', async (t) => {

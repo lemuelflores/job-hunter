@@ -2,6 +2,10 @@ import * as v from 'valibot';
 import { REVIEW_STATUSES } from '../core/listing.ts';
 import type { Stage } from '../core/stages.ts';
 import type { SqliteStore } from '../infra/sqlite.ts';
+import {
+  addManualListing,
+  InvalidListingUrl,
+} from '../workflow/add-manual-listing.ts';
 import { validLocalHost } from './local-access.ts';
 import { listInbox } from './review-data.ts';
 
@@ -50,6 +54,7 @@ interface InboxDependencies {
   store: SqliteStore;
   port: number;
   retry(stage: Stage, id: number): Promise<void>;
+  enqueue(stage: Stage, id: number): Promise<void>;
 }
 
 function updateStatus(store: SqliteStore, body: unknown): Response {
@@ -104,6 +109,25 @@ async function mutation(
     return json({ error: 'Invalid request body' }, 400);
   }
   if (path === '/api/inbox/status') return updateStatus(deps.store, body);
+  if (path === '/api/inbox/add') {
+    const parsed = v.safeParse(v.strictObject({ url: v.string() }), body);
+    if (!parsed.success) return json({ error: 'Invalid request payload' }, 400);
+    try {
+      return json(
+        await addManualListing(deps.store, parsed.output.url, deps.enqueue),
+      );
+    } catch (error) {
+      if (error instanceof InvalidListingUrl)
+        return json({ error: error.message }, 400);
+      return json(
+        {
+          error:
+            'Listing could not be queued. Run repair to recover saved work.',
+        },
+        503,
+      );
+    }
+  }
   return retryJob(deps, body);
 }
 
@@ -117,7 +141,9 @@ export function createInboxHandler(deps: InboxDependencies) {
       return json({ listings: listInbox(deps.store) });
     if (
       request.method !== 'POST' ||
-      !['/api/inbox/status', '/api/inbox/retry'].includes(path)
+      !['/api/inbox/status', '/api/inbox/retry', '/api/inbox/add'].includes(
+        path,
+      )
     )
       return json({ error: 'Not found' }, 404);
     return mutation(request, path, deps);

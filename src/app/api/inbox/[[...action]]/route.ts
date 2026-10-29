@@ -18,6 +18,14 @@ async function handle(request: Request): Promise<Response> {
     return await createInboxHandler({
       store,
       port,
+      enqueue: async (stage, id) => {
+        const queues = new ReviewQueues();
+        try {
+          await queues.enqueue(stage, id);
+        } finally {
+          await queues.close();
+        }
+      },
       retry: async (stage, id) => {
         const queues = new ReviewQueues();
         try {

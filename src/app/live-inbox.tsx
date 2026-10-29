@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as v from 'valibot';
 import { AssessmentSchema } from '../core/assessment.ts';
+import { AddListingDialog } from './add-listing-dialog.tsx';
 import {
   type ReviewLoadState,
   ReviewScreen,
@@ -114,6 +115,35 @@ export function LiveInbox({
         <p role="alert">Could not refresh listings. Retrying…</p>
       )}
       <ReviewScreen
+        addControl={
+          <AddListingDialog
+            onAdd={async (url) => {
+              const response = await fetch('/api/inbox/add', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ url }),
+              });
+              const body: unknown = await response.json();
+              const parsed = v.safeParse(
+                v.object({ added: v.boolean() }),
+                body,
+              );
+              if (!response.ok || !parsed.success) {
+                const failure = v.safeParse(
+                  v.object({ error: v.string() }),
+                  body,
+                );
+                throw new Error(
+                  failure.success
+                    ? failure.output.error
+                    : 'Could not add listing.',
+                );
+              }
+              await load();
+              return parsed.output;
+            }}
+          />
+        }
         state={state}
         now={now}
         selectedId={selectedId}

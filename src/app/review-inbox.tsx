@@ -29,6 +29,7 @@ interface ReviewInboxProps {
   listings: ReviewListing[];
   onStatusChange: (id: number, status: ReviewStatus) => Promise<void>;
   onRetry: (id: number) => Promise<void>;
+  addControl?: ReactNode;
   now?: number;
   selectedId?: number | null;
   onSelect?: (id: number | null, mode?: 'push' | 'replace') => void;
@@ -47,6 +48,7 @@ export function ReviewScreen({
   now,
   selectedId,
   onSelect,
+  addControl,
 }: {
   state: ReviewLoadState;
   onStatusChange: ReviewInboxProps['onStatusChange'];
@@ -55,6 +57,7 @@ export function ReviewScreen({
   now?: number;
   selectedId?: number | null;
   onSelect?: (id: number | null, mode?: 'push' | 'replace') => void;
+  addControl?: ReactNode;
 }) {
   if (state.status === 'loading')
     return (
@@ -78,6 +81,7 @@ export function ReviewScreen({
       listings={state.listings}
       onStatusChange={onStatusChange}
       onRetry={onRetry}
+      addControl={addControl}
       now={now}
       selectedId={selectedId}
       onSelect={onSelect}
@@ -468,6 +472,7 @@ export function ReviewInbox({
   now,
   selectedId,
   onSelect,
+  addControl,
 }: ReviewInboxProps) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<ReviewStatus>(
@@ -537,6 +542,7 @@ export function ReviewInbox({
     <main className="review">
       <header className="review__header">
         <h1 className="review__title">Job Hunter</h1>
+        {addControl}
       </header>
       <div className="review__columns">
         <aside className="inbox" aria-label="Evaluations">

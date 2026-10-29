@@ -23,7 +23,12 @@ import {
 function needsJobsMigration(schema: string): boolean {
   const eligibility = schema.match(/\beligibility\s+IN\s*\(([^)]+)\)/i)?.[1];
   const status = schema.match(/\bstatus\s+IN\s*\(([^)]+)\)/i)?.[1];
-  return !eligibility?.includes("'error'") || !status?.includes("'stale'");
+  const source = schema.match(/\bsource\s+IN\s*\(([^)]+)\)/i)?.[1];
+  return (
+    !eligibility?.includes("'error'") ||
+    !status?.includes("'stale'") ||
+    (source !== undefined && !source.includes("'user'"))
+  );
 }
 
 const ASSESSMENT_BACKFILL_CANDIDATES = `
@@ -100,7 +105,7 @@ export class SqliteStore {
         stack_reason: "TEXT NOT NULL DEFAULT ''",
         stack_evidence: "TEXT NOT NULL DEFAULT ''",
         source:
-          "TEXT NOT NULL DEFAULT 'google' CHECK (source IN ('google','freehire'))",
+          "TEXT NOT NULL DEFAULT 'google' CHECK (source IN ('google','freehire','user'))",
         posted_at: 'TEXT',
       })) {
         if (!columns.includes(name))
@@ -125,9 +130,24 @@ export class SqliteStore {
             "SELECT sql FROM sqlite_master WHERE tbl_name='jobs' AND type IN ('index','trigger') AND sql IS NOT NULL",
           )
           .all();
-        this.db.exec(
-          `CREATE TABLE jobs_with_error ${schema.slice(schema.indexOf('(')).replace("'pending','eligible','ineligible','unclear'", "'pending','eligible','ineligible','unclear','error'").replace("'active','hidden','rejected'", "'active','hidden','rejected','stale'")}`,
-        );
+        const updatedSchema = schema
+          .slice(schema.indexOf('('))
+          .replace(
+            /(eligibility\s+IN\s*\()([^)]+)(\))/i,
+            (_match, start: string, values: string, end: string) =>
+              `${start}${values}${values.includes("'error'") ? '' : ",'error'"}${end}`,
+          )
+          .replace(
+            /(status\s+IN\s*\()([^)]+)(\))/i,
+            (_match, start: string, values: string, end: string) =>
+              `${start}${values}${values.includes("'stale'") ? '' : ",'stale'"}${end}`,
+          )
+          .replace(
+            /(source\s+IN\s*\()([^)]+)(\))/i,
+            (_match, start: string, values: string, end: string) =>
+              `${start}${values}${values.includes("'user'") ? '' : ",'user'"}${end}`,
+          );
+        this.db.exec(`CREATE TABLE jobs_with_error ${updatedSchema}`);
         this.db.exec(
           'INSERT INTO jobs_with_error SELECT * FROM jobs; DROP TABLE jobs; ALTER TABLE jobs_with_error RENAME TO jobs',
         );
@@ -319,6 +339,11 @@ export class SqliteStore {
       throw error;
     }
     return added;
+  }
+
+  listingIdForUrl(url: string): number | undefined {
+    const row = this.db.prepare('SELECT id FROM jobs WHERE url=?').get(url);
+    return row ? Number(row.id) : undefined;
   }
 
   startStaleSweep(now: number): boolean {
