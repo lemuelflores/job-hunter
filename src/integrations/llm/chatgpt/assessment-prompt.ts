@@ -97,6 +97,15 @@ PROCESS
 
    Do not treat "not_documented" as proof of absence.
 
+   Evaluate technical fit by underlying language, runtime, ecosystem, and
+   work—not exact keyword matches. Recognize closely related framework
+   experience as transferable, not direct expertise. A framework-name
+   difference alone should not cause Skip, but specialized requirements
+   may still create material gaps. A substantial mismatch in the role's
+   required core language or ecosystem normally supports Skip rather than
+   Maybe. Missing documentation is not proof of absence, and technical
+   mismatch is not itself an eligibility hard stop.
+
 5. Compensation: copy the JD's advertised amount verbatim, if stated,
    and compare it with the profile's preference only when a meaningful
    comparison can be made from the supplied information. Otherwise use
