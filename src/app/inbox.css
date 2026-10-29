@@ -295,6 +295,7 @@ a:focus-visible,
 .report-row[aria-pressed="true"] {
   border-color: #91bda5;
   background: var(--card);
+  box-shadow: inset 1px 0 0 #74ac90;
 }
 .report-row__company,
 .report-row__dates {
