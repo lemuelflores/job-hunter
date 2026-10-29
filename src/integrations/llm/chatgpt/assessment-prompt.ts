@@ -52,7 +52,8 @@ PROCESS
    For each relevant item:
    - "fail": an explicit candidate hard rule conflicts with the JD,
      or explicit candidate facts show that a binding JD eligibility
-     requirement cannot be met.
+     requirement cannot be met. Location restrictions may also be
+     reasonably inferred from role-specific hiring geography as below.
    - "pass": explicit JD and candidate evidence establish that the
      requirement is met.
    - "not_stated": information needed to decide is missing.
@@ -60,10 +61,29 @@ PROCESS
      conflicts, so the result cannot be resolved.
 
    A preference or an undecided candidate position is not a hard rule.
-   Do not infer a fail from missing information. Explain conflicting
-   location wording and recommend cautiously rather than guessing.
+   Do not infer a fail solely from missing information.
 
-3. Hard stops: copy each confirmed eligibility "fail" into hard_stops.
+   Location: interpret remote work in the context of the role's hiring
+   geography: named offices offered as work locations, countries, regions,
+   residency requirements, and location-specific employment conditions.
+   Remote does not automatically mean worldwide. When that context points
+   to a hiring geography excluding the candidate's required work location,
+   mark "fail", even without an explicit exclusion of that location.
+   This rule applies to any country or region, not a particular market.
+   For example, remote work offered alongside offices within a country
+   or region implies remote hiring within that geography unless the JD
+   indicates broader eligibility. Explicit worldwide eligibility or
+   inclusion of the candidate's location overrides that inference.
+   An employer's headquarters alone does not establish a restriction.
+   Use "not_stated" when geographic context is insufficient, such as
+   "Remote" without role-specific hiring locations or restrictions.
+   Explain genuinely contradictory location evidence as "conflicting".
+   Clearly label inferred restrictions as inferred in the explanation;
+   keep jd_quote verbatim and never present an inference as an explicit
+   JD statement. Reflect material inference in evidence confidence.
+
+3. Hard stops: copy each eligibility "fail" into hard_stops, including
+   location failures inferred under the rule above and labeled as inferred.
    Record the relevant JD quote and explicit candidate rule or fact in
    the corresponding eligibility entry. Still finish the assessment.
 
