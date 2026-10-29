@@ -300,6 +300,16 @@ function Report({
               >
                 Reject
               </button>
+              <button
+                type="button"
+                className="button"
+                disabled={busy}
+                onClick={() =>
+                  void action(() => onStatusChange(listing.id, 'stale'))
+                }
+              >
+                Stale
+              </button>
             </>
           ) : (
             <button

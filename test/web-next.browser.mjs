@@ -426,4 +426,34 @@ test('production inbox displays and updates isolated saved reviews', {
     persisted.close();
     await actionPage.close();
   });
+
+  await t.test(
+    'marking a listing stale moves it to the stale filter',
+    async () => {
+      const actionPage = await browser.newPage();
+      await actionPage.goto(`${base}/1`);
+      const actions = actionPage.locator('.report__actions');
+      await expect(actions.locator('button')).toHaveText([
+        'Hide',
+        'Reject',
+        'Stale',
+      ]);
+      await actionPage
+        .getByRole('button', { name: 'Stale', exact: true })
+        .click();
+      await expect(
+        actionPage.getByRole('link', { name: /Production test engineer/ }),
+      ).toHaveCount(0);
+      await actionPage.getByLabel('Filters').click();
+      await actionPage.getByLabel('Review status').selectOption('stale');
+      await actionPage.getByLabel('Filters').click();
+      await expect(
+        actionPage.getByRole('button', { name: 'Restore' }),
+      ).toBeVisible();
+      const persisted = new SqliteStore(path);
+      assert.equal(persisted.getJob(1).status, 'stale');
+      persisted.close();
+      await actionPage.close();
+    },
+  );
 });
