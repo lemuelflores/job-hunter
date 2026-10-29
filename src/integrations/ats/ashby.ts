@@ -94,6 +94,7 @@ export async function fetchAshbyListing(
     throw new Error('Empty or invalid Ashby description');
   return {
     text: `Ashby listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${descriptionPlain}`,
+    ...(typeof metadata.title === 'string' ? { title: metadata.title } : {}),
     postedAt:
       typeof metadata.publishedAt === 'string' ? metadata.publishedAt : null,
   };

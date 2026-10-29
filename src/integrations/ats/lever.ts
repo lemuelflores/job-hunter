@@ -130,5 +130,6 @@ export async function fetchLeverListing(
   if (!description) throw new Error('Empty Lever description');
   return {
     text: `Lever listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${description}`,
+    ...(typeof metadata.text === 'string' ? { title: metadata.text } : {}),
   };
 }

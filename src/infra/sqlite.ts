@@ -284,8 +284,8 @@ export class SqliteStore {
 
   saveResults(results: DiscoveredListing[]): number {
     const insert =
-      this.db.prepare(`INSERT INTO jobs(url,title,snippet,query,source,first_seen,last_seen,posted_at,stack_status)
-      VALUES (?,?,?,?,?,?,?,?,'pending') ON CONFLICT(url) DO UPDATE SET last_seen=excluded.last_seen,
+      this.db.prepare(`INSERT INTO jobs(url,title,company,snippet,query,source,first_seen,last_seen,posted_at,stack_status)
+      VALUES (?,?,?,?,?,?,?,?,?,'pending') ON CONFLICT(url) DO UPDATE SET last_seen=excluded.last_seen,
       posted_at=COALESCE(jobs.posted_at,excluded.posted_at)`);
     let added = 0;
     const now = new Date().toISOString();
@@ -298,7 +298,8 @@ export class SqliteStore {
           .get(url);
         insert.run(
           url,
-          result.title.slice(0, 1000),
+          (result.title?.trim() ?? '').slice(0, 1000),
+          (result.company?.trim() ?? '').slice(0, 1000),
           (result.snippet ?? '').slice(0, 5000),
           result.query,
           result.source,
@@ -725,6 +726,7 @@ export class SqliteStore {
           'INSERT INTO job_assessments(job_id,version,report) VALUES (?,?,?) ON CONFLICT(job_id) DO UPDATE SET version=excluded.version,report=excluded.report',
         )
         .run(id, ASSESSMENT_VERSION, JSON.stringify(validated.output));
+      this.fillIdentity(id, validated.output.company, validated.output.role);
       const location = validated.output.location?.trim();
       if (location)
         this.db
@@ -773,7 +775,12 @@ export class SqliteStore {
     });
   }
 
-  saveListingText(id: number, text: string, postedAt?: string | null): void {
+  saveListingText(
+    id: number,
+    text: string,
+    postedAt?: string | null,
+    identity?: { company?: string | null; title?: string | null },
+  ): void {
     this.validateListingText(text);
     this.completeStage(id, 'crawl', () => {
       const result = this.db
@@ -781,7 +788,79 @@ export class SqliteStore {
       WHERE id=? AND listing_text IS NULL`)
         .run(text, postingDate(postedAt), id);
       if (!result.changes) throw new Error('Listing already has text');
+      const job = this.getJob(id);
+      if (job?.source !== 'freehire')
+        this.fillIdentity(id, identity?.company, identity?.title);
     });
+  }
+
+  private fillIdentity(
+    id: number,
+    company?: string | null,
+    title?: string | null,
+  ): void {
+    const job = this.getJob(id);
+    if (!job) return;
+    for (const [field, current, value] of [
+      ['company', job.company, company],
+      ['title', job.title, title],
+    ] as const) {
+      const candidate = value?.trim();
+      if (!candidate || current?.trim()) continue;
+      this.db
+        .prepare(`UPDATE jobs SET ${field}=? WHERE id=? AND ${field} IS ?`)
+        .run(candidate.slice(0, 1000), id, current);
+    }
+  }
+
+  backfillIdentity(preview: boolean): {
+    listings: number;
+    companies: number;
+    titles: number;
+  } {
+    const counts = { listings: 0, companies: 0, titles: 0 };
+    this.db.exec(preview ? 'BEGIN' : 'BEGIN IMMEDIATE');
+    try {
+      const rows = this.db
+        .prepare('SELECT job_id FROM job_assessments ORDER BY job_id')
+        .all();
+      for (const row of rows) {
+        const changed = this.backfillIdentityForListing(
+          Number(row.job_id),
+          preview,
+        );
+        counts.listings += Number(changed.company || changed.title);
+        counts.companies += Number(changed.company);
+        counts.titles += Number(changed.title);
+      }
+      this.db.exec('COMMIT');
+      return counts;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private backfillIdentityForListing(
+    id: number,
+    preview: boolean,
+  ): { company: boolean; title: boolean } {
+    const job = this.getJob(id);
+    if (!job || (job.company?.trim() && job.title?.trim()))
+      return { company: false, title: false };
+    let report: Assessment;
+    try {
+      const saved = this.getAssessment(id);
+      if (!saved) throw new Error('Assessment is missing');
+      report = saved.assessment;
+    } catch (cause) {
+      throw new Error(`Invalid saved assessment for listing ${id}`, { cause });
+    }
+    const company = !job.company?.trim() && Boolean(report.company?.trim());
+    const title = !job.title?.trim() && Boolean(report.role?.trim());
+    if (!preview && (company || title))
+      this.fillIdentity(id, report.company, report.role);
+    return { company, title };
   }
 
   private validateListingText(text: string): void {

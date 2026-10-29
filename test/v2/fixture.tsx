@@ -128,6 +128,36 @@ const initial: ReviewListing[] = [
 
 function Fixture() {
   const [listings, setListings] = useState(() => {
+    if (
+      new URLSearchParams(window.location.search).get('identity') === 'missing'
+    )
+      return [
+        {
+          ...initial[0],
+          company: '',
+          title: '',
+          processing: 'waiting' as const,
+          assessment: null,
+        },
+        {
+          ...initial[1],
+          company: '',
+          title: '',
+          processing: 'failed' as const,
+          assessment: null,
+        },
+        {
+          ...initial[2],
+          company: '',
+          title: '',
+          processing: 'complete' as const,
+          assessment: {
+            ...assessment,
+            company: 'Report company',
+            role: 'Report role',
+          },
+        },
+      ];
     if (new URLSearchParams(window.location.search).get('volume') !== '1000')
       return initial;
     return initial.concat(

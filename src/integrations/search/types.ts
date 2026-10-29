@@ -3,7 +3,8 @@ import type { ListingSource } from '../../core/listing.ts';
 interface DiscoveryFields {
   source: ListingSource;
   url: string;
-  title: string;
+  title?: string | null;
+  company?: string | null;
   query: string;
   postedAt?: string | null;
 }

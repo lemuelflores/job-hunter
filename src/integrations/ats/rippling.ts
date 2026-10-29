@@ -102,6 +102,7 @@ export async function fetchRipplingListing(
   if (!text) throw new Error('Empty Rippling description');
   return {
     text: `Rippling listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${text}`,
+    ...(typeof metadata.name === 'string' ? { title: metadata.name } : {}),
     postedAt: null,
   };
 }

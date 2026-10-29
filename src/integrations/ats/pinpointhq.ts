@@ -153,6 +153,7 @@ export async function fetchPinpointhqListing(
   if (!sections.some(Boolean)) throw new Error('Empty PinpointHQ description');
   return {
     text: `PinpointHQ listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${sections.filter(Boolean).join('\n\n')}`,
+    ...(typeof metadata.title === 'string' ? { title: metadata.title } : {}),
     postedAt: null,
   };
 }

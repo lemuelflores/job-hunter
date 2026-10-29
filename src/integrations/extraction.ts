@@ -6,6 +6,8 @@ export interface ExtractionOptions {
 export interface ExtractedListing {
   text: string;
   postedAt?: string | null;
+  company?: string | null;
+  title?: string | null;
 }
 
 export type ListingExtractor = (

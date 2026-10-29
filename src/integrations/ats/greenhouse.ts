@@ -99,6 +99,10 @@ export async function fetchGreenhouseListing(
   if (!description) throw new Error('Empty Greenhouse description');
   return {
     text: `Greenhouse listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${description}`,
+    ...(typeof metadata.title === 'string' ? { title: metadata.title } : {}),
+    ...(typeof metadata.company_name === 'string'
+      ? { company: metadata.company_name }
+      : {}),
     postedAt:
       typeof metadata.first_published === 'string'
         ? metadata.first_published

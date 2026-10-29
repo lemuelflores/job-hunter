@@ -36,7 +36,7 @@ export function listInbox(store: SqliteStore): ReviewListing[] {
         );
         return {
           id: job.id,
-          company: assessment?.company || job.company,
+          company: job.company,
           location: job.location,
           title: job.title,
           url: job.url,

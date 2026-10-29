@@ -22,6 +22,7 @@ export async function searchFreehireListings(
               source: 'freehire',
               url,
               title: job.title,
+              company: job.company,
               query,
               postedAt: job.posted_at,
             },
@@ -74,7 +75,7 @@ function validateFreehire(value: unknown): asserts value is FreehireConfig {
 
 export interface FreehireJob {
   url: string;
-  title: string;
+  title?: string | null;
   description: string;
   company?: string | null;
   location?: string | null;
@@ -106,7 +107,7 @@ const ResponseSchema = v.object({
 });
 const JobSchema = v.object({
   url: v.string(),
-  title: v.string(),
+  title: v.nullish(v.string()),
   description: v.string(),
   company: v.nullish(v.string()),
   location: v.nullish(v.string()),
@@ -175,12 +176,7 @@ async function searchPage(
     throw new Error('Invalid Freehire pagination response');
   const jobs = data.flatMap((entry) => {
     const job = v.safeParse(JobSchema, entry);
-    if (
-      !job.success ||
-      !job.output.title.trim() ||
-      !job.output.description.trim()
-    )
-      return [];
+    if (!job.success || !job.output.description.trim()) return [];
     return [job.output];
   });
   return {

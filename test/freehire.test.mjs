@@ -280,7 +280,7 @@ test('boundary skips malformed rows but refuses containers, ignored settings and
         { ...job(), work_mode: {} },
       ]),
   });
-  assert.deepEqual(valid.jobs, [job()]);
+  assert.deepEqual(valid.jobs, [job(), { ...job(), title: ' ' }]);
   for (const body of [
     null,
     [],

@@ -101,6 +101,9 @@ export async function fetchBamboohrListing(
   if (!text) throw new Error('Empty BambooHR description');
   return {
     text: `BambooHR listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${text}`,
+    ...(typeof metadata.jobOpeningName === 'string'
+      ? { title: metadata.jobOpeningName }
+      : {}),
     postedAt:
       typeof metadata.datePosted === 'string' ? metadata.datePosted : null,
   };

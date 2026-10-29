@@ -102,6 +102,13 @@ export async function fetchSmartrecruitersListing(
   if (!sections.length) throw new Error('Empty SmartRecruiters description');
   return {
     text: `SmartRecruiters listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${sections.join('\n\n')}`,
+    ...(typeof metadata.name === 'string' ? { title: metadata.name } : {}),
+    ...(metadata.company &&
+    typeof metadata.company === 'object' &&
+    'name' in metadata.company &&
+    typeof metadata.company.name === 'string'
+      ? { company: metadata.company.name }
+      : {}),
     postedAt:
       typeof metadata.releasedDate === 'string' ? metadata.releasedDate : null,
   };

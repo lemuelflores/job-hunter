@@ -105,6 +105,12 @@ never receives candidate documents or saved listing text as raw inputs.
 - **Checkpoints survive redelivery:** saving a result and completing its stage is
   one SQLite transaction. Completed work is reused, not overwritten. Rediscovery
   does not reset saved text, decisions, review status, or exhausted stages.
+- **Listing identity is fill-only:** Freehire supplies discovery identity; native
+  ATS responses supply identity for Google and user listings. Assessment fills
+  remaining blanks at its checkpoint. Existing non-empty values and the first
+  discovery source survive rediscovery and reassessment; historical assessments
+  are not copied into listing fields automatically. An explicit identity backfill
+  fills blanks from saved assessments without scheduling work.
 - **Historical work is opt-in:** migration and rediscovery do not create new
   assessment work for old listings. Backfill explicitly selects eligible saved
   text rather than converting historical decisions into assessments.

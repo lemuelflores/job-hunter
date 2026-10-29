@@ -239,7 +239,8 @@ test('partial discovery dispatches completed pages before failure without repeat
   assert.equal(outcome.pending, 2);
   assert.match(outcome.failures[0], /503/);
   assert.equal(f.store.getJob(1).url, result(1).url);
-  assert.equal(f.store.getJob(1).snippet, 'Valid snippet');
+  assert.equal(f.store.getJob(1).title, '');
+  assert.equal(f.store.getJob(1).snippet, '');
   assert.equal(f.store.getJob(2).snippet, '');
   assert.equal(f.requests.length, 2);
   unavailable = false;

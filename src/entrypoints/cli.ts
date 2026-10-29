@@ -460,6 +460,26 @@ export async function main(
         console.log(JSON.stringify({ queued: id, stage: 'assessment' }));
       },
     }),
+    'backfill-identity': defineCommand({
+      meta: {
+        description:
+          'Fill missing listing company and title from saved assessments',
+      },
+      args: {
+        preview: {
+          type: 'boolean',
+          description: 'Preview without changing listings',
+        },
+      },
+      run: async ({ args }) => {
+        const result = (await database()).backfillIdentity(
+          Boolean(args.preview),
+        );
+        console.log(
+          JSON.stringify({ mode: args.preview ? 'preview' : 'run', ...result }),
+        );
+      },
+    }),
     backfill: defineCommand({
       meta: {
         description:

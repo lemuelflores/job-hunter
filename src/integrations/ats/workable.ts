@@ -143,6 +143,7 @@ export async function fetchWorkableListing(
     .join('\n\n');
   return {
     text: `Workable listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${text}`,
+    ...(typeof metadata.title === 'string' ? { title: metadata.title } : {}),
     postedAt:
       typeof metadata.published === 'string' ? metadata.published : null,
   };

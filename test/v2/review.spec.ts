@@ -1,5 +1,24 @@
 import { expect, test } from '@playwright/test';
 
+test('missing identity reflects processing without replacing the report', async ({
+  page,
+}) => {
+  await page.goto('/?identity=missing');
+  await expect(page.getByRole('link', { name: /Company pending/ })).toHaveCount(
+    2,
+  );
+  await expect(
+    page.getByRole('link', { name: /Company unavailable/ }),
+  ).toHaveCount(1);
+  await page.getByRole('link', { name: /Company unavailable/ }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Title unavailable' }),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Company: Report company · Role: Report role'),
+  ).toBeVisible();
+});
+
 test('shows the listing location beside the company, including unknown locations', async ({
   page,
 }) => {

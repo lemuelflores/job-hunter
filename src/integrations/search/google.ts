@@ -13,7 +13,9 @@ export async function searchGoogleListings(
   return {
     discoveries: searched.results.flatMap<SearchDiscovery>((result) => {
       const url = ats.normalizeUrl(result.url);
-      return url ? [{ kind: 'url', source: 'google', ...result, url }] : [];
+      return url
+        ? [{ kind: 'url', source: 'google', url, query: result.query }]
+        : [];
     }),
     failures: searched.failures.map((item) => `${item.query}: ${item.error}`),
   };

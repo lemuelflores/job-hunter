@@ -112,6 +112,7 @@ export async function fetchPolymerListing(
   if (!text) throw new Error('Empty Polymer description');
   return {
     text: `Polymer listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${text}`,
+    ...(typeof metadata.title === 'string' ? { title: metadata.title } : {}),
     postedAt: job.published_at ?? null,
   };
 }

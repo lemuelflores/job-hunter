@@ -25,7 +25,8 @@ export interface StackDecision {
 export interface DiscoveredListing {
   source: ListingSource;
   url: string;
-  title: string;
+  title?: string | null;
+  company?: string | null;
   snippet?: string;
   query: string;
   listingText?: string;

@@ -13,7 +13,7 @@ export interface CrawlExtractors {
   fallback: ListingExtractor;
 }
 
-export function extractListing(
+export async function extractListing(
   url: string,
   extractors: CrawlExtractors,
   signal?: AbortSignal,
@@ -22,7 +22,9 @@ export function extractListing(
   const ats = extractors.ats.find((definition) =>
     matchesAtsHost(hostname, definition.hosts),
   );
-  return (ats?.extract ?? extractors.fallback)(url, { signal });
+  if (ats?.extract) return ats.extract(url, { signal });
+  const { text, postedAt } = await extractors.fallback(url, { signal });
+  return { text, postedAt };
 }
 
 export async function crawlJob(
@@ -56,6 +58,6 @@ export async function crawlJob(
   signal?.throwIfAborted();
   // Keep an existing checkpoint instead of saving a second extraction.
   if (store.needsStage(id, 'crawl'))
-    store.saveListingText(id, listing.text, listing.postedAt);
+    store.saveListingText(id, listing.text, listing.postedAt, listing);
   await enqueueMissingStages(store, id, enqueue);
 }

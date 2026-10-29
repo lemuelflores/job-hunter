@@ -64,5 +64,9 @@ export async function fetchHimalayasListing(
   if (!text) throw new Error('Empty Himalayas description');
   return {
     text: `Himalayas listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${text}`,
+    ...(typeof metadata.title === 'string' ? { title: metadata.title } : {}),
+    ...(typeof metadata.companyName === 'string'
+      ? { company: metadata.companyName }
+      : {}),
   };
 }

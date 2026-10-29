@@ -90,6 +90,7 @@ export async function fetchBreezyhrListing(
   if (!text) throw new Error('Empty BreezyHR description');
   return {
     text: `BreezyHR listing metadata:\n${JSON.stringify(metadata, null, 2)}\n\nDescription:\n${text}`,
+    ...(typeof metadata.name === 'string' ? { title: metadata.name } : {}),
     postedAt:
       typeof metadata.published_date === 'string'
         ? metadata.published_date

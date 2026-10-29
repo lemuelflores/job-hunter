@@ -93,6 +93,16 @@ function label(value: string | null): string {
   return value ? value.replaceAll('_', ' ') : 'Not stated';
 }
 
+function identity(
+  value: string,
+  field: 'Company' | 'Title',
+  processing: ReviewListing['processing'],
+): string {
+  return value.trim()
+    ? value
+    : `${field} ${processing === 'complete' ? 'unavailable' : 'pending'}`;
+}
+
 const processingLabels: Record<ReviewListing['processing'], string> = {
   waiting: 'Queued',
   complete: 'Evaluated',
@@ -237,11 +247,11 @@ function Report({
       <header className="report__header">
         <div className="report__identity">
           <p className="report__eyebrow">
-            {listing.company || 'Company not stated'} ·{' '}
+            {identity(listing.company, 'Company', listing.processing)} ·{' '}
             {listing.location?.trim() || 'Location unknown'}
           </p>
           <h2 id="report-heading" tabIndex={-1} className="report__title">
-            {listing.title || 'Role not stated'}
+            {identity(listing.title, 'Title', listing.processing)}
           </h2>
         </div>
         <div className="report__dates">
@@ -662,11 +672,11 @@ export function ReviewInbox({
                     }}
                   >
                     <span className="report-row__company">
-                      {item.company || 'Company not stated'} ·{' '}
+                      {identity(item.company, 'Company', item.processing)} ·{' '}
                       {item.location?.trim() || 'Location unknown'}
                     </span>
                     <span className="report-row__role">
-                      {item.title || 'Role not stated'}
+                      {identity(item.title, 'Title', item.processing)}
                     </span>
                     <span className="report-row__dates">
                       Posted: {relativeDate(item.postedAt, currentTime)} ·
