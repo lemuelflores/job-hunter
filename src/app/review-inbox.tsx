@@ -2,9 +2,10 @@
 
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import type { Assessment } from '../core/assessment.ts';
+import type { ReviewStatus } from '../core/listing.ts';
 import { relativeDate } from './relative-date.ts';
 
-export type ReviewStatus = 'active' | 'hidden' | 'rejected' | 'stale';
+export type { ReviewStatus } from '../core/listing.ts';
 export interface ReviewListing {
   id: number;
   company: string;
@@ -294,6 +295,16 @@ function Report({
           )}
           {listing.reviewStatus === 'active' ? (
             <>
+              <button
+                type="button"
+                className="button"
+                disabled={busy}
+                onClick={() =>
+                  void action(() => onStatusChange(listing.id, 'applied'))
+                }
+              >
+                Applied
+              </button>
               <button
                 type="button"
                 className="button"
@@ -592,6 +603,7 @@ export function ReviewInbox({
                         const value = event.target.value;
                         if (
                           value === 'active' ||
+                          value === 'applied' ||
                           value === 'hidden' ||
                           value === 'rejected' ||
                           value === 'stale'
@@ -602,6 +614,7 @@ export function ReviewInbox({
                       }}
                     >
                       <option value="active">Active</option>
+                      <option value="applied">Applied</option>
                       <option value="hidden">Hidden</option>
                       <option value="rejected">Rejected</option>
                       <option value="stale">Stale</option>

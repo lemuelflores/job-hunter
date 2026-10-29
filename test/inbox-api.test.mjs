@@ -73,6 +73,24 @@ test('status mutation persists a valid change', async (t) => {
   assert.equal(store.getJob(1).status, 'hidden');
 });
 
+test('applied status is saved and returned in the inbox', async (t) => {
+  const { handler, store } = setup(t);
+  const response = await handler(
+    request('/api/inbox/status', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 1, status: 'applied' }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(store.getJob(1).status, 'applied');
+  const body = await (await handler(request('/api/inbox'))).json();
+  assert.equal(
+    body.listings.find((job) => job.id === 1).reviewStatus,
+    'applied',
+  );
+});
+
 test('retry targets the failed stage, not a completed report', async (t) => {
   const { handler, store, retries } = setup(t);
   store.failStage(2, 'crawl', 'Unavailable', true);

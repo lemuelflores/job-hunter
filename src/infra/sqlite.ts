@@ -27,6 +27,7 @@ function needsJobsMigration(schema: string): boolean {
   return (
     !eligibility?.includes("'error'") ||
     !status?.includes("'stale'") ||
+    !status?.includes("'applied'") ||
     (source !== undefined && !source.includes("'user'"))
   );
 }
@@ -81,7 +82,7 @@ export class SqliteStore {
         evidence TEXT NOT NULL DEFAULT '',
         company TEXT NOT NULL DEFAULT '',
         location TEXT NOT NULL DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','hidden','rejected','stale')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','applied','hidden','rejected','stale')),
         reviewed_at TEXT,
         last_attempt TEXT,
         batch TEXT
@@ -140,7 +141,7 @@ export class SqliteStore {
           .replace(
             /(status\s+IN\s*\()([^)]+)(\))/i,
             (_match, start: string, values: string, end: string) =>
-              `${start}${values}${values.includes("'stale'") ? '' : ",'stale'"}${end}`,
+              `${start}${values}${values.includes("'stale'") ? '' : ",'stale'"}${values.includes("'applied'") ? '' : ",'applied'"}${end}`,
           )
           .replace(
             /(source\s+IN\s*\()([^)]+)(\))/i,

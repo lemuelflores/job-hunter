@@ -74,6 +74,25 @@ test('fixture actions hide and restore without losing saved assessment', async (
   await expect(page.getByText('Strong match for the role.')).toBeVisible();
 });
 
+test('applied listings can be filtered and restored', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('link', { name: /Alpha/ }).click();
+  await expect(page.locator('.report__actions button').first()).toHaveText(
+    'Applied',
+  );
+  await page.getByRole('button', { name: 'Applied', exact: true }).click();
+  await expect(page.getByRole('link', { name: /Alpha/ })).toHaveCount(0);
+  await page.getByLabel('Filters').click();
+  await page.getByLabel('Review status').selectOption('applied');
+  await page.getByLabel('Filters').click();
+  await page.getByRole('link', { name: /Alpha/ }).click();
+  await page.getByRole('button', { name: 'Restore' }).click();
+  await page.getByLabel('Filters').click();
+  await page.getByLabel('Review status').selectOption('active');
+  await page.getByLabel('Filters').click();
+  await expect(page.getByRole('link', { name: /Alpha/ })).toBeVisible();
+});
+
 test('narrow layout remains operable with keyboard and long text', async ({
   page,
 }) => {

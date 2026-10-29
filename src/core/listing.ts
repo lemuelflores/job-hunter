@@ -1,5 +1,6 @@
 export const REVIEW_STATUSES = [
   'active',
+  'applied',
   'hidden',
   'rejected',
   'stale',

@@ -1,3 +1,4 @@
+import { REVIEW_STATUSES } from '../core/listing.ts';
 import type { SqliteStore } from '../infra/sqlite.ts';
 import type { ReviewListing } from './review-inbox.tsx';
 
@@ -15,42 +16,40 @@ function processingState(
 }
 
 export function listInbox(store: SqliteStore): ReviewListing[] {
-  return (['active', 'hidden', 'rejected', 'stale'] as const).flatMap(
-    (status) =>
-      store.listReviewJobs(status).map((job) => {
-        const crawl = job.stages.find((stage) => stage.stage === 'crawl');
-        const stage = job.stages.find((stage) => stage.stage === 'assessment');
-        const failed = [crawl, stage].find((item) => item?.state === 'failed');
-        let assessment = null;
-        let invalid = false;
-        try {
-          assessment = store.getAssessment(job.id)?.assessment ?? null;
-        } catch {
-          invalid = true;
-        }
-        const processing = processingState(
-          assessment,
-          Boolean(failed),
-          invalid || crawl?.state === 'terminal',
-          !stage,
-        );
-        return {
-          id: job.id,
-          company: job.company,
-          location: job.location,
-          title: job.title,
-          url: job.url,
-          source: job.source,
-          postedAt: job.posted_at,
-          foundAt: job.first_seen,
-          reviewStatus: status,
-          processing,
-          assessment,
-          error: invalid
-            ? 'The saved assessment is unavailable.'
-            : failed?.error ||
-              (crawl?.state === 'terminal' ? crawl.error : null),
-        };
-      }),
+  return REVIEW_STATUSES.flatMap((status) =>
+    store.listReviewJobs(status).map((job) => {
+      const crawl = job.stages.find((stage) => stage.stage === 'crawl');
+      const stage = job.stages.find((stage) => stage.stage === 'assessment');
+      const failed = [crawl, stage].find((item) => item?.state === 'failed');
+      let assessment = null;
+      let invalid = false;
+      try {
+        assessment = store.getAssessment(job.id)?.assessment ?? null;
+      } catch {
+        invalid = true;
+      }
+      const processing = processingState(
+        assessment,
+        Boolean(failed),
+        invalid || crawl?.state === 'terminal',
+        !stage,
+      );
+      return {
+        id: job.id,
+        company: job.company,
+        location: job.location,
+        title: job.title,
+        url: job.url,
+        source: job.source,
+        postedAt: job.posted_at,
+        foundAt: job.first_seen,
+        reviewStatus: status,
+        processing,
+        assessment,
+        error: invalid
+          ? 'The saved assessment is unavailable.'
+          : failed?.error || (crawl?.state === 'terminal' ? crawl.error : null),
+      };
+    }),
   );
 }

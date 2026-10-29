@@ -45,6 +45,41 @@ function legacyFixture(t, seedCompleted = false) {
   return store;
 }
 
+test('existing status constraints migrate without losing listings or stages', (t) => {
+  const root = mkdtempSync('/tmp/opencode/job-applied-migration-');
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, 'jobs.sqlite');
+  const db = new DatabaseSync(path);
+  db.exec(`
+    CREATE TABLE jobs (
+      id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+      snippet TEXT NOT NULL DEFAULT '', query TEXT NOT NULL, first_seen TEXT NOT NULL,
+      last_seen TEXT NOT NULL, eligibility TEXT NOT NULL DEFAULT 'pending'
+        CHECK (eligibility IN ('pending','eligible','ineligible','unclear','error')),
+      reason TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '',
+      company TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','hidden','rejected','stale')),
+      reviewed_at TEXT, last_attempt TEXT, batch TEXT
+    );
+    INSERT INTO jobs (id,url,title,query,first_seen,last_seen,status)
+      VALUES (1,'https://example.com/job','Engineer','remote','2026-01-01','2026-01-01','hidden');
+    CREATE TABLE job_stages (job_id INTEGER NOT NULL REFERENCES jobs(id), stage TEXT NOT NULL,
+      state TEXT NOT NULL, error TEXT NOT NULL DEFAULT '', generation INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(job_id,stage));
+    INSERT INTO job_stages VALUES (1,'crawl','failed','saved failure',0);
+  `);
+  db.close();
+  const store = new SqliteStore(path);
+  t.after(() => store.close());
+  assert.equal(store.getJob(1).status, 'hidden');
+  assert.equal(
+    store.stages(1).find((stage) => stage.stage === 'crawl').error,
+    'saved failure',
+  );
+  assert.equal(store.setReviewStatus('1', 'applied'), true);
+  assert.equal(store.listReviewJobs('applied')[0].id, 1);
+});
+
 test('rediscovery deduplicates canonical URLs without resetting saved decisions', (t) => {
   // Arrange: save both decisions and hide the listing before rediscovery.
   const store = legacyFixture(t, true);

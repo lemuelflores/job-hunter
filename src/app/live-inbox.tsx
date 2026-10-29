@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as v from 'valibot';
 import { AssessmentSchema } from '../core/assessment.ts';
+import { REVIEW_STATUSES } from '../core/listing.ts';
 import { AddListingDialog } from './add-listing-dialog.tsx';
 import {
   type ReviewLoadState,
@@ -20,7 +21,7 @@ const listingSchema = v.object({
   source: v.string(),
   postedAt: v.nullable(v.string()),
   foundAt: v.nullable(v.string()),
-  reviewStatus: v.picklist(['active', 'hidden', 'rejected', 'stale']),
+  reviewStatus: v.picklist(REVIEW_STATUSES),
   processing: v.picklist([
     'waiting',
     'complete',

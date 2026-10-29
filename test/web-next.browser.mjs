@@ -452,6 +452,7 @@ test('production inbox displays and updates isolated saved reviews', {
       await actionPage.goto(`${base}/1`);
       const actions = actionPage.locator('.report__actions');
       await expect(actions.locator('button')).toHaveText([
+        'Applied',
         'Hide',
         'Reject',
         'Stale',
