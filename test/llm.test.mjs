@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createLlm } from '../src/entrypoints/compose.ts';
 
-test('provider selection defaults to ChatGPT and rejects unsupported providers', (t) => {
+test('provider selection defaults to ChatGPT, supports Gemini, and rejects unsupported providers', (t) => {
   // Arrange: isolate provider configuration from the environment.
   const original = process.env;
   process.env = { ...original };
@@ -11,11 +11,15 @@ test('provider selection defaults to ChatGPT and rejects unsupported providers',
   });
   delete process.env.MODEL_PROVIDER;
   const chatgpt = createLlm('chatgpt');
-  // Act / Assert: default and explicit environment selection use ChatGPT.
+  const gemini = createLlm('gemini');
+  // Act / Assert: default and explicit environment selection memoize each supported provider.
+  assert.notEqual(chatgpt, gemini);
   assert.deepEqual(createLlm(), chatgpt);
   process.env.MODEL_PROVIDER = 'chatgpt';
   assert.deepEqual(createLlm(), chatgpt);
-  for (const provider of ['openai', 'ChatGPT', '']) {
+  process.env.MODEL_PROVIDER = 'gemini';
+  assert.deepEqual(createLlm(), gemini);
+  for (const provider of ['openai', 'ChatGPT', 'Gemini', 'google', '']) {
     // Arrange: set this unsupported provider spelling.
     process.env.MODEL_PROVIDER = provider;
     // Act / Assert: reject it with the provider name in the error.

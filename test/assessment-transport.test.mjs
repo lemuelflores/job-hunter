@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createChatgpt } from '../src/integrations/llm/chatgpt/index.ts';
 import { createRequest } from '../src/integrations/llm/chatgpt/request.ts';
+import { createGemini } from '../src/integrations/llm/gemini/index.ts';
+import { createRequest as createGeminiRequest } from '../src/integrations/llm/gemini/request.ts';
 import {
   AuthenticationError,
   RateLimitError,
@@ -159,6 +161,190 @@ test('transport rejects HTTP errors and incomplete or failed streams', async () 
     await assert.rejects(
       createRequest({
         getCredentials: credentials,
+        fetch: async () => response,
+      })({}, 'instructions', 'listing text', 'test', {}),
+      error,
+    );
+  }
+});
+
+function geminiResponse(decision, extraParts = []) {
+  return Response.json({
+    candidates: [
+      {
+        finishReason: 'STOP',
+        content: {
+          parts: [...extraParts, { text: JSON.stringify(decision) }],
+        },
+      },
+    ],
+  });
+}
+
+test('gemini authenticate verifies GEMINI_API_KEY and rejects missing or blank keys', async (t) => {
+  const original = process.env;
+  process.env = { ...original };
+  t.after(() => {
+    process.env = original;
+  });
+  delete process.env.GEMINI_API_KEY;
+  await assert.rejects(
+    createGemini().authenticate(),
+    (error) =>
+      error instanceof AuthenticationError &&
+      /GEMINI_API_KEY/.test(error.message),
+  );
+  process.env.GEMINI_API_KEY = '   ';
+  await assert.rejects(createGemini().authenticate(), AuthenticationError);
+  process.env.GEMINI_API_KEY = 'env-gemini-key';
+  await createGemini().authenticate();
+  delete process.env.GEMINI_API_KEY;
+  await createGemini({ apiKey: 'injected-key' }).authenticate();
+});
+
+test('gemini assessment uses default model and effort, filters thought parts, and sends structured JSON config', async (t) => {
+  const original = process.env;
+  process.env = { ...original, GEMINI_API_KEY: '  env-gemini-key  ' };
+  delete process.env.MODEL_NAME;
+  delete process.env.MODEL_EFFORT;
+  t.after(() => {
+    process.env = original;
+  });
+  const result = { ...assessment, summary: 'Worldwide — 日本 🌍' };
+  const provider = createGemini({
+    fetch: async (url, init) => {
+      assert.equal(
+        url,
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
+      );
+      assert.equal(init.method, 'POST');
+      assert.equal(init.redirect, 'error');
+      assert.equal(init.headers['x-goog-api-key'], 'env-gemini-key');
+      assert.equal(init.headers['Content-Type'], 'application/json');
+      const body = JSON.parse(init.body);
+      assert.equal(
+        JSON.parse(body.contents[0].parts[0].text).job_description,
+        input.listingText,
+      );
+      assert.equal(body.generationConfig.responseMimeType, 'application/json');
+      assert.deepEqual(body.generationConfig.thinkingConfig, {
+        thinkingLevel: 'medium',
+      });
+      assert.equal(body.tools, undefined);
+      return geminiResponse(result, [
+        { thought: true, text: '{"verdict":"Apply"}' },
+      ]);
+    },
+  });
+  assert.deepEqual(await provider.assess(input), result);
+});
+
+test('gemini normalizes model prefixes and variants and validates MODEL_EFFORT before credentials', async (t) => {
+  const original = process.env;
+  process.env = { ...original };
+  delete process.env.GEMINI_API_KEY;
+  t.after(() => {
+    process.env = original;
+  });
+  for (const [rawModel, expectedModel, effort] of [
+    ['google/gemini-3.8-flash#high', 'gemini-3.8-flash', 'minimal'],
+    ['gemini/gemini-3.8-pro#low', 'gemini-3.8-pro', 'low'],
+    ['gemini-3.8-flash', 'gemini-3.8-flash', 'high'],
+  ]) {
+    process.env.MODEL_NAME = rawModel;
+    process.env.MODEL_EFFORT = effort;
+    const provider = createGemini({
+      apiKey: 'test-key',
+      fetch: async (url, init) => {
+        assert.equal(
+          url,
+          `https://generativelanguage.googleapis.com/v1beta/models/${expectedModel}:generateContent`,
+        );
+        const body = JSON.parse(init.body);
+        assert.deepEqual(body.generationConfig.thinkingConfig, {
+          thinkingLevel: effort,
+        });
+        return geminiResponse(assessment);
+      },
+    });
+    await provider.assess(input);
+  }
+  process.env.MODEL_EFFORT = 'none';
+  const unauthenticated = createGemini({
+    fetch: async () => assert.fail('unexpected network request'),
+  });
+  await assert.rejects(unauthenticated.assess(input), /Invalid MODEL_EFFORT/);
+});
+
+test('gemini assessment preserves caller cancellation in the transport', async () => {
+  const controller = new AbortController();
+  const reason = new Error('Stop assessing');
+  const provider = createGemini({
+    apiKey: 'test-key',
+    fetch: async (_url, init) => {
+      assert.equal(init.signal.aborted, false);
+      controller.abort(reason);
+      assert.equal(init.signal.reason, reason);
+      init.signal.throwIfAborted();
+    },
+  });
+  await assert.rejects(
+    provider.assess({ ...input, signal: controller.signal }),
+    reason,
+  );
+});
+
+test('gemini transport rejects missing API key, HTTP errors, blocked prompts, and incomplete or malformed responses', async (t) => {
+  const original = process.env;
+  process.env = { ...original };
+  delete process.env.GEMINI_API_KEY;
+  t.after(() => {
+    process.env = original;
+  });
+  await assert.rejects(
+    createGeminiRequest({
+      fetch: async () => assert.fail('unexpected network request'),
+    })({}, 'instructions', 'listing text', 'test', {}),
+    AuthenticationError,
+  );
+  for (const [response, error] of [
+    [new Response('', { status: 401 }), AuthenticationError],
+    [new Response('', { status: 403 }), AuthenticationError],
+    [new Response('', { status: 429 }), RateLimitError],
+    [new Response('', { status: 500 }), /Gemini HTTP 500/],
+    [new Response('not-json'), /Invalid Gemini response/],
+    [Response.json({ candidates: 'bad' }), /Invalid Gemini response/],
+    [
+      Response.json({ promptFeedback: { blockReason: 'SAFETY' } }),
+      /Gemini blocked prompt: SAFETY/,
+    ],
+    [Response.json({ candidates: [] }), /Empty Gemini response/],
+    [
+      Response.json({
+        candidates: [
+          {
+            finishReason: 'MAX_TOKENS',
+            content: { parts: [{ text: '{}' }] },
+          },
+        ],
+      }),
+      /Gemini finishReason: MAX_TOKENS/,
+    ],
+    [
+      Response.json({
+        candidates: [
+          {
+            finishReason: 'STOP',
+            content: { parts: [{ thought: true, text: 'thinking only' }] },
+          },
+        ],
+      }),
+      /Empty Gemini response/,
+    ],
+  ]) {
+    await assert.rejects(
+      createGeminiRequest({
+        apiKey: 'test-key',
         fetch: async () => response,
       })({}, 'instructions', 'listing text', 'test', {}),
       error,

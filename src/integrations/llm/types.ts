@@ -19,6 +19,14 @@ export type AssessmentReviewer = (
   input: AssessmentInput,
 ) => Promise<Assessment>;
 
+export type LlmRequest = (
+  options: ModelOptions,
+  instructions: string,
+  input: string,
+  name: string,
+  schema: object,
+) => Promise<string>;
+
 export interface AuthOptions {
   signal?: AbortSignal;
   onAuthorize?: (url: string) => void;
