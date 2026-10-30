@@ -16,6 +16,7 @@ import { workable } from '../integrations/ats/workable.ts';
 import { scrapeListing } from '../integrations/firecrawl.ts';
 import { createChatgpt } from '../integrations/llm/chatgpt/index.ts';
 import { createGemini } from '../integrations/llm/gemini/index.ts';
+import { createGroq } from '../integrations/llm/groq/index.ts';
 import type { LlmProvider } from '../integrations/llm/types.ts';
 import {
   type FreehireConfig,
@@ -140,6 +141,7 @@ export function normalizeFreehireUrl(raw: string): string | null {
 
 let chatgpt: LlmProvider | undefined;
 let gemini: LlmProvider | undefined;
+let groq: LlmProvider | undefined;
 
 export function createLlm(
   provider = process.env.MODEL_PROVIDER ?? 'chatgpt',
@@ -151,6 +153,10 @@ export function createLlm(
   if (provider === 'gemini') {
     gemini ??= createGemini();
     return gemini;
+  }
+  if (provider === 'groq') {
+    groq ??= createGroq();
+    return groq;
   }
   throw new Error(`Model provider "${provider}" is not implemented`);
 }

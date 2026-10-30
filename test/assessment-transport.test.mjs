@@ -4,6 +4,8 @@ import { createChatgpt } from '../src/integrations/llm/chatgpt/index.ts';
 import { createRequest } from '../src/integrations/llm/chatgpt/request.ts';
 import { createGemini } from '../src/integrations/llm/gemini/index.ts';
 import { createRequest as createGeminiRequest } from '../src/integrations/llm/gemini/request.ts';
+import { createGroq } from '../src/integrations/llm/groq/index.ts';
+import { createRequest as createGroqRequest } from '../src/integrations/llm/groq/request.ts';
 import {
   AuthenticationError,
   RateLimitError,
@@ -344,6 +346,194 @@ test('gemini transport rejects missing API key, HTTP errors, blocked prompts, an
   ]) {
     await assert.rejects(
       createGeminiRequest({
+        apiKey: 'test-key',
+        fetch: async () => response,
+      })({}, 'instructions', 'listing text', 'test', {}),
+      error,
+    );
+  }
+});
+
+function groqResponse(decision, extraMessage = {}) {
+  return Response.json({
+    choices: [
+      {
+        finish_reason: 'stop',
+        message: {
+          role: 'assistant',
+          content: JSON.stringify(decision),
+          ...extraMessage,
+        },
+      },
+    ],
+  });
+}
+
+test('groq authenticate verifies GROQ_API_KEY and rejects missing or blank keys', async (t) => {
+  const original = process.env;
+  process.env = { ...original };
+  t.after(() => {
+    process.env = original;
+  });
+  delete process.env.GROQ_API_KEY;
+  await assert.rejects(
+    createGroq().authenticate(),
+    (error) =>
+      error instanceof AuthenticationError &&
+      /GROQ_API_KEY/.test(error.message),
+  );
+  process.env.GROQ_API_KEY = '   ';
+  await assert.rejects(createGroq().authenticate(), AuthenticationError);
+  process.env.GROQ_API_KEY = 'env-groq-key';
+  await createGroq().authenticate();
+  delete process.env.GROQ_API_KEY;
+  await createGroq({ apiKey: 'injected-key' }).authenticate();
+});
+
+test('groq assessment uses default model and effort, ignores reasoning fields, and sends structured JSON config', async (t) => {
+  const original = process.env;
+  process.env = { ...original, GROQ_API_KEY: '  env-groq-key  ' };
+  delete process.env.MODEL_NAME;
+  delete process.env.MODEL_EFFORT;
+  t.after(() => {
+    process.env = original;
+  });
+  const result = { ...assessment, summary: 'Worldwide — 日本 🌍' };
+  const provider = createGroq({
+    fetch: async (url, init) => {
+      assert.equal(url, 'https://api.groq.com/openai/v1/chat/completions');
+      assert.equal(init.method, 'POST');
+      assert.equal(init.redirect, 'error');
+      assert.equal(init.headers.Authorization, 'Bearer env-groq-key');
+      assert.equal(init.headers['Content-Type'], 'application/json');
+      const body = JSON.parse(init.body);
+      assert.equal(body.model, 'openai/gpt-oss-120b');
+      assert.equal(body.reasoning_effort, 'medium');
+      assert.equal(body.messages[0].role, 'system');
+      assert.equal(body.messages[1].role, 'user');
+      assert.equal(
+        JSON.parse(body.messages[1].content).job_description,
+        input.listingText,
+      );
+      assert.equal(body.response_format.type, 'json_schema');
+      assert.equal(body.response_format.json_schema.name, 'job_assessment_v1');
+      assert.equal(body.response_format.json_schema.strict, true);
+      assert.equal(body.tools, undefined);
+      return groqResponse(result, {
+        reasoning: 'Step-by-step reasoning before structured output',
+      });
+    },
+  });
+  assert.deepEqual(await provider.assess(input), result);
+});
+
+test('groq normalizes model prefixes and variants while preserving vendor slashes and validates MODEL_EFFORT before credentials', async (t) => {
+  const original = process.env;
+  process.env = { ...original };
+  delete process.env.GROQ_API_KEY;
+  t.after(() => {
+    process.env = original;
+  });
+  for (const [rawModel, expectedModel, effort] of [
+    ['groq/openai/gpt-oss-120b#high', 'openai/gpt-oss-120b', 'high'],
+    ['groq/qwen/qwen3.8-27b#low', 'qwen/qwen3.8-27b', 'low'],
+    ['openai/gpt-oss-20b#medium', 'openai/gpt-oss-20b', 'none'],
+  ]) {
+    process.env.MODEL_NAME = rawModel;
+    process.env.MODEL_EFFORT = effort;
+    const provider = createGroq({
+      apiKey: 'test-key',
+      fetch: async (_url, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.model, expectedModel);
+        assert.equal(body.reasoning_effort, effort);
+        return groqResponse(assessment);
+      },
+    });
+    await provider.assess(input);
+  }
+  process.env.MODEL_EFFORT = 'typo';
+  const unauthenticated = createGroq({
+    fetch: async () => assert.fail('unexpected network request'),
+  });
+  await assert.rejects(unauthenticated.assess(input), /Invalid MODEL_EFFORT/);
+});
+
+test('groq assessment preserves caller cancellation in the transport', async () => {
+  const controller = new AbortController();
+  const reason = new Error('Stop assessing');
+  const provider = createGroq({
+    apiKey: 'test-key',
+    fetch: async (_url, init) => {
+      assert.equal(init.signal.aborted, false);
+      controller.abort(reason);
+      assert.equal(init.signal.reason, reason);
+      init.signal.throwIfAborted();
+    },
+  });
+  await assert.rejects(
+    provider.assess({ ...input, signal: controller.signal }),
+    reason,
+  );
+});
+
+test('groq transport rejects missing API key, HTTP errors, refusals, and incomplete or malformed responses', async (t) => {
+  const original = process.env;
+  process.env = { ...original };
+  delete process.env.GROQ_API_KEY;
+  t.after(() => {
+    process.env = original;
+  });
+  await assert.rejects(
+    createGroqRequest({
+      fetch: async () => assert.fail('unexpected network request'),
+    })({}, 'instructions', 'listing text', 'test', {}),
+    AuthenticationError,
+  );
+  for (const [response, error] of [
+    [new Response('', { status: 401 }), AuthenticationError],
+    [new Response('', { status: 403 }), AuthenticationError],
+    [new Response('', { status: 429 }), RateLimitError],
+    [new Response('', { status: 500 }), /Groq HTTP 500/],
+    [new Response('not-json'), /Invalid Groq response/],
+    [Response.json({ choices: 'bad' }), /Invalid Groq response/],
+    [Response.json({ choices: [] }), /Empty Groq response/],
+    [
+      Response.json({
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { refusal: 'Policy violation', content: null },
+          },
+        ],
+      }),
+      /Groq refused prompt: Policy violation/,
+    ],
+    [
+      Response.json({
+        choices: [
+          {
+            finish_reason: 'length',
+            message: { content: '{}' },
+          },
+        ],
+      }),
+      /Groq finish_reason: length/,
+    ],
+    [
+      Response.json({
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: '   ' },
+          },
+        ],
+      }),
+      /Empty Groq response/,
+    ],
+  ]) {
+    await assert.rejects(
+      createGroqRequest({
         apiKey: 'test-key',
         fetch: async () => response,
       })({}, 'instructions', 'listing text', 'test', {}),
