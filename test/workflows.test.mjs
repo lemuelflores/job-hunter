@@ -74,6 +74,7 @@ test('ATS searches each keep a 100-result budget, reject sibling URLs and save e
     freshteam: (id) => `https://example.freshteam.com/jobs/${id}/engineer`,
     himalayas: (id) =>
       `https://himalayas.app/companies/example/jobs/engineer-${id}`,
+    gem: (id) => `https://jobs.gem.com/example/am9icG9zdDo${id}`,
   };
   assert.deepEqual(
     Object.keys(urls).sort(),
@@ -309,6 +310,18 @@ for (const [name, url, endpoint, response] of [
       job_post_url: 'https://jobs.polymer.co/example/123',
       description: '<p>US Laravel role</p>',
       published_at: '2025-01-02T12:00:00Z',
+    },
+  ],
+  [
+    'Gem',
+    'https://jobs.gem.com/example/am9icG9zdDo123',
+    'https://api.gem.com/job_board/v0/example/job_posts/am9icG9zdDo123',
+    {
+      id: 'am9icG9zdDo123',
+      absolute_url: 'https://jobs.gem.com/example/am9icG9zdDo123',
+      content: '<p>HTML duplicate</p>',
+      content_plain: 'US Laravel role',
+      first_published_at: '2025-01-02T12:00:00Z',
     },
   ],
   [
